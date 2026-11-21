@@ -133,6 +133,10 @@ fn persistence_info_reports_disabled_state_in_all_modes() {
             field(&text, "aof_rewrite_bytes_written").is_none(),
             "{text}"
         );
+        assert!(
+            field(&text, "aof_last_rewrite_start_usec").is_none(),
+            "{text}"
+        );
         assert!(field(&text, "aof_current_size").is_none(), "{text}");
         assert!(field(&text, "rdb_last_save_time").is_none(), "{text}");
         server.shutdown().unwrap();
@@ -270,6 +274,10 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                 Some("ok"),
                 "{text}"
             );
+            assert!(
+                field(&text, "aof_last_rewrite_start_usec").is_none(),
+                "{text}"
+            );
             let size = field(&text, "aof_current_size")
                 .and_then(|value| value.parse::<u64>().ok())
                 .expect("AOF size");
@@ -283,11 +291,14 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
             // Wait for the cooperative rewrite to finish so the status fields
             // below describe a completed attempt, not one still in progress.
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            loop {
+            let start_usec = loop {
                 let mut request = Vec::new();
                 encode_request(&[b"INFO", b"persistence"], &mut request);
                 stream.write_all(&request).unwrap();
                 let text = bulk_text(&read_frame(&mut stream, 0));
+                let start_usec = field(&text, "aof_last_rewrite_start_usec")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .expect("measured rewrite setup duration");
                 if field(&text, "aof_rewrite_in_progress") == Some("1") {
                     let phase = field(&text, "aof_rewrite_phase").expect("rewrite phase");
                     assert!(
@@ -310,20 +321,26 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                     assert!(bytes > 0, "{text}");
                 }
                 if field(&text, "aof_rewrite_in_progress") == Some("0") {
-                    break;
+                    break start_usec;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
                     "rewrite did not finish: {text}"
                 );
                 std::thread::sleep(Duration::from_millis(5));
-            }
+            };
             let mut request = Vec::new();
             encode_request(&[b"INFO", b"all"], &mut request);
             stream.write_all(&request).unwrap();
             let all = bulk_text(&read_frame(&mut stream, 0));
             assert!(all.contains("# Persistence\r\n"), "{all}");
             assert_eq!(field(&all, "aof_rewrite_bytes_written"), Some("0"), "{all}");
+            assert_eq!(
+                field(&all, "aof_last_rewrite_start_usec")
+                    .and_then(|value| value.parse::<u64>().ok()),
+                Some(start_usec),
+                "{all}"
+            );
             assert_eq!(
                 field(&all, "aof_last_bgrewrite_status"),
                 Some("ok"),

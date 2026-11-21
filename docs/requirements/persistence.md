@@ -94,6 +94,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   reconciliation writes. The field shall be zero when the enabled journal is
   idle and omitted if disabled or the journal cannot be inspected. It shall
   not imply fsync completion, published file size or percentage complete.
+- **R471 (event-driven):** When rewrite setup succeeds, the persistence report
+  shall expose its elapsed monotonic microseconds as `aof_last_rewrite_start_usec`.
+  Include key enumeration and staging initialization, but not later rewrite
+  steps, request queueing or network time. Omit the field before a successful
+  setup; a failed or redundant start shall not replace the previous measurement.
 
 ## Journal configuration visibility and runtime fsync (S87)
 
@@ -189,6 +194,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   or publishing a destination journal. A retry with sufficient budget shall
   leave the source archive unchanged and restore all its keys, not just the
   prefix that fit. This limit is not a bound on allocator or RSS usage.
+- **R473 (unwanted behavior):** If two restores of valid archives target the
+  same empty offline directory on a supported local filesystem, at most one
+  shall publish a journal. On normal completion, the journal shall match the
+  successful restore's payload, neither archive shall change, and staging
+  files shall not remain. This does not cover concurrent server startup or
+  interrupted cleanup.
 
 ## Authenticated journal records (S119)
 

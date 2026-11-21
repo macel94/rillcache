@@ -275,8 +275,11 @@ journal. Retry with the source's configured budget if appropriate; this limit
 is not an RSS bound. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. If validating the source would require
-truncating an incomplete tail, `create` fails without modifying the source or
+never overwrites an existing journal. Use a dedicated offline directory per
+restore. If two restore commands target the same empty directory, only one can
+publish its journal; inspect the command results before starting a server and
+use a new empty directory to inspect the other archive. If source validation
+would require truncating an incomplete tail, `create` fails without modifying the source or
 publishing an archive. Preserve the original and investigate before choosing
 whether to recover a copy with server startup. Both `verify` and `restore` reject an
 archive if replay truncates the staged journal, even when the archive's outer
@@ -362,8 +365,12 @@ total and does not invent duplicate progress. `aof_rewrite_bytes_written` counts
 bytes written to the temporary file, including framing and reconciliation. It
 resets to zero when the rewrite finishes or aborts, and is omitted if AOF is
 disabled or journal status is unavailable. It does not represent durable bytes
-or a completion percentage. `aof_last_bgrewrite_status:ok|err` describes the last
-completed attempt. The final
+or a completion percentage. `aof_last_rewrite_start_usec` measures the latest
+successful rewrite setup in whole microseconds, from starting snapshot key
+collection through writing the staging header and initial record. It is omitted
+before the first successful setup and excludes later rewrite work and time spent
+waiting for the request to reach the owner. `aof_last_bgrewrite_status:ok|err`
+describes the last completed attempt. The final
 snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every

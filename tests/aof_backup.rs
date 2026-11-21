@@ -733,6 +733,75 @@ fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
 }
 
 #[test]
+fn competing_restores_publish_exactly_one_complete_journal() {
+    let root = temp_dir("competing-restores");
+    let destination = root.join("destination");
+    std::fs::create_dir(&destination).unwrap();
+    let archives = [root.join("one.rcb"), root.join("two.rcb")];
+    let values = [b"one\0", b"two\xff"];
+    for (index, archive) in archives.iter().enumerate() {
+        let source = root.join(format!("source-{index}"));
+        std::fs::create_dir(&source).unwrap();
+        let server = start(&source);
+        let mut client = connect(&server);
+        assert_eq!(
+            call(&mut client, &[b"SET", b"key", values[index]]),
+            b"+OK\r\n"
+        );
+        server.shutdown().unwrap();
+        let created = create(&source, archive);
+        assert!(created.status.success(), "{created:?}");
+    }
+    let originals = archives
+        .each_ref()
+        .map(|archive| std::fs::read(archive).unwrap());
+
+    // Launch both utilities before waiting. Either operation may finish first;
+    // the assertion does not depend on a particular interleaving.
+    let children = archives.each_ref().map(|archive| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache-backup"))
+            .arg("restore")
+            .arg("--input")
+            .arg(archive)
+            .arg("--dir")
+            .arg(&destination)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
+    let results = children.map(|child| child.wait_with_output().unwrap());
+    let successes = results.each_ref().map(|result| result.status.success());
+    assert_ne!(
+        successes[0], successes[1],
+        "expected exactly one success: {results:?}"
+    );
+    let winner = usize::from(successes[1]);
+    let loser_error = String::from_utf8_lossy(&results[1 - winner].stderr);
+    assert!(loser_error.contains("exists"), "{loser_error}");
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    let payload_start = MAGIC.len() + 8 + 4;
+    assert_eq!(
+        std::fs::read(destination.join("appendonly.aof")).unwrap(),
+        originals[winner][payload_start..]
+    );
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(call(&mut client, &[b"DBSIZE"]), b":1\r\n");
+        assert_eq!(
+            call(&mut client, &[b"GET", b"key"]),
+            [&b"$4\r\n"[..], values[winner], b"\r\n"].concat()
+        );
+        server.shutdown().unwrap();
+    }
+    for (archive, original) in archives.iter().zip(originals) {
+        assert_eq!(std::fs::read(archive).unwrap(), original);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn insufficient_replay_payload_budget_rejects_archive_and_allows_retry() {
     let source = temp_dir("payload-budget-source");
     let scratch = temp_dir("payload-budget-scratch");

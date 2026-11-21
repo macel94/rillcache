@@ -573,6 +573,7 @@ pub(super) struct Journal {
     last_sync: Instant,
     failed: bool,
     last_rewrite_failed: bool,
+    last_rewrite_start_usec: Option<u64>,
     rewrite: Option<RewriteState>,
     _ownership: Ownership,
     checksum_nonce: Option<String>,
@@ -595,6 +596,7 @@ pub(super) struct PersistenceStatus {
     pub rewrite_keys_done: u64,
     pub rewrite_keys_total: u64,
     pub rewrite_bytes_written: Option<u64>,
+    pub last_rewrite_start_usec: Option<u64>,
 }
 
 impl Journal {
@@ -654,6 +656,7 @@ impl Journal {
             last_sync: Instant::now(),
             failed: false,
             last_rewrite_failed: false,
+            last_rewrite_start_usec: None,
             rewrite: None,
             _ownership: ownership,
             checksum_nonce: None,
@@ -1430,6 +1433,7 @@ impl Journal {
             rewrite_keys_done: 0,
             rewrite_keys_total: 0,
             rewrite_bytes_written: Some(self.rewrite.as_ref().map_or(0, |state| state.bytes)),
+            last_rewrite_start_usec: self.last_rewrite_start_usec,
         }
     }
 
@@ -1719,6 +1723,7 @@ impl ShardExecutor {
         if self.rewrite_job.borrow().is_some() {
             return Ok(0);
         }
+        let start = Instant::now();
         let keys = {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return Err(());
@@ -1733,7 +1738,10 @@ impl ShardExecutor {
                 .lock()
                 .map_err(|_| io::Error::other("poisoned journal lock"))?;
             journal.begin_rewrite()?;
-            journal.write_rewrite(&header)
+            journal.write_rewrite(&header)?;
+            journal.last_rewrite_start_usec =
+                Some(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            Ok(())
         })();
         if started.is_err() {
             if let Ok(mut data) = self.data.try_borrow_mut() {
@@ -1888,6 +1896,7 @@ impl ShardExecutor {
                 rewrite_keys_done: 0,
                 rewrite_keys_total: 0,
                 rewrite_bytes_written: None,
+                last_rewrite_start_usec: None,
             };
         };
         let in_progress = self.rewrite_in_progress();
@@ -1902,6 +1911,7 @@ impl ShardExecutor {
                 rewrite_keys_done,
                 rewrite_keys_total,
                 rewrite_bytes_written: None,
+                last_rewrite_start_usec: None,
             },
             |journal| {
                 let mut status = journal.status();
