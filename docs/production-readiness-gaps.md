@@ -511,7 +511,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
   Tests cover ordinary restart, truncated tails and mid-file corruption. The
   Linux same-binary torn-tail drill checks checksum and HMAC journals, including
-  exact retained bytes and replay after new appends. Kill -9 at each boundary,
+  exact retained bytes and replay after new appends. A separate Linux fixture
+  restores a complete legacy RESP archive and verifies replay with a newly
+  checksummed suffix; no old binary participates. Kill -9 at each boundary,
   power-loss simulation, filesystem matrices, mixed versions and long-running
   recovery remain unverified.
   **Closes when:** a repeatable recovery matrix covers those cases and retains

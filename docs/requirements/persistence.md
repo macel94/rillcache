@@ -200,6 +200,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   successful restore's payload, neither archive shall change, and staging
   files shall not remain. This does not cover concurrent server startup or
   interrupted cleanup.
+- **R474 (event-driven):** When a complete legacy RESP journal is archived and
+  restored by the current binary, preserve the original journal and archive
+  bytes. After restoring, new CRC-framed appends shall retain the original
+  prefix and both old and new data shall replay after restart. This is a
+  format-level test, not a version-skew or downgrade guarantee.
 
 ## Authenticated journal records (S119)
 
