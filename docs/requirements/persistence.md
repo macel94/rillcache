@@ -217,6 +217,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   it shall remove its staging files and lock so a retry with the matching key
   can restore the archive without manual cleanup. Test by restarting the same
   binary against the restored journal and reading the expected value.
+- **R464 (unwanted behavior):** When loading the journal authentication key,
+  the server and backup utility shall read at most 1027 bytes and shall not
+  accept a prefix of an oversized file. The 16..=1024-byte key range after
+  stripping one final LF or CRLF remains unchanged.
 
 ## Deleted-entry stream PEL durability (S120)
 

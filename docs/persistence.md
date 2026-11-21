@@ -174,8 +174,10 @@ gap D3; optional record authentication is described next.
 
 ## Journal authentication
 
-Set `--aof-hmac-key-file PATH` (16..=1024 bytes, one trailing newline stripped) to
-authenticate journal transactions with HMAC-SHA256. The in-repo SHA-256 and HMAC
+Set `--aof-hmac-key-file PATH` (16..=1024 bytes after stripping one final LF or
+CRLF) to authenticate journal transactions with HMAC-SHA256. The server and
+backup utility read at most 1027 bytes and reject oversize files rather than
+accepting a prefix. The byte limit is not an I/O deadline. The in-repo SHA-256 and HMAC
 construction is the same dependency-free code used for audit-line authentication;
 the key is loaded once at startup and is not exposed in `CONFIG GET`, `INFO` or
 process arguments.
