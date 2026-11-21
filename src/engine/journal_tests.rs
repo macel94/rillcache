@@ -47,6 +47,59 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
 }
 
 #[test]
+fn rewrite_setup_failure_is_visible_and_does_not_latch_live_writes() {
+    let path = aof_path("rewrite-setup-failure");
+    let staging = path.with_file_name(format!(
+        ".{}.rewrite-{}",
+        path.file_name().unwrap().to_str().unwrap(),
+        std::process::id()
+    ));
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"SET", b"first", b"old\0"]), b"+OK\r\n");
+    let original = std::fs::read(&path).unwrap();
+    // A directory cannot be opened as the rewrite scratch file. This only
+    // faults rewrite setup, without changing permissions or the live journal.
+    std::fs::create_dir(&staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"-ERR append-only journal is not enabled or cannot be rewritten\r\n"
+    );
+    let info = run(&store, &[b"INFO", b"persistence"]);
+    let text = std::str::from_utf8(&info).unwrap();
+    assert!(text.contains("aof_last_bgrewrite_status:err\r\n"), "{text}");
+    assert!(text.contains("aof_last_write_status:ok\r\n"), "{text}");
+    assert!(text.contains("aof_rewrite_in_progress:0\r\n"), "{text}");
+    assert!(!text.contains("aof_last_rewrite_start_usec:"), "{text}");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(run(&store, &[b"SET", b"second", b"new\xff"]), b"+OK\r\n");
+    std::fs::remove_dir(staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n"
+    );
+    store
+        .call(|executor| {
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    return Ok(());
+                }
+            }
+            Err(std::io::Error::other("fixture rewrite did not finish"))
+        })
+        .unwrap();
+    let info = run(&store, &[b"INFO", b"persistence"]);
+    let text = std::str::from_utf8(&info).unwrap();
+    assert!(text.contains("aof_last_bgrewrite_status:ok\r\n"), "{text}");
+    drop(store);
+    let reopened = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&reopened, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn rewrite_setup_timing_is_recorded_only_when_a_rewrite_starts() {
     let path = aof_path("rewrite-setup-timing");
     let store = open(&path, FsyncPolicy::Always);
