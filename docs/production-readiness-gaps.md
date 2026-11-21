@@ -743,7 +743,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `--healthcheck-require-aof` adds a bounded INFO persistence check for
   loading=0, enabled journal and healthy last write/rewrite statuses;
   missing/duplicate fields, reported errors, denied INFO and malformed replies
-  fail closed. `--healthcheck-aof-write-probe DIR` additionally creates, writes,
+  fail closed. Fixed diagnostics distinguish reported loading, disabled AOF,
+  last-write failure and last-rewrite failure without logging reply values.
+  `--healthcheck-aof-write-probe DIR` additionally creates, writes,
   syncs and removes a unique one-byte temporary file in the operator-selected
   directory, after the status check. Unit fault-response and all-mode CLI tests
   cover both contracts, including TLS. The write probe is point-in-time and may
