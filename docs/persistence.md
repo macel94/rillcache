@@ -275,8 +275,11 @@ journal. Retry with the source's configured budget if appropriate; this limit
 is not an RSS bound. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. If validating the source would require
-truncating an incomplete tail, `create` fails without modifying the source or
+never overwrites an existing journal. Use a dedicated offline directory per
+restore. If two restore commands target the same empty directory, only one can
+publish its journal; inspect the command results before starting a server and
+use a new empty directory to inspect the other archive. If source validation
+would require truncating an incomplete tail, `create` fails without modifying the source or
 publishing an archive. Preserve the original and investigate before choosing
 whether to recover a copy with server startup. Both `verify` and `restore` reject an
 archive if replay truncates the staged journal, even when the archive's outer
