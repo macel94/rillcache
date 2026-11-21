@@ -271,6 +271,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   startup options without starting the server; it does not test resource opening.
   `config-version 1` can explicitly declare the startup file format; unmarked
   files retain version 1 behavior. A parser test checks the documented example.
+  Startup config reads stop at the 1 MiB limit plus one byte; this is a per-file
+  bound and does not set an I/O timeout or limit the number of files.
   **Remaining:** a complete defaults inventory, `CONFIG REWRITE`, live
   reload/rollback and the complete runtime-mutable surface are absent, and the
   upstream configuration language is not accepted.

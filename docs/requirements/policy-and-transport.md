@@ -262,6 +262,10 @@ platforms retain timeout-based fallback admission.
   markers shall reject the file before startup. Unmarked files retain v1
   behavior and the marker does not alter file/CLI precedence. Exercise the
   documented example in the parser tests.
+- **R459 (unwanted behavior):** If a startup file exceeds 1 MiB, the reader
+  shall stop after the first excess byte and reject the file before parsing
+  any directives. Test the read bound and both sides of the size boundary
+  without changing config preflight redaction.
 
 ## Standalone signal shutdown (S124)
 

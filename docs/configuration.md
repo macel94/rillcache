@@ -33,7 +33,10 @@ allowed.
 - Values may be unquoted (one token), double-quoted with `\"`, `\\`, `\n`, `\r`
   and `\t` escapes, or single-quoted literally.
 - `aof-hmac-migrate` is the one boolean directive and accepts `yes` or `no`.
-- The file must be valid UTF-8 and at most 1 MiB. An empty file is an error.
+- The file must be valid UTF-8 and at most 1 MiB. The reader stops after at
+  most 1 MiB plus one byte and rejects oversized input before parsing any
+  directives. This is a per-file byte limit, not an I/O timeout. An empty file
+  is an error.
 
 ```conf
 # /etc/rillcache/rillcache.conf
