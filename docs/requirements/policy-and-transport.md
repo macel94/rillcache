@@ -302,6 +302,14 @@ platforms retain timeout-based fallback admission.
   restarting in the same journal directory without manual lock removal. Cover
   Mio and native TLS in the worker-mode matrix, and opt-in Tokio. This is
   process-exit evidence, not a power-loss test or a guarantee about unsynced writes.
+- **R465 (state-driven):** When an admitted plain-TCP reply cannot finish because
+  the peer is not reading, a single SIGTERM shall allow the bounded client drain
+  to expire, close the connection and let workers join and flush the journal.
+  Subprocess tests shall observe a proper reply prefix after process exit, stay
+  within a five-second test budget with working storage, and verify on Linux
+  that an `appendfsync always` acknowledged write survives restart from the same
+  journal directory. Cover Mio and opt-in Tokio. This is not the supervisor's
+  25-second forced-exit path.
 
 ## Client registry and administrative kill (S38)
 

@@ -447,7 +447,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   unchanged AOF directory and verify an acknowledged write under `appendfsync
   always`. This does not cover unsynced writes or power loss. The 25-second
   deadline outcome is separately unit-tested, not timed end-to-end for each
-  transport.
+  transport. A separate plain-TCP test in Mio and Tokio leaves the reply unread
+  past a single SIGTERM, verifies successful exit within five seconds and a
+  properly truncated reply, then checks on Linux that the acknowledged
+  `appendfsync always` value is intact after restarting. This exercises the
+  bounded client drain on working storage, not TLS or the 25-second supervisor
+  deadline.
   Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
   blocked clients connected through successful exit, then verify after restart
   that neither an incomplete SET nor a SET queued behind BLPOP was replayed.

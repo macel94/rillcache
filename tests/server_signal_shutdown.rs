@@ -110,15 +110,14 @@ mod unix {
         }
     }
 
-    fn wait_for_forced_exit(server: &mut ServerProcess) -> std::process::ExitStatus {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    fn wait_for_exit_by(server: &mut ServerProcess, deadline: Instant) -> std::process::ExitStatus {
         loop {
             if let Some(status) = server.child.try_wait().unwrap() {
                 return status;
             }
             if Instant::now() >= deadline {
                 let _ = server.child.kill();
-                panic!("server did not force shutdown within 5 seconds");
+                panic!("server exceeded the five-second shutdown test budget");
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -268,15 +267,18 @@ mod unix {
         verify_sigterm_drains_an_admitted_reply_and_flushes_aof(&["--io-mode", "tokio"]);
     }
 
-    fn verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(
-        server_mode: &[&str],
-    ) {
+    enum ShutdownWithPendingReply {
+        SecondSignal,
+        DrainTimeout,
+    }
+
+    fn verify_shutdown_with_unread_reply(server_mode: &[&str], scenario: ShutdownWithPendingReply) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "rillcache-signal-forced-{}-{nonce}",
+            "rillcache-signal-unread-reply-{}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
@@ -328,25 +330,76 @@ mod unix {
             thread::sleep(Duration::from_millis(10));
         }
 
+        // Observe the reply start without relieving backpressure. In the timeout
+        // case the client does not consume any bytes until after the process exits.
+        if matches!(scenario, ShutdownWithPendingReply::DrainTimeout) {
+            pending
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut first = [0];
+            assert_eq!(pending.peek(&mut first).unwrap(), 1);
+            assert_eq!(first, *b"$");
+        }
+        let started = Instant::now();
         send_sigterm(&server);
         let stopping = read_shutdown_log(&mut server);
         assert!(
             stopping.contains("received SIGTERM; stopping admission"),
             "unexpected shutdown log: {stopping:?}"
         );
-        send_sigterm(&server);
-        let forced = read_shutdown_log(&mut server);
-        assert!(
-            forced.contains("forced termination: SIGTERM"),
-            "unexpected forced-shutdown log: {forced:?}"
-        );
-        let status = wait_for_forced_exit(&mut server);
-        assert!(!status.success(), "forced shutdown exited successfully");
+        match scenario {
+            ShutdownWithPendingReply::SecondSignal => {
+                let forced_by = Instant::now() + Duration::from_secs(5);
+                send_sigterm(&server);
+                let forced = read_shutdown_log(&mut server);
+                assert!(
+                    forced.contains("forced termination: SIGTERM"),
+                    "unexpected forced-shutdown log: {forced:?}"
+                );
+                let status = wait_for_exit_by(&mut server, forced_by);
+                assert!(!status.success(), "forced shutdown exited successfully");
+            }
+            ShutdownWithPendingReply::DrainTimeout => {
+                let budget = Duration::from_secs(5);
+                let status = wait_for_exit_by(&mut server, started + budget);
+                let elapsed = started.elapsed();
+                assert!(status.success(), "bounded drain exited with {status}");
+                // Allow scheduling slack around the one-second client drain, but
+                // distinguish it from immediately dropping the admitted reply.
+                assert!(
+                    (Duration::from_millis(800)..budget).contains(&elapsed),
+                    "unexpected drain duration: {elapsed:?}"
+                );
+                let complete = read_shutdown_log(&mut server);
+                assert!(complete.contains("workers joined and enabled journal flushed"));
+                let header = format!("${}\r\n", value.len());
+                let reply_len = header.len() + value.len() + 2;
+                let mut partial = Vec::new();
+                if let Err(error) = (&mut pending)
+                    .take(reply_len as u64)
+                    .read_to_end(&mut partial)
+                {
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset, "{error}");
+                }
+                assert!(partial.starts_with(header.as_bytes()));
+                assert!(
+                    partial.len() < reply_len,
+                    "the entire reply fit before exit"
+                );
+                let body = &partial[header.len()..];
+                let body_len = value.len().min(body.len());
+                assert!(
+                    body[..body_len] == value[..body_len],
+                    "reply prefix changed"
+                );
+                assert!(b"\r\n".starts_with(&body[body_len..]));
+            }
+        }
 
         drop(pending);
         drop(server);
-        // Linux can reclaim the crash-stale AOF lock after the owner exits.
-        // Keep the original journal and lock in place to exercise normal startup.
+        // Restart without altering the journal directory. Linux can also reclaim
+        // the crash-stale AOF lock after the forced owner exits.
         #[cfg(target_os = "linux")]
         {
             let (mut restarted, address) = start_with(&directory, &server_args);
@@ -365,15 +418,28 @@ mod unix {
 
     #[test]
     fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
-        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[]);
+        verify_shutdown_with_unread_reply(&[], ShutdownWithPendingReply::SecondSignal);
     }
 
     #[test]
     fn tokio_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
-        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[
-            "--io-mode",
-            "tokio",
-        ]);
+        verify_shutdown_with_unread_reply(
+            &["--io-mode", "tokio"],
+            ShutdownWithPendingReply::SecondSignal,
+        );
+    }
+
+    #[test]
+    fn sigterm_bounds_an_unread_reply_drain_and_preserves_acknowledged_aof() {
+        verify_shutdown_with_unread_reply(&[], ShutdownWithPendingReply::DrainTimeout);
+    }
+
+    #[test]
+    fn tokio_sigterm_bounds_an_unread_reply_drain_and_preserves_acknowledged_aof() {
+        verify_shutdown_with_unread_reply(
+            &["--io-mode", "tokio"],
+            ShutdownWithPendingReply::DrainTimeout,
+        );
     }
 
     fn verify_sigterm_cancels_pending_clients(server_mode: &[&str]) {
