@@ -668,7 +668,11 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
     ));
     std::fs::create_dir(&directory).unwrap();
     let config = directory.join("startup.conf");
-    std::fs::write(&config, "max-frame-bytes 4096\nmax-bulk-bytes 8192\n").unwrap();
+    std::fs::write(
+        &config,
+        "config-version 1\nmax-frame-bytes 4096\nmax-bulk-bytes 8192\n",
+    )
+    .unwrap();
     let probe = |override_bulk: bool| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rillcache"));
         cmd.args(["--check-config", "--config"])
@@ -693,6 +697,16 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
     let valid = probe(true);
     assert!(valid.status.success(), "{valid:?}");
     assert!(valid.stderr.is_empty());
+    for text in [
+        "config-version 1\n",
+        "config-version private-version\nmax-frame-bytes 4096\n",
+    ] {
+        std::fs::write(&config, text).unwrap();
+        let invalid = probe(true);
+        assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+        assert!(invalid.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&invalid.stderr).contains("private-version"));
+    }
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
     std::fs::remove_dir_all(directory).unwrap();
 

@@ -117,6 +117,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
     "observability-admin": (
         "src/main.rs",
         "src/healthcheck.rs",
+        "src/config_file.rs",
         "tests/cli.rs",
         "docs/configuration.md",
         "src/engine/slowlog.rs",

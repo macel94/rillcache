@@ -13,7 +13,12 @@ allowed.
 
 ## Syntax
 
-- One directive and one value per line.
+- One directive and one value per line. To declare the startup file schema
+  explicitly, put `config-version 1` as the first directive after any blank
+  lines and comments. This is file metadata, not a CLI option. A later or
+  repeated marker or an unsupported version rejects the file. Files without
+  the marker retain the original version 1 syntax. A marker alone is not a
+  configuration file; include at least one startup setting.
 - Blank lines and lines whose first unquoted character is `#` are comments.
 - `directive value` and `directive=value` are both accepted.
 - Directive names are the long option names without `--`; `_` and `-` are
@@ -32,6 +37,7 @@ allowed.
 
 ```conf
 # /etc/rillcache/rillcache.conf
+config-version 1
 bind 127.0.0.1:6379
 maxclients 1024
 max-data-bytes 268435456
@@ -51,7 +57,8 @@ rillcache --config /etc/rillcache/rillcache.conf --max-clients 2048
 Directives are processed at the position of the `--config` flag. Later CLI
 options therefore override earlier file directives, and a file listed after a
 CLI option overrides that option. Multiple `--config` files are applied in the
-order written. Duplicate directives follow the same last-value-wins rule.
+order written. Each file is checked for its own version marker, independently
+of the other files. Duplicate settings follow the same last-value-wins rule.
 
 All values pass through the normal startup validation and bind checks after the
 full argument list is assembled. A missing, unreadable, oversized, non-UTF-8,

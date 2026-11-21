@@ -256,6 +256,12 @@ platforms retain timeout-based fallback admission.
   Invalid startup options shall exit 2 with diagnostics that omit user-supplied
   values and paths. Success shall not claim that listener or storage resources
   can be opened or that ACL, TLS or HMAC files have valid contents.
+- **R458 (event-driven):** When a startup file has a `config-version` marker,
+  it shall be the first non-comment directive, shall appear only once per
+  file and shall name supported version `1`. Other versions and misplaced
+  markers shall reject the file before startup. Unmarked files retain v1
+  behavior and the marker does not alter file/CLI precedence. Exercise the
+  documented example in the parser tests.
 
 ## Standalone signal shutdown (S124)
 

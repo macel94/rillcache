@@ -7,6 +7,7 @@
 //! believe a setting was applied when it was ignored.
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const CONFIG_VERSION: &str = "1";
 
 const BOOLEAN_DIRECTIVES: &[&str] = &["aof-hmac-migrate"];
 
@@ -87,6 +88,7 @@ pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
 
 fn parse_text(text: &str) -> Result<Vec<String>, String> {
     let mut arguments = Vec::new();
+    let mut first_directive = true;
     for (index, raw) in text.lines().enumerate() {
         let line = strip_comment(raw);
         let line = line.trim();
@@ -98,6 +100,20 @@ fn parse_text(text: &str) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("line {line_number}: expected a directive and a value"))?;
         let directive = normalize_directive(directive)
             .ok_or_else(|| format!("line {line_number}: empty configuration directive"))?;
+        let is_first = std::mem::take(&mut first_directive);
+        if directive == "config-version" {
+            if !is_first {
+                return Err(format!(
+                    "line {line_number}: config-version must appear once, as the first directive"
+                ));
+            }
+            if parse_value(rest, line_number)? != CONFIG_VERSION {
+                return Err(format!(
+                    "line {line_number}: unsupported configuration version (expected {CONFIG_VERSION})"
+                ));
+            }
+            continue;
+        }
         if matches!(
             directive.as_str(),
             "config" | "help" | "version" | "healthcheck"
@@ -240,6 +256,38 @@ fn parse_single_quoted(body: &str, line_number: usize) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_marker_is_file_metadata_and_unversioned_files_are_unchanged() {
+        let legacy = parse_text("maxclients=12\n").unwrap();
+        assert_eq!(legacy, vec!["--max-clients", "12"]);
+        assert_eq!(
+            parse_text("# before header\n\nconfig-version 1 # v1\nmaxclients=12\n").unwrap(),
+            legacy
+        );
+        for (text, expected) in [
+            ("config-version 2\nmaxclients 12", "line 1: unsupported"),
+            ("maxclients 12\nconfig-version 1", "line 2: config-version"),
+            (
+                "config-version 1\nconfig-version 1\nmaxclients 12",
+                "line 2: config-version",
+            ),
+            ("config-version 1 unexpected", "exactly one value"),
+        ] {
+            let error = parse_text(text).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn documented_startup_file_parses_with_the_current_explicit_version() {
+        let docs = include_str!("../docs/configuration.md");
+        let (_, example) = docs.split_once("```conf\n").unwrap();
+        let (example, _) = example.split_once("\n```").unwrap();
+        let header = format!("config-version {CONFIG_VERSION}");
+        assert!(example.lines().any(|line| line == header));
+        assert!(!parse_text(example).unwrap().is_empty());
+    }
 
     #[test]
     fn parses_comments_aliases_and_quoted_values() {
