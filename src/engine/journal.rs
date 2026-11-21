@@ -1302,6 +1302,7 @@ impl Journal {
                 Ok(())
             }
             Err(error) => {
+                self.last_rewrite_failed = true;
                 let _ = fs::remove_file(&temporary);
                 Err(error)
             }

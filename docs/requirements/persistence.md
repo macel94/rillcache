@@ -99,6 +99,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Include key enumeration and staging initialization, but not later rewrite
   steps, request queueing or network time. Omit the field before a successful
   setup; a failed or redundant start shall not replace the previous measurement.
+- **R481 (unwanted behavior):** If rewrite staging initialization fails,
+  `aof_last_bgrewrite_status` shall report `err` without latching a live append
+  error or keeping a rewrite active. The original journal shall be preserved
+  and a later successful rewrite shall clear the rewrite error.
 
 ## Journal configuration visibility and runtime fsync (S87)
 

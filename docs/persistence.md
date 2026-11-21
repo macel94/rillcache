@@ -373,7 +373,9 @@ successful rewrite setup in whole microseconds, from starting snapshot key
 collection through writing the staging header and initial record. It is omitted
 before the first successful setup and excludes later rewrite work and time spent
 waiting for the request to reach the owner. `aof_last_bgrewrite_status:ok|err`
-describes the last completed attempt. The final
+describes the last completed attempt, including failure to initialize the
+staging file. A staging setup failure does not latch the live append status.
+The final
 snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every
