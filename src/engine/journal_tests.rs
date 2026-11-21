@@ -1726,10 +1726,27 @@ fn journal_authentication_key_files_are_trimmed_and_bounded() {
     assert_eq!(super::read_auth_key_file(&path).unwrap(), AUTH_KEY);
     std::fs::write(&path, b"0123456789abcde\n").unwrap();
     assert!(super::read_auth_key_file(&path).is_err());
-    std::fs::write(&path, vec![b'x'; 1025]).unwrap();
+    let max_key = vec![b'x'; super::MAX_AUTH_KEY_BYTES];
+    let with_crlf = [max_key.as_slice(), b"\r\n"].concat();
+    std::fs::write(&path, &with_crlf).unwrap();
+    assert_eq!(super::read_auth_key_file(&path).unwrap(), max_key);
+    std::fs::write(&path, [with_crlf.as_slice(), b"x"].concat()).unwrap();
+    assert!(super::read_auth_key_file(&path).is_err());
+    std::fs::write(&path, vec![b'x'; super::MAX_AUTH_KEY_BYTES + 1]).unwrap();
     assert!(super::read_auth_key_file(&path).is_err());
     let _ = std::fs::remove_file(&path);
     assert!(super::read_auth_key_file(&path).is_err());
+}
+
+#[test]
+fn journal_key_reader_stops_at_the_oversize_sentinel() {
+    let cap = super::MAX_AUTH_KEY_BYTES + 3;
+    let mut source = std::io::Cursor::new(vec![b'x'; cap + 32]);
+    assert_eq!(
+        super::read_auth_key_file_bytes(&mut source).unwrap().len(),
+        cap
+    );
+    assert_eq!(source.position(), cap as u64);
 }
 
 #[test]

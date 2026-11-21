@@ -28,6 +28,7 @@ const CONSUMER_SEEN: &[u8] = b"__RILLCACHE_CONSUMER_SEEN_V1__:";
 const CONSUMER_ACTIVE: &[u8] = b"__RILLCACHE_CONSUMER_ACTIVE_V1__:";
 const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
 const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
+const MAX_AUTH_KEY_BYTES: usize = 1024;
 
 /// Optional keyed authentication for journal transactions.
 #[derive(Clone)]
@@ -38,7 +39,7 @@ pub struct JournalAuth {
 
 impl JournalAuth {
     pub fn new(key: Vec<u8>, migrate: bool) -> io::Result<Self> {
-        if !(16..=1024).contains(&key.len()) {
+        if !(16..=MAX_AUTH_KEY_BYTES).contains(&key.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "journal authentication key must be 16..=1024 bytes",
@@ -49,28 +50,40 @@ impl JournalAuth {
 }
 
 pub fn read_auth_key_file(path: &Path) -> io::Result<Vec<u8>> {
-    let mut key = fs::read(path).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "cannot read journal authentication key file {}: {error:?}",
-                path.display()
-            ),
-        )
-    })?;
+    let mut key = File::open(path)
+        .and_then(read_auth_key_file_bytes)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cannot read journal authentication key file {}: {error:?}",
+                    path.display()
+                ),
+            )
+        })?;
     if key.ends_with(b"\n") {
         key.pop();
         if key.ends_with(b"\r") {
             key.pop();
         }
     }
-    if !(16..=1024).contains(&key.len()) {
+    if !(16..=MAX_AUTH_KEY_BYTES).contains(&key.len()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "journal authentication key must be 16..=1024 bytes",
         ));
     }
     Ok(key)
+}
+
+fn read_auth_key_file_bytes(reader: impl Read) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    // Allow CRLF plus a sentinel byte. Even after stripping CRLF, a read
+    // that reaches the sentinel is too long and cannot pass as a prefix.
+    reader
+        .take((MAX_AUTH_KEY_BYTES + 3) as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

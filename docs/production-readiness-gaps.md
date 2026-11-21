@@ -348,7 +348,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `--aof-hmac-migrate` startup seal, which authenticates the already checksummed
   prefix as-is; later starts without an anchor fail closed. A torn final
   unauthenticated group is discarded to the last verified marker. The offline
-  backup tool accepts the key for create/verify/restore. Tests cover restart,
+  backup tool accepts the key for create/verify/restore. Both key-file readers
+  enforce a byte limit during the read and reject oversized files. Tests cover restart,
   wrong key, modified tags, migration refusal and completion, authenticated
   rewrite plus post-rewrite appends, torn markers, partial next appends, and real
   server/backup paths.
