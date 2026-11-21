@@ -157,6 +157,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "tests/protocol*.rs",
         "tests/native_tls.rs",
         "tests/inactive_pause.rs",
+        "tests/blocked_clients.rs",
     ),
     "tooling": (
         "scripts/**",

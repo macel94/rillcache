@@ -441,6 +441,11 @@ platforms retain timeout-based fallback admission.
   clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
+- **R462 (state-driven):** While `BLPOP` waits on an absent list, write-triggered
+  eviction of an unrelated key shall increment `INFO stats`'s `evicted_keys`
+  without removing the waiter from `INFO clients`'s `blocked_clients`. A later
+  push to the watched list shall complete the wait once and clear its blocked
+  state. Test on the wire in all three worker modes.
 
 ## CLIENT UNBLOCK (S114)
 
