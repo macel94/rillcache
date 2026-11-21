@@ -353,6 +353,11 @@ platforms retain timeout-based fallback admission.
   ordinary session dispatch. Nonzero-state deadline/mode semantics shall remain
   unchanged. Documentation shall retain the absence of replication,
   expiry/eviction pausing and replica-traffic pause semantics.
+- **R461 (state-driven):** While an `ALL` or `WRITE` pause defers a client
+  write, expiry maintenance shall still remove due keys and emit configured
+  expiry events. A deferred `SET NX` shall evaluate against the state at
+  execution after unpause. Test with an injected clock and an existing
+  subscriber, without timing sleeps.
 
 ## Configured connection limit visibility (S82)
 

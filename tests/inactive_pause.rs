@@ -77,6 +77,64 @@ fn unpause_after_exact_expiry_restores_zero_clock_dispatch() {
 }
 
 #[test]
+fn maintenance_expires_once_before_a_paused_conditional_write_resumes() {
+    for mode in [b"ALL".as_slice(), b"WRITE"] {
+        let (store, clock) = fixture();
+        let mut admin = Session::new();
+        let mut writer = Session::new();
+        let mut subscriber = Session::new();
+        let (sender, events) = std::sync::mpsc::sync_channel(4);
+        subscriber.set_pubsub_sender(sender);
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"CONFIG", b"SET", b"notify-keyspace-events", b"Ex"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut subscriber,
+                &store,
+                &[b"SUBSCRIBE", b"__keyevent@0__:expired"]
+            ),
+            b"*3\r\n$9\r\nsubscribe\r\n$22\r\n__keyevent@0__:expired\r\n:1\r\n"
+        );
+        assert_eq!(
+            call(&mut writer, &store, &[b"SET", b"k", b"old", b"PX", b"10"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"CLIENT", b"PAUSE", b"100", mode]),
+            b"+OK\r\n"
+        );
+        assert!(call(&mut writer, &store, &[b"SET", b"k", b"new", b"NX"]).is_empty());
+        assert!(writer.is_paused());
+
+        clock.now.store(109, Ordering::Relaxed);
+        assert_eq!(store.purge_expired(16), 0);
+        assert!(events.try_recv().is_err());
+        clock.now.store(111, Ordering::Relaxed);
+        assert_eq!(store.purge_expired(16), 1);
+        assert_eq!(
+            events.try_recv().unwrap(),
+            b"*3\r\n$7\r\nmessage\r\n$22\r\n__keyevent@0__:expired\r\n$1\r\nk\r\n"
+        );
+        assert!(writer.poll_paused(&store).is_none());
+        assert_eq!(store.purge_expired(16), 0);
+        assert_eq!(
+            call(&mut admin, &store, &[b"CLIENT", b"UNPAUSE"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(writer.poll_paused(&store).unwrap().0, b"+OK\r\n");
+        assert!(writer.poll_paused(&store).is_none());
+        assert_eq!(call(&mut writer, &store, &[b"GET", b"k"]), b"$3\r\nnew\r\n");
+        assert!(events.try_recv().is_err());
+    }
+}
+
+#[test]
 fn a_fresh_pause_after_expiry_is_enforced_and_unpause_clears_it() {
     let (store, clock) = fixture();
     let mut admin = Session::new();

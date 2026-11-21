@@ -81,8 +81,10 @@ pipelined commands until the pause ends, and polls with the same bounded model a
 blocking commands without holding the store lock. Replies preserve wire order,
 and a disconnect or shutdown drops the deferred command and the connection.
 Commands that started before the pause, already-blocked commands, background
-expiry and eviction, and journal syncing are not paused. This is deliberately a
-client-command gate, not Redis's full pause surface (which also pauses expiry,
+expiry and eviction, and journal syncing are not paused. For example, expiry
+maintenance can emit an `expired` event while `SET NX` is deferred. The write
+checks whether the key exists when it resumes, not when it was queued.
+This is deliberately a client-command gate, not Redis's full pause surface (which also pauses expiry,
 eviction and replica traffic); replication does not exist here.
 
 `CLIENT HELP` returns the supported subcommand list and argument hints.

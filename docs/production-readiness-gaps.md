@@ -778,7 +778,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.
-  Replica pause is not applicable until replication exists.
+  An injected-clock test exercises expiry maintenance during both pause modes:
+  it observes one expiry event before unpause and verifies a deferred `SET NX`
+  sees the newly absent key. Replica pause is not applicable until replication
+  exists.
   **Closes when:** background eviction and the supported interaction matrix are
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.
