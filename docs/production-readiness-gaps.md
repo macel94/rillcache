@@ -521,7 +521,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `PSYNC`, `SYNC`, `REPLCONF`, `REPLICAOF host port` and `SLAVEOF host port`
   return explicit replication-unsupported errors. `ROLE`/`INFO replication`
   truthfully report a standalone master; `WAIT` returns 0 and `WAITAOF` only
-  acknowledges the local journal.
+  acknowledges the local journal. A native TCP test pins the standalone role
+  and zero replication offset after a local write and rejected reconfiguration.
   **Closes when:** full and partial synchronization, a consistent snapshot,
   bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
   interop pass; acknowledged-write loss is documented.
@@ -537,7 +538,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **A3. Cluster mode is missing.** [P0]
   `CLUSTER` is disabled; there are no 16,384 slots, hash tags, `MOVED`/`ASK`
   redirects, migration/importing state, cluster bus or cross-slot rejection.
-  Sharded Pub/Sub has no cluster routing.
+  Sharded Pub/Sub has no cluster routing. A native TCP test verifies explicit
+  rejection of the `SHARDS`, `SLOTS`, and `NODES` topology probes without
+  changing local data or advertising a replica.
   **Closes when:** slot mapping, redirects, migration, cross-slot atomicity,
   topology discovery, partition/rejoin and mixed-version rolling upgrade pass a
   cluster corpus, or the profile explicitly excludes cluster clients.

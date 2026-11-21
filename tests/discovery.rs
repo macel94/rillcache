@@ -170,6 +170,45 @@ fn script_and_function_flush_do_not_imply_execution_support() {
 }
 
 #[test]
+fn topology_probes_stay_standalone_after_writes_and_rejected_reconfiguration() {
+    let role = b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n";
+    let replication = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\n";
+    let info = format!("${}\r\n{replication}\r\n", replication.len());
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(request(&mut client, &[b"ROLE"]), role);
+        assert_eq!(
+            request(&mut client, &[b"INFO", b"replication"]),
+            info.as_bytes()
+        );
+        assert_eq!(request(&mut client, &[b"SET", b"key", b"v\0"]), b"+OK\r\n");
+        for subcommand in [b"SHARDS".as_slice(), b"SLOTS", b"NODES"] {
+            assert_eq!(
+                request(&mut client, &[b"CLUSTER", subcommand]),
+                b"-ERR This instance has cluster support disabled\r\n",
+                "{subcommand:?}"
+            );
+        }
+        assert_eq!(
+            request(&mut client, &[b"REPLICAOF", b"127.0.0.1", b"1"]),
+            b"-ERR replication is not supported by this standalone server\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"REPLICAOF", b"NO", b"ONE"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(request(&mut client, &[b"ROLE"]), role);
+        assert_eq!(
+            request(&mut client, &[b"INFO", b"replication"]),
+            info.as_bytes()
+        );
+        assert_eq!(request(&mut client, &[b"GET", b"key"]), b"$2\r\nv\0\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
