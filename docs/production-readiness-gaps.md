@@ -410,7 +410,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   key count and logical payload bytes while preserving the newer journal.
   The same-binary authenticated restore test rejects a wrong key without
   publishing or leaving staging files, then restores into the same directory
-  with the matching key and verifies the archive is unchanged.
+  with the matching key and verifies the archive is unchanged. An insufficient
+  logical payload budget also rejects verify and restore without publication or
+  residue; retry at a sufficient budget restores both original binary values.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly

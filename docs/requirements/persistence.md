@@ -184,6 +184,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   the source bytes unchanged, and release the ownership lock. Cover legacy,
   CRC and HMAC tails and confirm that ordinary startup still recovers the
   verified prefix.
+- **R470 (unwanted behavior):** If replaying a valid archive exceeds the logical
+  payload limit, `verify` and `restore` shall fail without retaining staging files
+  or publishing a destination journal. A retry with sufficient budget shall
+  leave the source archive unchanged and restore all its keys, not just the
+  prefix that fit. This limit is not a bound on allocator or RSS usage.
 
 ## Authenticated journal records (S119)
 
