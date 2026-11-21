@@ -720,6 +720,39 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
 }
 
 #[test]
+fn config_preflight_accepts_the_size_limit_and_rejects_one_more_byte() {
+    const LIMIT: usize = 1024 * 1024;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-size-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--check-config", "--config"])
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+    let mut input = b"config-version 1\nmax-clients 12\n#".to_vec();
+    input.resize(LIMIT, b' ');
+    std::fs::write(&config, &input).unwrap();
+    let valid = check();
+    input.push(b' ');
+    std::fs::write(&config, &input).unwrap();
+    let invalid = check();
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(valid.status.success(), "{valid:?}");
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+    assert!(invalid.stdout.is_empty());
+}
+
+#[test]
 #[cfg(unix)]
 fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_values() {
     use std::os::unix::fs::PermissionsExt as _;

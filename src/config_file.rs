@@ -6,6 +6,8 @@
 //! Unknown or multi-value Redis directives fail closed so an operator cannot
 //! believe a setting was applied when it was ignored.
 
+use std::io::{self, Read};
+
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const CONFIG_VERSION: &str = "1";
 
@@ -69,8 +71,9 @@ pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
     if path.is_empty() {
         return Err("--config requires a nonempty path".into());
     }
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("--config could not read {path}: {error}"))?;
+    let bytes = std::fs::File::open(path)
+        .and_then(read_capped)
+        .map_err(|error| format!("--config could not read {path}: {error}"))?;
     if bytes.len() > MAX_CONFIG_BYTES {
         return Err(format!(
             "--config file exceeds the {} byte limit",
@@ -84,6 +87,15 @@ pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
         return Err("--config file must contain at least one directive".into());
     }
     Ok(arguments)
+}
+
+fn read_capped(reader: impl Read) -> io::Result<Vec<u8>> {
+    // Read one extra byte so an oversized file cannot pass as a valid prefix.
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_CONFIG_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn parse_text(text: &str) -> Result<Vec<String>, String> {
@@ -256,6 +268,17 @@ fn parse_single_quoted(body: &str, line_number: usize) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_read_does_not_consume_past_the_oversize_sentinel() {
+        let data = vec![b' '; MAX_CONFIG_BYTES + 32];
+        let mut reader = io::Cursor::new(data);
+        assert_eq!(
+            read_capped(&mut reader).unwrap().len(),
+            MAX_CONFIG_BYTES + 1
+        );
+        assert_eq!(reader.position() as usize, MAX_CONFIG_BYTES + 1);
+    }
 
     #[test]
     fn version_marker_is_file_metadata_and_unversioned_files_are_unchanged() {
