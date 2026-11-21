@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+use rillcache::engine::EvictionPolicy;
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
 
@@ -198,6 +199,60 @@ fn run_all_cases(workers: Option<usize>) {
     wait_until_blocked(&mut admin, 0);
 
     server.shutdown().unwrap();
+}
+
+#[test]
+fn unrelated_eviction_does_not_complete_a_blocked_list_waiter() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: workers,
+            max_data_bytes: 64,
+            maxmemory_policy: EvictionPolicy::VolatileTtl,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut admin = connect(&server);
+        let mut waiter = connect(&server);
+        // The sole volatile key fits on its own, but not alongside pressure.
+        command(
+            &mut admin,
+            &[b"SET", b"victim", &[b'x'; 48], b"PX", b"600000"],
+            b"+OK\r\n",
+        );
+        send(&mut waiter, &[b"BLPOP", b"queue", b"0"]);
+        wait_until_blocked(&mut admin, 1);
+        let before = bulk_text(&mut admin, &[b"INFO", b"stats"]);
+        assert!(
+            before.lines().any(|line| line == "evicted_keys:0"),
+            "{before}"
+        );
+
+        command(&mut admin, &[b"SET", b"pressure", &[b'y'; 32]], b"+OK\r\n");
+        command(&mut admin, &[b"EXISTS", b"victim"], b":0\r\n");
+        let after = bulk_text(&mut admin, &[b"INFO", b"stats"]);
+        assert!(
+            after.lines().any(|line| line == "evicted_keys:1"),
+            "{after}"
+        );
+        assert_eq!(
+            blocked_count(&mut admin),
+            1,
+            "eviction is not a list wake-up"
+        );
+
+        command(&mut admin, &[b"LPUSH", b"queue", b"v\0x"], b":1\r\n");
+        assert_eq!(
+            read_frame(&mut waiter, 0),
+            b"*2\r\n$5\r\nqueue\r\n$3\r\nv\0x\r\n"
+        );
+        wait_until_blocked(&mut admin, 0);
+        command(&mut waiter, &[b"PING"], b"+PONG\r\n");
+        command(&mut admin, &[b"EXISTS", b"pressure"], b":1\r\n");
+        server.shutdown().unwrap();
+    }
 }
 
 #[test]

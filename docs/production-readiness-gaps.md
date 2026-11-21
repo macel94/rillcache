@@ -780,8 +780,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   notifications and a future replica pause is not a complete semantic contract.
   An injected-clock test exercises expiry maintenance during both pause modes:
   it observes one expiry event before unpause and verifies a deferred `SET NX`
-  sees the newly absent key. Replica pause is not applicable until replication
-  exists.
+  sees the newly absent key. A wire test also checks that unrelated eviction
+  increments `evicted_keys` without completing a `BLPOP` waiter; a later push
+  completes the wait and clears `blocked_clients`. Replica pause is not
+  applicable until replication exists.
   **Closes when:** background eviction and the supported interaction matrix are
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.
