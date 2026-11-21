@@ -720,7 +720,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   instead of a fake value. `INFO memory` and `MEMORY STATS` also report cgroup
   v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
   and are not used for admission, eviction or OOM handling. Allocator
-  accounting, enforced cgroup/headroom contracts and OOM behavior remain absent.
+  accounting, enforced cgroup/headroom contracts and OS OOM behavior remain
+  absent. `INFO memory` reports remaining logical key/value capacity separately;
+  tests cover filling the payload budget, rejecting a write and freeing capacity.
   **Partial (2026-11-19):** persistent per-owner `WATCH` history now caps logical
   retained key bytes at 4 MiB (in addition to its entry-count cap), invalidating
   outstanding watches conservatively on overflow. This excludes hash-table

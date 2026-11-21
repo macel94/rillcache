@@ -40,6 +40,11 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
+`INFO memory` and `INFO all` report `rillcache_payload_headroom_bytes`: the
+logical key/value limit minus the accounted payload, with a minimum of zero.
+This is not RSS, cgroup or allocator headroom, nor a promise that any particular
+write will fit.
+
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`,
 plus `used_memory_rss`/`used_memory_rss_human` from Linux `/proc/self/status`
 and an explicit `used_memory_rss_scope`. RSS is an observation: it includes

@@ -502,6 +502,48 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
 }
 
 #[test]
+fn info_payload_headroom_tracks_admission_and_deletion() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: mode,
+            max_data_bytes: 8,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut client = connect(&server);
+        let check = |client: &mut TcpStream, section: &[u8], used, remaining| {
+            let info = request(client, &[b"INFO", section]);
+            let text = std::str::from_utf8(&info).unwrap();
+            for expected in [
+                format!("rillcache_payload_bytes:{used}"),
+                "rillcache_payload_limit_bytes:8".to_owned(),
+                format!("rillcache_payload_headroom_bytes:{remaining}"),
+                "rillcache_payload_scope:key_and_value_bytes_not_RSS".to_owned(),
+            ] {
+                assert!(text.lines().any(|line| line == expected), "{text}");
+            }
+        };
+        check(&mut client, b"memory", 0, 8);
+        assert_eq!(
+            request(&mut client, &[b"SET", b"x", b"1234567"]),
+            b"+OK\r\n"
+        );
+        check(&mut client, b"memory", 8, 0);
+        assert_eq!(
+            request(&mut client, &[b"SET", b"y", b"v"]),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        check(&mut client, b"all", 8, 0);
+        assert_eq!(request(&mut client, &[b"DEL", b"x"]), b":1\r\n");
+        check(&mut client, b"memory", 0, 8);
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn info_reports_payload_and_live_keyspace_and_rejects_unknown_sections() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
