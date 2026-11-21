@@ -225,21 +225,29 @@ unless you configure a password.
 There is intentionally no PING liveness restart that could erase the cache merely
 because its client slots are full. Kubernetes still restarts an exited process.
 
-To require a password or ACL file, create a secret and mount it read-only, then
-append the file option without replacing the image entrypoint:
+For a password-protected standalone instance, use the opt-in Kustomize overlay
+instead of applying the plain manifest. In the target namespace, create the
+Secret from an existing protected file containing the password:
 
 ```sh
-kubectl create secret generic rillcache-auth --from-literal=requirepass="$(openssl rand -hex 32)"
-kubectl patch deployment rillcache --type=json -p='[
-  {"op":"add","path":"/spec/template/spec/volumes","value":[{"name":"auth","secret":{"secretName":"rillcache-auth","defaultMode":256}}]},
-  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts","value":[{"name":"auth","mountPath":"/run/secrets/rillcache","readOnly":true,"subPath":"requirepass"}]},
-  {"op":"add","path":"/spec/template/spec/containers/0/args","value":["--requirepass-file","/run/secrets/rillcache"]}
-]'
+kubectl create secret generic rillcache-auth --from-file=requirepass=/secure/path/to/password
+kubectl kustomize deploy
+kubectl apply -k deploy
+kubectl rollout status deployment/rillcache
 ```
 
-For multi-user ACLs, create the secret from an ACL file and use
-`--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
-read-only and credentials out of the image and process arguments. It does not add
+The overlay mounts the Secret read-only and configures both startup and readiness
+probes to authenticate using the same file as the server. The Secret volume uses
+mode `0440` and Pod `fsGroup: 65532` so the non-root process can read it. Do not
+combine this mount with `--secure-secret-files`, which requires
+owner-only permissions. No password value is stored in the manifests or passed
+as a server or probe argument. Restart the Deployment after replacing the Secret:
+the server loads its password at startup, so updating the mounted file alone
+can make the probes fail until the rollout completes. For a custom multi-user
+ACL deployment, configure the server ACL file and authenticate both probes with
+an allowed probe user; the password overlay is not an ACL deployment.
+
+This does not add
 cross-process/distributed rate limiting, collector sender authentication/TLS/
 federation or durable backup guarantees. The optional process-local auth-failure
 budget is not shared across replicas. TLS requires explicit certificate
@@ -249,8 +257,7 @@ Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. With
 `--appendonly yes --dir /data`, an operator-supplied PersistentVolume can preserve
 the journal across container restarts, but the example manifest intentionally has
-no PVC and this subset has no replication, background rewrite, validated
-backup/restore workflow or automatic failover. Prefer a
+no PVC, backup job, replication or automatic failover. Prefer a
 digest-pinned image for repeatable deployments:
 use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.
