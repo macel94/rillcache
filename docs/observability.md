@@ -245,6 +245,9 @@ including headers, integrity records and reconciliation. It resets to zero
 after completion or abort, is omitted if journal status cannot be read, and
 is not a durability or percent-complete metric. `aof_current_size` still
 describes the live journal, not the temporary file.
+`aof_last_rewrite_start_usec` is absent before the first successful setup. It
+measures setup (snapshot key collection and staging writes), not the full
+rewrite or client-observed latency. It is process-local and not persisted.
 RDB, backlog, bio and fork fields are omitted because they are not implemented or
 measured.
 

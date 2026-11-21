@@ -47,6 +47,29 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
 }
 
 #[test]
+fn rewrite_setup_timing_is_recorded_only_when_a_rewrite_starts() {
+    let path = aof_path("rewrite-setup-timing");
+    let store = open(&path, FsyncPolicy::Always);
+    store
+        .call(|executor| {
+            assert_eq!(executor.persistence_status().last_rewrite_start_usec, None);
+            executor.rewrite_journal().unwrap();
+            assert!(executor.rewrite_in_progress());
+            let measured = executor.persistence_status().last_rewrite_start_usec;
+            assert!(measured.is_some());
+            executor.rewrite_journal().unwrap();
+            assert_eq!(
+                executor.persistence_status().last_rewrite_start_usec,
+                measured
+            );
+            executor.journal_sync()
+        })
+        .unwrap();
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn rewrite_byte_progress_matches_temporary_file_and_resets() {
     for authenticate in [false, true] {
         let path = aof_path("rewrite-byte-progress");

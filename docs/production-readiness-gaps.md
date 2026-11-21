@@ -325,6 +325,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   key, so progress stops at the snapshot total instead of counting duplicates.
   `aof_rewrite_bytes_written` reports actual bytes written to the temporary
   file, including framing and reconciliation, without claiming durability.
+  `aof_last_rewrite_start_usec` reports the latest successful setup interval;
+  it is not a client latency measurement or an independent start-pause bound.
   **Measured (host-local):** old synchronous pass 130 ms full stall and 129 ms
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
