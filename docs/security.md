@@ -205,8 +205,10 @@ duties.
 off-host aggregation. `--bind ADDRESS` and `--output PATH` are required
 operationally (defaults are loopback and `audit.log`); each nonempty datagram up
 to `--max-datagram` is appended as one newline-terminated line, flushed, and
-rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
-are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
+rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty and oversized
+records are dropped and counted; a line must also fit `--max-bytes`, including
+any added newline. An oversized record does not rotate the output. An existing
+oversized file is not rewritten on startup. `--max-datagrams N` exits after N accepted datagrams for
 bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
 16..=1024-byte key and retains only lines with a valid per-line HMAC, while
 `--hmac-keyring-file PATH` verifies against any listed rotation key; malformed,
