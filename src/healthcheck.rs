@@ -355,29 +355,40 @@ fn check_persistence(stream: &mut ProbeStream, deadline: Instant) -> io::Result<
 
 fn validate_persistence(body: &[u8]) -> io::Result<()> {
     let text = std::str::from_utf8(body).map_err(|_| invalid_persistence())?;
-    let required = [
-        ("loading", "0"),
-        ("aof_enabled", "1"),
-        ("aof_last_write_status", "ok"),
-        ("aof_last_bgrewrite_status", "ok"),
+    let fields = [
+        "loading",
+        "aof_enabled",
+        "aof_last_write_status",
+        "aof_last_bgrewrite_status",
     ];
-    let mut seen = [false; 4];
+    let mut reported = [None; 4];
     for line in text.split("\r\n") {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let (name, value) = line.split_once(':').ok_or_else(invalid_persistence)?;
-        if let Some(index) = required.iter().position(|(field, _)| *field == name) {
-            if seen[index] || value != required[index].1 {
-                return Err(invalid_persistence());
-            }
-            seen[index] = true;
+        if let Some(index) = fields.iter().position(|field| *field == name)
+            && reported[index].replace(value).is_some()
+        {
+            return Err(invalid_persistence());
         }
     }
-    if !seen.iter().all(|present| *present) {
-        return Err(invalid_persistence());
-    }
-    Ok(())
+    // Report only recognized states, never names or values from the peer.
+    // A disabled Rillcache journal does not report last-write/rewrite status.
+    let reason = match reported {
+        [Some("0"), Some("1"), Some("ok"), Some("ok")] => return Ok(()),
+        [
+            Some("1"),
+            Some("0" | "1"),
+            None | Some("ok" | "err"),
+            None | Some("ok" | "err"),
+        ] => "journal is loading",
+        [Some("0"), Some("0"), None, None] => "AOF is disabled",
+        [Some("0"), Some("1"), Some("err"), Some("ok" | "err")] => "AOF last write failed",
+        [Some("0"), Some("1"), Some("ok"), Some("err")] => "AOF last rewrite failed",
+        _ => return Err(invalid_persistence()),
+    };
+    Err(io::Error::new(io::ErrorKind::InvalidData, reason))
 }
 
 #[cfg(test)]
@@ -560,6 +571,39 @@ mod tests {
             b"loading:0\naof_enabled:1\n",
         ] {
             assert!(validate_persistence(body).is_err());
+        }
+    }
+
+    #[test]
+    fn persistence_reports_recognized_states_without_echoing_values() {
+        let disabled = "# Persistence\r\nloading:0\r\naof_enabled:0";
+        let loading = HEALTHY.replace("loading:0", "loading:1");
+        let write_failed = HEALTHY.replace("aof_last_write_status:ok", "aof_last_write_status:err");
+        let rewrite_failed = HEALTHY.replace(
+            "aof_last_bgrewrite_status:ok",
+            "aof_last_bgrewrite_status:err",
+        );
+        let both_failed = write_failed.replace(
+            "aof_last_bgrewrite_status:ok",
+            "aof_last_bgrewrite_status:err",
+        );
+        let unknown = HEALTHY.replace(
+            "aof_last_write_status:ok",
+            "aof_last_write_status:private-value",
+        );
+        let duplicate = format!("{disabled}\r\naof_enabled:1\r\n");
+        for (body, reason) in [
+            (disabled, "AOF is disabled"),
+            (&loading, "journal is loading"),
+            (&write_failed, "AOF last write failed"),
+            (&rewrite_failed, "AOF last rewrite failed"),
+            (&both_failed, "AOF last write failed"),
+            (&unknown, "invalid or unhealthy journal status"),
+            (&duplicate, "invalid or unhealthy journal status"),
+        ] {
+            let error = validate_persistence(body.as_bytes()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), reason);
         }
     }
 

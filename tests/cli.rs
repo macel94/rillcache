@@ -362,12 +362,15 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
                     "aof={enabled}, user={user}, require={require_aof}"
                 );
                 assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8_lossy(&output.stderr);
                 if healthy {
-                    assert!(output.stderr.is_empty());
+                    assert!(stderr.is_empty());
+                } else if !enabled && user == "probe" {
+                    assert!(stderr.contains("AOF is disabled"), "{stderr}");
+                } else {
+                    assert!(!stderr.contains("AOF is disabled"), "{stderr}");
                 }
-                assert!(
-                    !String::from_utf8_lossy(&output.stderr).contains("test-only-journal-secret")
-                );
+                assert!(!stderr.contains("test-only-journal-secret"));
             }
         }
         if enabled {

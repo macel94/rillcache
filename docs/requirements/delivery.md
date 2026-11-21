@@ -151,6 +151,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and AUTH shall follow successful TLS verification. Client-certificate probe
   authentication remains unsupported. No external runtime probe tool shall be
   required.
+- **R463 (unwanted behavior):** If the journal-status probe recognizes loading,
+  disabled AOF, a failed last write or a failed last rewrite, it shall return a
+  fixed diagnostic for that state, preferring a write failure over a rewrite
+  failure when both are reported. Duplicate required fields and malformed or
+  unrecognized status combinations shall still fail closed. No diagnostic
+  shall include peer-supplied field values or credentials.
 - **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
   shall first pass offline checks and native amd64/arm64 container tests in all
   three worker modes, then publish only those tested images as one GHCR manifest

@@ -180,7 +180,10 @@ permission. AUTH, PING and INFO share the same socket deadline. The INFO reply
 must be a RESP2 bulk no larger than 16 KiB with a header no larger than 32 bytes.
 Disabled persistence, reported errors, missing/duplicate required fields, denied
 INFO, malformed/truncated/oversized replies and timeouts fail the probe without
-reflecting server payloads. Other INFO fields are permitted. A rewrite in
+reflecting server payloads. The probe distinguishes recognized loading, disabled
+AOF, last-write failure and last-rewrite failure with fixed messages. If both
+write and rewrite failed, it reports the write failure first. Other INFO fields
+are permitted. A rewrite in
 progress is not itself a failure, but a reported failed last rewrite makes this
 conservative probe unhealthy even if the live journal can still accept writes. This is a conservative
 **reported-status** check only: by itself it performs no write or fsync, cannot discover an
