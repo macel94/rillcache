@@ -271,6 +271,10 @@ platforms retain timeout-based fallback admission.
   select the existing secret-file policy. The bare CLI flag shall still enable
   it, and an invalid file value shall fail before startup. Test Unix permission
   enforcement and redacted preflight output with both precedence directions.
+- **R480 (unwanted behavior):** If the final plaintext and TLS options have
+  the same fixed address, startup and preflight shall reject them after all
+  positional overrides. An intermediate collision resolved by a later value
+  shall not fail the option check. Port zero remains independently allocated.
 
 ## Standalone signal shutdown (S124)
 

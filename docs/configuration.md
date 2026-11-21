@@ -69,7 +69,9 @@ order written. Each file is checked for its own version marker, independently
 of the other files. Duplicate settings follow the same last-value-wins rule.
 
 All values pass through the normal startup validation and bind checks after the
-full argument list is assembled. A missing, unreadable, oversized, non-UTF-8,
+full argument list is assembled. For example, the effective `bind` and
+`tls-bind` must not both name the same fixed address, but a later override of
+either can resolve a conflict. A missing, unreadable, oversized, non-UTF-8,
 unknown or malformed file fails startup with a line-numbered error before the
 listener binds.
 

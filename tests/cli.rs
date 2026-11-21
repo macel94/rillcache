@@ -723,6 +723,52 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
 }
 
 #[test]
+fn config_preflight_checks_the_final_tls_and_plaintext_listener_pair() {
+    let path = std::env::temp_dir().join(format!(
+        "rillcache-config-listeners-{}-{:?}.conf",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &path,
+        "config-version 1\nbind 127.0.0.1:6379\ntls-bind 127.0.0.1:6379\ntls-cert-file fixture.crt\ntls-key-file fixture.key\n",
+    )
+    .unwrap();
+    let preflight = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .arg("--check-config")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let file = path.to_str().unwrap();
+    for option in ["--bind", "--tls-bind"] {
+        let valid = preflight(&["--config", file, option, "127.0.0.1:6380"]);
+        assert!(valid.status.success(), "{valid:?}");
+        assert!(valid.stderr.is_empty());
+    }
+    let later_file = preflight(&["--bind", "127.0.0.1:6380", "--config", file]);
+    let later_cli = preflight(&[
+        "--config",
+        file,
+        "--tls-bind",
+        "127.0.0.1:6380",
+        "--bind",
+        "127.0.0.1:6380",
+    ]);
+    for rejected in [later_file, later_cli] {
+        assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+        assert!(rejected.stdout.is_empty());
+        let error = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            !error.contains("127.0.0.1") && !error.contains(file),
+            "{error}"
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn config_preflight_accepts_the_size_limit_and_rejects_one_more_byte() {
     const LIMIT: usize = 1024 * 1024;
     let nonce = std::time::SystemTime::now()
