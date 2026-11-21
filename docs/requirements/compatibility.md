@@ -66,6 +66,13 @@ negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
 `CLIENT` metadata across worker handoffs. Supported session commands are `CLIENT
 ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
 `RESET`.
+
+- **R467 (unwanted behavior):** If a client selects a malformed or nonzero DB
+  index, targets a nonzero DB with `COPY`, or attempts `MOVE` or `SWAPDB`, the
+  server shall reject the command without changing the shared DB 0 keyspace.
+  When a client explicitly selects DB 0, its `COPY ... DB 0` and `FLUSHDB` shall
+  affect the same keyspace as on a connection that never selected a DB.
+
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
 RESP3 types are not implemented. See [client sessions](../client-sessions.md) for

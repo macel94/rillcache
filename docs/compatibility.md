@@ -39,9 +39,13 @@ show what has actually been checked, including exclusions and failures.
 
 ## Important boundaries
 
-- **One logical database and standalone operation.** `SELECT 0` is supported;
-  replication, failover and Redis Cluster routing are not. Sharded-channel
-  pub/sub is a messaging namespace, not a distributed cluster.
+- **One logical database and standalone operation.** Connections start in DB 0;
+  `SELECT 0` and `COPY ... DB 0` use that same shared keyspace. Nonzero `SELECT`
+  and `COPY ... DB n` are rejected without changing data; `MOVE` and `SWAPDB`
+  are unsupported. `FLUSHDB` clears the only keyspace. Clients that require a
+  nonzero logical database or DB-based isolation are incompatible. Replication,
+  failover and Redis Cluster routing are not supported. Sharded-channel pub/sub
+  is a messaging namespace, not a distributed cluster.
   See [replication status](replication.md) and [unsupported capabilities](unsupported.md).
 - **No scripts or functions.** Applications depending on Lua, server-side
   functions or loadable modules need functionality not currently available.

@@ -108,7 +108,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **C4. Multiple logical databases are missing.** [P0]
   Only database 0 exists. `SELECT` accepts 0, `MOVE`/`SWAPDB` return a multi-database
-  error, and `COPY ... DB n` rejects nonzero databases.
+  error, and `COPY ... DB n` rejects nonzero databases. A two-client TCP test
+  verifies that rejection leaves binary source and destination data and the
+  key count unchanged, and that DB-0 COPY and FLUSHDB affect both clients'
+  shared keyspace. This is native wire evidence, not a language-client matrix.
   **Closes when:** the profile either supports a validated number of databases
   with per-database keyspaces, `SELECT`/`MOVE`/`SWAPDB`/`FLUSHDB` semantics and
   per-database observability, or explicitly excludes clients that require them.
