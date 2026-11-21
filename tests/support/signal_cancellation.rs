@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rillcache::protocol::encode_request;
@@ -10,12 +11,15 @@ pub(super) struct TestDirectory(pub PathBuf);
 
 impl TestDirectory {
     pub(super) fn new() -> Self {
+        // Parallel tests can observe the same wall-clock tick.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "rillcache-signal-cancel-{}-{nonce}",
+            "rillcache-signal-cancel-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();
