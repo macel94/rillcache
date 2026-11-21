@@ -384,6 +384,11 @@ fn validate_persistence(body: &[u8]) -> io::Result<()> {
             None | Some("ok" | "err"),
         ] => "journal is loading",
         [Some("0"), Some("0"), None, None] => "AOF is disabled",
+        // Rillcache's disabled INFO section ends with a lone CR. Recognize
+        // that shape only as an unhealthy state, never as healthy framing.
+        [Some("0"), Some("0\r"), None, None] if text.ends_with("\r\naof_enabled:0\r") => {
+            "AOF is disabled"
+        }
         [Some("0"), Some("1"), Some("err"), Some("ok" | "err")] => "AOF last write failed",
         [Some("0"), Some("1"), Some("ok"), Some("err")] => "AOF last rewrite failed",
         _ => return Err(invalid_persistence()),
@@ -594,6 +599,10 @@ mod tests {
         let duplicate = format!("{disabled}\r\naof_enabled:1\r\n");
         for (body, reason) in [
             (disabled, "AOF is disabled"),
+            (
+                "# Persistence\r\nloading:0\r\naof_enabled:0\r",
+                "AOF is disabled",
+            ),
             (&loading, "journal is loading"),
             (&write_failed, "AOF last write failed"),
             (&rewrite_failed, "AOF last rewrite failed"),
