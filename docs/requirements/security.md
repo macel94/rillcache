@@ -328,6 +328,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   failure, option bounds and one-generation rotation. Documentation shall retain
   the absence of sender authentication, HMAC verification, TLS, delivery
   guarantees, multi-host federation, backpressure and chain/key management.
+- **R479 (unwanted behavior):** If collector output append, flush or rotation
+  fails, emit counts for previously accepted and rejected datagrams and
+  `output_failures 1`, then exit nonzero. Do not increment the accepted count
+  for the failed write or echo datagram contents.
 
 ## Authenticated UDP collector lines (S111)
 

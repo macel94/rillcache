@@ -593,7 +593,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   The UDP collector has no sender authentication, transport encryption,
   federation, retry/backpressure, aggregation or delivery guarantee. Per-line
   HMAC and manual keyring rotation exist, but full-chain signing/key-ID and hot
-  rotation do not.
+  rotation do not. Collector output failures emit a redacted count summary and
+  exit nonzero. This does not retry or guarantee delivery.
   **Closes when:** authenticated and encrypted transport, sender identity,
   key-ID/hot rotation, durable delivery/backpressure and aggregation are
   implemented and tested; or the audit path is explicitly best-effort with a
