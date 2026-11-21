@@ -636,6 +636,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tests cover loose/strict modes, short/long passwords and CLI parsing.
   `--check-config --secure-secret-files` also checks Unix secret-file permissions
   before startup, with redacted diagnostics suitable for preflight logs.
+  A startup file can opt in with `secure-secret-files yes`; the effective
+  setting follows file/CLI precedence and does not change the default.
   Secret-manager integration, enforced entropy/length for `--requirepass`, and
   automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and
