@@ -82,6 +82,12 @@ pub fn parse_audit_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
     audit::parse_keyring(text)
 }
 
+/// Read a single binary audit key with a 16..=1024-byte payload after stripping
+/// one trailing LF or CRLF. Reads at most 1027 bytes to detect an oversized file.
+pub fn read_audit_hmac_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    audit::read_hmac_key(std::fs::File::open(path)?)
+}
+
 /// Read a hex audit keyring with a 64 KiB text bound, including comments.
 pub fn read_audit_keyring(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> {
     audit::read_keyring(path)

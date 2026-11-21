@@ -16,6 +16,7 @@ pub const MIN_MAX_BYTES: u64 = 1024;
 pub const MAX_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 const MAX_KEYRING_BYTES: usize = 64 * 1024;
+const MAX_HMAC_KEY_BYTES: usize = 1024;
 const MAX_TOKEN_BYTES: usize = 32;
 const MAX_USERNAME_BYTES: usize = 128;
 const MAX_OBJECT_BYTES: usize = 256;
@@ -132,6 +133,27 @@ pub(super) fn format_line(
 /// Parse a hex-encoded audit keyring. Blank lines and `#` comments are ignored;
 /// at most eight unique 16..=1024-byte keys are accepted. The first key is the
 /// signing key for this process, while a collector may verify against all.
+pub(super) fn read_hmac_key(reader: impl Read) -> io::Result<Vec<u8>> {
+    // Allow exactly one CRLF and read one additional byte to detect overflow.
+    let mut key = Vec::new();
+    reader
+        .take((MAX_HMAC_KEY_BYTES + 3) as u64)
+        .read_to_end(&mut key)?;
+    if key.ends_with(b"\n") {
+        key.pop();
+        if key.ends_with(b"\r") {
+            key.pop();
+        }
+    }
+    if !(16..=MAX_HMAC_KEY_BYTES).contains(&key.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit HMAC key must be 16..=1024 bytes",
+        ));
+    }
+    Ok(key)
+}
+
 pub(super) fn read_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
     let mut text = String::new();
     File::open(path)?
@@ -339,6 +361,24 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(parse_keyring(&too_many).is_err());
+    }
+
+    #[test]
+    fn raw_audit_key_read_stops_after_the_size_sentinel() {
+        let mut maximum = vec![0xff; MAX_HMAC_KEY_BYTES];
+        let mut framed = maximum.clone();
+        framed.extend_from_slice(b"\r\n");
+        assert_eq!(read_hmac_key(framed.as_slice()).unwrap(), maximum);
+        framed.push(b'x');
+        assert_eq!(
+            read_hmac_key(framed.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let cap = MAX_HMAC_KEY_BYTES + 3;
+        maximum.resize(cap * 2, b'x');
+        let mut cursor = io::Cursor::new(maximum);
+        assert!(read_hmac_key(&mut cursor).is_err());
+        assert_eq!(cursor.position(), cap as u64);
     }
 
     #[test]

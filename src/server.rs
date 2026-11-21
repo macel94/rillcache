@@ -676,28 +676,21 @@ impl Config {
         let Some(path) = &self.audit_hmac_key_file else {
             return Ok(None);
         };
-        let mut key = std::fs::read(path).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "cannot read audit HMAC key file {}: {error:?}",
-                    path.display()
-                ),
-            )
-        })?;
-        if key.ends_with(b"\n") {
-            key.pop();
-            if key.ends_with(b"\r") {
-                key.pop();
-            }
-        }
-        if !(16..=1024).contains(&key.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "audit HMAC key must be 16..=1024 bytes",
-            ));
-        }
-        Ok(Some(key))
+        crate::engine::read_audit_hmac_key(path)
+            .map(Some)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidInput {
+                    error
+                } else {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "cannot read audit HMAC key file {}: {error:?}",
+                            path.display()
+                        ),
+                    )
+                }
+            })
     }
 }
 

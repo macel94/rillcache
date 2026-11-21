@@ -108,22 +108,28 @@ fn collector_with_hmac_key_rejects_tampered_and_accepts_signed_line() {
 }
 
 #[test]
-fn collector_rejects_short_hmac_key() {
-    let output = temp_name("short-key-output");
-    let key = temp_name("short-hmac-key");
-    std::fs::write(&key, b"short").unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
-        .args([
-            "--bind",
-            "127.0.0.1:0",
-            "--output",
-            output.to_str().unwrap(),
-            "--hmac-key-file",
-            key.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
-    let _ = std::fs::remove_file(output);
-    let _ = std::fs::remove_file(key);
+fn collector_rejects_short_and_oversized_hmac_keys_before_opening_output() {
+    let output = temp_name("invalid-key-output");
+    let key = temp_name("invalid-hmac-key");
+    for invalid in [vec![b'x'; 15], vec![b'x'; 1027]] {
+        std::fs::write(&key, invalid).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+            .args([
+                "--bind",
+                "127.0.0.1:0",
+                "--output",
+                output.to_str().unwrap(),
+                "--hmac-key-file",
+                key.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("audit HMAC key must be 16..=1024 bytes")
+        );
+        assert!(!output.exists());
+    }
+    std::fs::remove_file(key).unwrap();
 }
