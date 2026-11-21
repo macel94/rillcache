@@ -594,6 +594,7 @@ pub(super) struct PersistenceStatus {
     pub rewrite_phase: &'static str,
     pub rewrite_keys_done: u64,
     pub rewrite_keys_total: u64,
+    pub rewrite_bytes_written: Option<u64>,
 }
 
 impl Journal {
@@ -1428,6 +1429,7 @@ impl Journal {
             rewrite_phase: "none",
             rewrite_keys_done: 0,
             rewrite_keys_total: 0,
+            rewrite_bytes_written: Some(self.rewrite.as_ref().map_or(0, |state| state.bytes)),
         }
     }
 
@@ -1885,6 +1887,7 @@ impl ShardExecutor {
                 rewrite_phase: "none",
                 rewrite_keys_done: 0,
                 rewrite_keys_total: 0,
+                rewrite_bytes_written: None,
             };
         };
         let in_progress = self.rewrite_in_progress();
@@ -1898,6 +1901,7 @@ impl ShardExecutor {
                 rewrite_phase,
                 rewrite_keys_done,
                 rewrite_keys_total,
+                rewrite_bytes_written: None,
             },
             |journal| {
                 let mut status = journal.status();

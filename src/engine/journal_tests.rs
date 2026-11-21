@@ -47,6 +47,54 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
 }
 
 #[test]
+fn rewrite_byte_progress_matches_temporary_file_and_resets() {
+    for authenticate in [false, true] {
+        let path = aof_path("rewrite-byte-progress");
+        let auth = authenticate.then(|| JournalAuth::new(AUTH_KEY.to_vec(), false).unwrap());
+        let mut journal =
+            super::Journal::open(&path, FsyncPolicy::Always, Limits::default(), auth).unwrap();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+
+        journal.begin_rewrite().unwrap();
+        let header_bytes = journal.status().rewrite_bytes_written.unwrap();
+        assert!(header_bytes > 0);
+        journal.abort_rewrite();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+
+        journal.begin_rewrite().unwrap();
+        let header_bytes = journal.status().rewrite_bytes_written.unwrap();
+        let record = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+        journal.write_rewrite(record).unwrap();
+        let written = journal.status().rewrite_bytes_written.unwrap();
+        let temp_len = journal
+            .rewrite
+            .as_ref()
+            .unwrap()
+            .file
+            .metadata()
+            .unwrap()
+            .len();
+        assert_eq!(written, temp_len);
+        if authenticate {
+            assert!(written > header_bytes + record.len() as u64);
+        } else {
+            assert_eq!(written, header_bytes + record.len() as u64);
+        }
+        journal.sync_rewrite().unwrap();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(written));
+        let published = journal.commit_rewrite().unwrap();
+        assert!(
+            published > written,
+            "commit adds the final integrity trailer"
+        );
+        assert_eq!(journal.status().current_size, Some(published));
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+        drop(journal);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
     use crate::engine::Clock;
     use std::sync::Arc;
