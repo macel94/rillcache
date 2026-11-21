@@ -500,6 +500,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   clients must independently validate status and may ignore missing/invalid
   staples, and preserve the limits around server-certificate CRLs, external
   terminators and security review.
+- **R475 (unwanted behavior):** If an SNI key fails to load, a reload shall not
+  partially publish either that identity or the default identity. No-SNI and
+  named handshakes shall still receive their previous stapled bytes; fixing the
+  key and publishing a fresh token shall activate both staged responses.
 
 ## Keyspace-wide ACL isolation (S120)
 

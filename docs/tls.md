@@ -167,8 +167,9 @@ test keys.
   match fails, the last valid TLS-and-mapping generation remains active and the
   error is written to stderr. That token is not retried; after fixing files,
   publish a different token. New handshakes continue using the last valid
-  identities and stapled bytes while a bad generation is present. Verify the
-  served identities after rotating. Reload is process-local, not a distributed
+  identities and stapled bytes while a bad generation is present. A bad key
+  for a single SNI name also prevents publication of the staged default identity.
+  Verify the served identities after rotating. Reload is process-local, not a distributed
   rollout or readiness guarantee. With `--secure-secret-files`, the trigger
   and configured mapping file must also be owner-only (for example, mode 0600).
   Inline certificate mappings remain startup-only.

@@ -792,7 +792,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **O5. Configuration reload is missing.** [P0]
   Listener/worker changes are startup-only; there is no general reload, atomic
-  configuration generation, rollback or validation report. See also C13.
+  configuration generation, rollback or validation report. TLS is a scoped
+  exception: a native test checks that one invalid SNI key rejects the
+  whole generation and that a repaired generation updates both default and
+  SNI stapled bytes. See also C13 and S5.
   **Closes when:** mutable settings can be atomically reloaded, immutable changes
   are rejected cleanly, and failed reloads retain the last valid configuration.
 
