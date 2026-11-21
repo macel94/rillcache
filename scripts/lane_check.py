@@ -94,6 +94,9 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "security-clients": (
         "src/engine/auth.rs",
+        "src/engine/audit.rs",
+        "src/bin/rillcache-audit-collector.rs",
+        "tests/audit*.rs",
         "src/engine/acl_log.rs",
         "src/engine/clients.rs",
         "src/session/client.rs",

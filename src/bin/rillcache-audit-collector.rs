@@ -169,23 +169,6 @@ fn open_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-fn load_hmac_key(path: &Path) -> io::Result<Vec<u8>> {
-    let mut key = fs::read(path)?;
-    if key.ends_with(b"\n") {
-        key.pop();
-        if key.ends_with(b"\r") {
-            key.pop();
-        }
-    }
-    if !(16..=1024).contains(&key.len()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "audit HMAC key must be 16..=1024 bytes",
-        ));
-    }
-    Ok(key)
-}
-
 fn load_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
     rillcache::engine::read_audit_keyring(path)
 }
@@ -203,7 +186,7 @@ fn run(options: Options) -> io::Result<()> {
         options
             .hmac_key_file
             .as_deref()
-            .map(load_hmac_key)
+            .map(rillcache::engine::read_audit_hmac_key)
             .transpose()?
             .map(|key| vec![key])
     };

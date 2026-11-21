@@ -663,6 +663,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   before startup, with redacted diagnostics suitable for preflight logs.
   A startup file can opt in with `secure-secret-files yes`; the effective
   setting follows file/CLI precedence and does not change the default.
+  Raw audit HMAC key files now have a byte-read bound shared by the server
+  and collector; this does not set a file I/O deadline or change rotation.
   Secret-manager integration, enforced entropy/length for `--requirepass`, and
   automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and

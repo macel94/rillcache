@@ -183,7 +183,9 @@ guarantee. Runtime send failures do not change the reply but increment
 remains the durable evidence path.
 
 `--audit-hmac-key-file PATH` authenticates each denial line with a local
-16..=1024-byte key loaded before accept; one trailing newline is stripped. The
+16..=1024-byte key loaded before accept. The server and collector strip one
+trailing LF or CRLF from a raw key file and read at most 1027 bytes to detect
+oversized input. This bounds bytes read, not the time spent on file I/O. The
 server appends one space and a 64-character lowercase hex HMAC-SHA256 over the
 exact line body, using the dependency-free SHA-256 implementation. The same
 signed line is written to the file and UDP sink. Without a key, the five-field

@@ -291,6 +291,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   trailing newline. A missing, unreadable, empty, too-short or oversized key shall
   fail startup. The key shall never appear in `Debug`, logs, errors, replies or
   the audit line.
+- **R476 (unwanted behavior):** When the server or collector reads a raw audit
+  HMAC key file, read at most 1027 bytes, allowing one LF or CRLF and one
+  overflow sentinel. Reject oversized data rather than accepting a prefix.
+  The byte bound does not impose a filesystem I/O deadline or change keyrings.
 - **R400 (state-driven):** While a key is configured, every denial line written
   to the local file or the UDP sink shall append one space and a 64-character
   lowercase hex HMAC-SHA256 over the exact line body (all preceding fields,
