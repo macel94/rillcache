@@ -206,6 +206,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   encryption, does not cover suffix rollback or whole-file replacement, has no key
   rotation/keyring contract, and that unauthenticated writes after key removal
   are discarded by the next authenticated start.
+- **R455 (unwanted behavior):** If offline restore of an authenticated archive
+  fails because the supplied key does not match, it shall leave the archive
+  unchanged and publish no journal. In a working, empty destination directory,
+  it shall remove its staging files and lock so a retry with the matching key
+  can restore the archive without manual cleanup. Test by restarting the same
+  binary against the restored journal and reading the expected value.
 
 ## Deleted-entry stream PEL durability (S120)
 

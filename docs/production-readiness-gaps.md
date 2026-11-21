@@ -395,6 +395,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   otherwise shorten to a valid prefix, even if the outer CRC and length match.
   The isolated offline rollback test checks exact binary data, absolute expiry,
   key count and logical payload bytes while preserving the newer journal.
+  The same-binary authenticated restore test rejects a wrong key without
+  publishing or leaving staging files, then restores into the same directory
+  with the matching key and verifies the archive is unchanged.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly

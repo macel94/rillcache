@@ -274,7 +274,12 @@ never overwrites an existing journal. Both `verify` and `restore` reject an
 archive if replay truncates the staged journal, even when the archive's outer
 length and CRC match. This is stricter than server startup recovery, which can
 retain a valid prefix after a torn write. Start a separate Rillcache instance on the
-restored directory to perform the operational restore drill.
+restored directory to perform the operational restore drill. For authenticated
+archives, a wrong-key restore is an error, not a partial restore. The hosted
+integration test checks that normal failure in a fresh local destination leaves
+no staged journal or lock, then retries with the matching key in the same
+directory and reads back the restored value. The archive remains unchanged.
+This does not imply cleanup after interruption or filesystem failure.
 
 Verification stages a temporary copy of the journal payload. Use `verify --temp-dir DIR`
 with an existing, trusted writable local directory to select a volume with space
