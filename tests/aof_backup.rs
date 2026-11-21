@@ -684,6 +684,75 @@ fn backup_refuses_to_truncate_a_torn_source_journal() {
 }
 
 #[test]
+fn restored_legacy_archive_accepts_crc_appends_without_mutating_the_checkpoint() {
+    let root = temp_dir("legacy-archive-crc-upgrade");
+    let source = root.join("source");
+    let destination = root.join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let source_journal = source.join("appendonly.aof");
+    let restored_journal = destination.join("appendonly.aof");
+    let archive = root.join("legacy.rcb");
+    let mut legacy = Vec::new();
+    encode_request(&[b"SET", b"legacy\0", b"old\xff"], &mut legacy);
+    std::fs::write(&source_journal, &legacy).unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original_archive = std::fs::read(&archive).unwrap();
+    assert_eq!(original_archive[MAGIC.len() + 8 + 4..], legacy);
+    let verified = command(&["verify", "--input", archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+    ]);
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(std::fs::read(&restored_journal).unwrap(), legacy);
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(
+            call(&mut client, &[b"GET", b"legacy\0"]),
+            b"$4\r\nold\xff\r\n"
+        );
+        assert_eq!(std::fs::read(&restored_journal).unwrap(), legacy);
+        assert_eq!(
+            call(&mut client, &[b"SET", b"current", b"new\0"]),
+            b"+OK\r\n"
+        );
+        server.shutdown().unwrap();
+    }
+    let upgraded = std::fs::read(&restored_journal).unwrap();
+    let suffix = upgraded
+        .strip_prefix(legacy.as_slice())
+        .expect("legacy prefix preserved");
+    for marker in [
+        b"__RILLCACHE_AOF_CRC32_V1__:".as_slice(),
+        b"__RILLCACHE_RECORD_CRC32_V1__:",
+    ] {
+        assert!(suffix.windows(marker.len()).any(|window| window == marker));
+    }
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(call(&mut client, &[b"DBSIZE"]), b":2\r\n");
+        assert_eq!(
+            call(&mut client, &[b"GET", b"legacy\0"]),
+            b"$4\r\nold\xff\r\n"
+        );
+        assert_eq!(call(&mut client, &[b"GET", b"current"]), b"$4\r\nnew\0\r\n");
+        server.shutdown().unwrap();
+    }
+    assert_eq!(std::fs::read(&restored_journal).unwrap(), upgraded);
+    assert_eq!(std::fs::read(&source_journal).unwrap(), legacy);
+    assert_eq!(std::fs::read(&archive).unwrap(), original_archive);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
     let source = temp_dir("torn-journal-source");
     let scratch = temp_dir("torn-journal-scratch");

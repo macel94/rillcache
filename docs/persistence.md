@@ -275,7 +275,10 @@ journal. Retry with the source's configured budget if appropriate; this limit
 is not an RSS bound. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. Use a dedicated offline directory per
+never overwrites an existing journal. A complete legacy RESP archive restores
+byte-for-byte; subsequent appends add CRC-framed records without changing its
+legacy prefix. That does not retroactively checksum the prefix or establish
+compatibility with older binaries. Use a dedicated offline directory per
 restore. If two restore commands target the same empty directory, only one can
 publish its journal; inspect the command results before starting a server and
 use a new empty directory to inspect the other archive. If source validation
