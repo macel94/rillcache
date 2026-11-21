@@ -11,8 +11,6 @@ use std::io::{self, Read};
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const CONFIG_VERSION: &str = "1";
 
-const BOOLEAN_DIRECTIVES: &[&str] = &["aof-hmac-migrate"];
-
 const ALIASES: &[(&str, &str)] = &[
     ("maxmemory", "max-data-bytes"),
     ("maxclients", "max-clients"),
@@ -36,6 +34,7 @@ const SUPPORTED: &[&str] = &[
     "frame-assembly-timeout-ms",
     "requirepass",
     "requirepass-file",
+    "secure-secret-files",
     "aclfile",
     "audit-log",
     "audit-log-max-bytes",
@@ -143,22 +142,23 @@ fn parse_text(text: &str) -> Result<Vec<String>, String> {
                 "line {line_number}: unsupported configuration directive '{directive}'"
             ));
         }
-        if BOOLEAN_DIRECTIVES.contains(&directive) {
-            let value = parse_value(rest, line_number)?;
-            match value.as_str() {
-                "yes" => arguments.push(format!("--{directive}")),
-                "no" => {}
-                _ => {
-                    return Err(format!(
-                        "line {line_number}: '{directive}' requires yes or no"
-                    ));
-                }
-            }
-            continue;
-        }
         let value = parse_value(rest, line_number)?;
-        arguments.push(format!("--{directive}"));
-        arguments.push(value);
+        match (directive, value.as_str()) {
+            ("secure-secret-files", "yes" | "no") => {
+                arguments.push(format!("--{directive}={value}"));
+            }
+            ("aof-hmac-migrate", "yes") => arguments.push(format!("--{directive}")),
+            ("aof-hmac-migrate", "no") => {}
+            ("secure-secret-files" | "aof-hmac-migrate", _) => {
+                return Err(format!(
+                    "line {line_number}: '{directive}' requires yes or no"
+                ));
+            }
+            _ => {
+                arguments.push(format!("--{directive}"));
+                arguments.push(value);
+            }
+        }
     }
     Ok(arguments)
 }
@@ -427,6 +427,11 @@ aof-hmac-migrate no
             vec!["--aof-hmac-migrate"]
         );
         assert!(parse_text("aof-hmac-migrate true\n").is_err());
+        assert_eq!(
+            parse_text("secure-secret-files yes\nsecure-secret-files=no\n").unwrap(),
+            ["--secure-secret-files=yes", "--secure-secret-files=no"]
+        );
+        assert!(parse_text("secure-secret-files true\n").is_err());
     }
 
     #[test]

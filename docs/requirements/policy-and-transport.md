@@ -266,6 +266,11 @@ platforms retain timeout-based fallback admission.
   shall stop after the first excess byte and reject the file before parsing
   any directives. Test the read bound and both sides of the size boundary
   without changing config preflight redaction.
+- **R460 (event-driven):** When startup options include the file directive
+  `secure-secret-files yes|no` or its explicit CLI forms, the last choice shall
+  select the existing secret-file policy. The bare CLI flag shall still enable
+  it, and an invalid file value shall fail before startup. Test Unix permission
+  enforcement and redacted preflight output with both precedence directions.
 
 ## Standalone signal shutdown (S124)
 

@@ -768,26 +768,45 @@ fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_valu
     std::fs::create_dir(&directory).unwrap();
     let secret = directory.join("private-path-marker");
     std::fs::write(&secret, b"private-value-marker\n").unwrap();
-    let check = || {
+    let config = directory.join("startup.conf");
+    std::fs::write(&config, "config-version 1\nsecure-secret-files yes\n").unwrap();
+    let configured = ["--config", config.to_str().unwrap()];
+    let check = |mode: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_rillcache"))
-            .args([
-                "--check-config",
-                "--secure-secret-files",
-                "--requirepass-file",
-            ])
+            .arg("--check-config")
+            .args(mode)
+            .arg("--requirepass-file")
             .arg(&secret)
             .output()
             .unwrap()
     };
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let rejected = check();
-    assert_eq!(rejected.status.code(), Some(2));
-    assert!(rejected.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&rejected.stderr);
-    assert!(stderr.contains("PermissionDenied"));
-    assert!(!stderr.contains("private-"));
+    for mode in [
+        &["--secure-secret-files"][..],
+        &configured,
+        &["--secure-secret-files=no", configured[0], configured[1]],
+    ] {
+        let rejected = check(mode);
+        assert_eq!(rejected.status.code(), Some(2));
+        assert!(rejected.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&rejected.stderr);
+        assert!(stderr.contains("PermissionDenied"));
+        assert!(!stderr.contains("private-"));
+    }
+    assert!(
+        check(&[configured[0], configured[1], "--secure-secret-files=no"])
+            .status
+            .success()
+    );
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(check().status.success());
+    assert!(check(&configured).status.success());
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&config, "config-version 1\nsecure-secret-files no\n").unwrap();
+    assert!(
+        check(&["--secure-secret-files", configured[0], configured[1]])
+            .status
+            .success()
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 

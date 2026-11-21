@@ -32,7 +32,12 @@ allowed.
   default.
 - Values may be unquoted (one token), double-quoted with `\"`, `\\`, `\n`, `\r`
   and `\t` escapes, or single-quoted literally.
-- `aof-hmac-migrate` is the one boolean directive and accepts `yes` or `no`.
+- `secure-secret-files yes` opts into owner-only secret-file checks on Unix;
+  `secure-secret-files no` disables that optional policy (the default). Both
+  values follow file/CLI precedence. On the CLI use `--secure-secret-files=yes`
+  or `--secure-secret-files=no`; the existing bare flag means `yes`.
+- `aof-hmac-migrate` accepts `yes` (request migration) or `no` (no request;
+  does not cancel an earlier request).
 - The file must be valid UTF-8 and at most 1 MiB. The reader stops after at
   most 1 MiB plus one byte and rejects oversized input before parsing any
   directives. This is a per-file byte limit, not an I/O timeout. An empty file
