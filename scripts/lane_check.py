@@ -23,6 +23,7 @@ from dataclasses import dataclass
 SHARED_SURFACES: tuple[str, ...] = (
     "src/engine.rs",
     "src/engine/shard.rs",
+    "src/engine/bridge.rs",
     "src/session.rs",
     "src/engine/discovery.rs",
     "src/engine/discovery/mod.rs",

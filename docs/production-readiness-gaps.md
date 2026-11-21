@@ -393,6 +393,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   with `verify --temp-dir DIR`; it still requires scratch space for the payload.
   Verification and restore reject a torn journal that startup replay would
   otherwise shorten to a valid prefix, even if the outer CRC and length match.
+  Creation also rejects a torn source before publishing and preserves its bytes;
+  legacy, checksum and HMAC fixtures distinguish this from startup tail recovery.
   The isolated offline rollback test checks exact binary data, absolute expiry,
   key count and logical payload bytes while preserving the newer journal.
   The same-binary authenticated restore test rejects a wrong key without

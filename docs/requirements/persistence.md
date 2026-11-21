@@ -176,6 +176,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   across restart. Documentation shall state the required server quiescence,
   configurable replay limits, AOF-only scope, local-filesystem assumptions and
   online backup/PITR/retention/RPO/RTO gaps.
+- **R456 (unwanted behavior):** If replay would truncate a torn source journal,
+  then `rillcache-backup create` shall fail before publishing an archive, keep
+  the source bytes unchanged, and release the ownership lock. Cover legacy,
+  CRC and HMAC tails and confirm that ordinary startup still recovers the
+  verified prefix.
 
 ## Authenticated journal records (S119)
 
