@@ -140,6 +140,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   behavior and every worker mode. Documentation shall retain that this is a
   local-journal acknowledgement only, not replication, failover, RDB or a
   strong-consistency guarantee.
+- **R478 (state-driven):** After `WAITAOF 1 0 0` reports `[1, 0]`, a
+  same-host process kill and restart shall recover the prior values under
+  `appendfsync no` and `everysec`, without a graceful shutdown flush. That
+  regression does not assert a power-loss or real storage-fault guarantee.
 
 ## Explicit RDB, replication and database boundaries (S92)
 
