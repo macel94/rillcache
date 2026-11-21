@@ -594,6 +594,96 @@ fn an_inner_journal_corruption_is_rejected_even_with_a_valid_outer_archive_crc()
 }
 
 #[test]
+fn backup_refuses_to_truncate_a_torn_source_journal() {
+    for integrity in ["legacy", "crc", "hmac"] {
+        let source = temp_dir(integrity);
+        let output = temp_dir(&format!("{integrity}-output"));
+        let archive = output.join("snapshot.rcb");
+        let journal = source.join("appendonly.aof");
+        let key_file =
+            (integrity == "hmac").then(|| dirs_key(&source, "journal.key", b"0123456789abcdef\n"));
+        let start = || {
+            Server::bind(Config {
+                aof_hmac_key_file: key_file.clone(),
+                ..config(&source)
+            })
+            .unwrap()
+            .spawn()
+            .unwrap()
+        };
+        let prefix = if integrity == "legacy" {
+            let mut prefix = Vec::new();
+            encode_request(&[b"SET", b"first", b"one"], &mut prefix);
+            let mut complete = prefix.clone();
+            encode_request(&[b"SET", b"second", b"two"], &mut complete);
+            std::fs::write(&journal, complete).unwrap();
+            prefix
+        } else {
+            let server = start();
+            let mut stream = connect(&server);
+            assert_eq!(call(&mut stream, &[b"SET", b"first", b"one"]), b"+OK\r\n");
+            let prefix = std::fs::read(&journal).unwrap();
+            assert_eq!(call(&mut stream, &[b"SET", b"second", b"two"]), b"+OK\r\n");
+            drop(stream);
+            server.shutdown().unwrap();
+            prefix
+        };
+        let mut torn = std::fs::read(&journal).unwrap();
+        assert!(torn.starts_with(&prefix));
+        assert!(torn.len() > prefix.len() + 1);
+        torn.pop();
+        std::fs::write(&journal, &torn).unwrap();
+
+        let mut args = vec![
+            "create",
+            "--dir",
+            source.to_str().unwrap(),
+            "--output",
+            archive.to_str().unwrap(),
+        ];
+        if let Some(key_file) = &key_file {
+            args.extend(["--aof-hmac-key-file", key_file.to_str().unwrap()]);
+        }
+        let result = command(&args);
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !result.status.success(),
+            "{integrity}: published a recovered prefix"
+        );
+        assert!(
+            error.contains("backup will not truncate it"),
+            "{integrity}: {error}"
+        );
+        assert!(result.stdout.is_empty());
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            torn,
+            "{integrity}: source changed"
+        );
+        assert_eq!(output.read_dir().unwrap().count(), 0);
+        assert!(!source.join("appendonly.aof.lock").exists());
+
+        // Startup still recovers the prefix, and the same create can then succeed.
+        let server = start();
+        assert_eq!(std::fs::read(&journal).unwrap(), prefix);
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"GET", b"first"]), b"$3\r\none\r\n");
+        assert_eq!(call(&mut stream, &[b"EXISTS", b"second"]), b":0\r\n");
+        drop(stream);
+        server.shutdown().unwrap();
+        let result = command(&args);
+        assert!(
+            result.status.success(),
+            "{integrity}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(std::fs::read(&journal).unwrap(), prefix);
+        std::fs::remove_dir_all(source).unwrap();
+        std::fs::remove_dir_all(output).unwrap();
+    }
+}
+
+#[test]
 fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
     let source = temp_dir("torn-journal-source");
     let scratch = temp_dir("torn-journal-scratch");

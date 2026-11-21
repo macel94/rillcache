@@ -322,13 +322,11 @@ fn create_backup(options: &Options) -> io::Result<()> {
             "backup output cannot be the live journal or its ownership lock path",
         ));
     }
-    // Acquiring the normal journal lock rejects a live server and validates the
-    // entire AOF before any archive is published.
-    let store = Store::with_auth_and_journal(
+    // Validate under the normal ownership lock, without startup's tail repair.
+    // Keep the source locked through the forced sync, copy and publication.
+    let store = Store::open_backup_source(
         options.max_data_bytes,
-        Auth::default(),
         &journal,
-        FsyncPolicy::Always,
         options.limits,
         journal_auth(options)?,
     )?;

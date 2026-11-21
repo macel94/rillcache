@@ -270,7 +270,10 @@ rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restor
 `--max-arguments` values to create/verify/restore. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. Both `verify` and `restore` reject an
+never overwrites an existing journal. If validating the source would require
+truncating an incomplete tail, `create` fails without modifying the source or
+publishing an archive. Preserve the original and investigate before choosing
+whether to recover a copy with server startup. Both `verify` and `restore` reject an
 archive if replay truncates the staged journal, even when the archive's outer
 length and CRC match. This is stricter than server startup recovery, which can
 retain a valid prefix after a torn write. Start a separate Rillcache instance on the

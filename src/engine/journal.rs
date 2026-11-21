@@ -565,6 +565,7 @@ pub(super) struct Journal {
     checksum_nonce: Option<String>,
     auth_key: Option<Vec<u8>>,
     auth_migrate: bool,
+    repair_tail: bool,
     auth_tag: Option<[u8; 32]>,
     size: u64,
     rewrite_base: u64,
@@ -591,27 +592,40 @@ impl Journal {
         limits: Limits,
         auth: Option<JournalAuth>,
     ) -> io::Result<Self> {
-        // Claim ownership before opening or replaying: a second process must not
-        // read a journal it is about to corrupt.
+        Self::open_with_repair(path, policy, limits, auth, true)
+    }
+
+    pub(super) fn open_backup_source(
+        path: &Path,
+        limits: Limits,
+        auth: Option<JournalAuth>,
+    ) -> io::Result<Self> {
+        Self::open_with_repair(path, FsyncPolicy::Always, limits, auth, false)
+    }
+
+    fn open_with_repair(
+        path: &Path,
+        policy: FsyncPolicy,
+        limits: Limits,
+        auth: Option<JournalAuth>,
+        repair_tail: bool,
+    ) -> io::Result<Self> {
+        // Use the same ownership lock as startup and hold it through the copy.
         let ownership = Ownership::acquire(path)?;
-        #[cfg(unix)]
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600)
-                .open(path)?
-        };
-        #[cfg(not(unix))]
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        // Keep the write-capable handle for the forced sync before copying. Do
+        // not create a missing source or repair its contents in backup mode.
+        options
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+            .create(repair_tail)
+            .truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
         let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         let (auth_key, auth_migrate) = match auth {
             Some(auth) => (Some(auth.key), auth.migrate),
@@ -630,11 +644,22 @@ impl Journal {
             _ownership: ownership,
             checksum_nonce: None,
             auth_key,
-            auth_migrate,
+            auth_migrate: auth_migrate && repair_tail,
+            repair_tail,
             auth_tag: None,
             size,
             rewrite_base: size,
         })
+    }
+
+    fn recover_torn_tail(&self, valid_end: u64) -> io::Result<()> {
+        if !self.repair_tail {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source journal has a torn tail; backup will not truncate it",
+            ));
+        }
+        self.file.set_len(valid_end)
     }
 
     /// Validate checksummed transaction groups before executing any record. Legacy
@@ -764,7 +789,7 @@ impl Journal {
             }
         }
         if nonce.is_some() && (record_len > 0 || !buffer.is_empty()) {
-            self.file.set_len(valid_end)?;
+            self.recover_torn_tail(valid_end)?;
             self.size = valid_end;
         }
         self.checksum_nonce = nonce;
@@ -942,7 +967,7 @@ impl Journal {
             // A crash can tear the final transaction/marker after its checksum
             // group. Discard that unacknowledged suffix; authenticated history up
             // to the previous marker remains intact.
-            self.file.set_len(last_marker_end)?;
+            self.recover_torn_tail(last_marker_end)?;
             self.size = last_marker_end;
         }
         self.auth_tag = previous_tag;
@@ -1079,7 +1104,7 @@ impl Journal {
             // A crash can leave one incomplete trailing command; Redis's default
             // is to load everything before it. Truncate so future appends do not
             // follow garbage.
-            self.file.set_len(good_total)?;
+            self.recover_torn_tail(good_total)?;
         }
         self.file.seek(SeekFrom::End(0))?;
         self.size = self
