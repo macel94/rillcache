@@ -418,10 +418,6 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         let address = value
                             .parse::<SocketAddr>()
                             .map_err(|_| "--tls-bind requires a numeric IP:port address")?;
-                        // Equal port-zero requests are two independent kernel binds.
-                        if address == config.bind_addr && address.port() != 0 {
-                            return Err("--tls-bind must differ from --bind".into());
-                        }
                         config.tls_bind_addr = Some(address);
                     }
                     "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
@@ -468,6 +464,14 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             }
             _ => return Err(format!("unknown option: {option}")),
         }
+    }
+    // Validate the final listener pair, after applying positional overrides.
+    // Equal port-zero requests are two independent kernel binds.
+    if config
+        .tls_bind_addr
+        .is_some_and(|address| address == config.bind_addr && address.port() != 0)
+    {
+        return Err("--tls-bind must differ from --bind".into());
     }
     config.tls_client_cert_users = tls_client_cert_users;
     for (server_name, (cert_file, key_file, ocsp_file)) in sni_files {
