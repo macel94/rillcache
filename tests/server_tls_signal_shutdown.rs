@@ -8,7 +8,7 @@ mod signal_cancellation;
 mod unix {
     use super::signal_cancellation;
     use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::net::{SocketAddr, TcpStream};
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::sync::{Arc, mpsc};
@@ -47,20 +47,14 @@ mod unix {
     }
 
     fn start_with_fsync(directory: &Path, appendfsync: &str) -> (ServerProcess, SocketAddr) {
-        let plain_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let tls_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let plain_address = plain_listener.local_addr().unwrap();
-        let tls_address = tls_listener.local_addr().unwrap();
-        drop(plain_listener);
-        drop(tls_listener);
-
+        // Bind in the child to avoid releasing a port before it can use it.
         let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
         command
             .args([
                 "--bind",
-                &plain_address.to_string(),
+                "127.0.0.1:0",
                 "--tls-bind",
-                &tls_address.to_string(),
+                "127.0.0.1:0",
                 "--tls-cert-file",
                 fixture("server.crt").to_str().unwrap(),
                 "--tls-key-file",
@@ -120,7 +114,12 @@ mod unix {
             .recv_timeout(Duration::from_secs(10))
             .expect("TLS listener did not announce readiness")
             .expect("TLS server stderr read failed");
-        assert!(tls_ready.contains("TLS 1.3 listening on "), "{tls_ready}");
+        let tls_address = tls_ready
+            .trim_end()
+            .strip_prefix("rillcache TLS 1.3 listening on ")
+            .unwrap_or_else(|| panic!("unexpected TLS readiness line: {tls_ready:?}"))
+            .parse()
+            .expect("TLS listener socket address");
         (server, tls_address)
     }
 
