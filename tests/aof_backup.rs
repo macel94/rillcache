@@ -643,7 +643,7 @@ fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
 }
 
 #[test]
-fn authenticated_journals_back_up_and_restore_only_with_the_matching_key() {
+fn authenticated_restore_rejects_the_wrong_key_and_can_retry_in_place() {
     let source = temp_dir("auth-source");
     let archive_dir = temp_dir("auth-archive");
     let archive = archive_dir.join("snapshot.rcb");
@@ -702,6 +702,30 @@ fn authenticated_journals_back_up_and_restore_only_with_the_matching_key() {
     );
 
     let destination = temp_dir("auth-destination");
+    let original_archive = std::fs::read(&archive).unwrap();
+    let wrong_restore = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        wrong_key.to_str().unwrap(),
+    ]);
+    assert!(!wrong_restore.status.success());
+    assert!(wrong_restore.stdout.is_empty());
+    let error = String::from_utf8_lossy(&wrong_restore.stderr);
+    assert!(
+        error.contains("AOF authentication anchor does not match"),
+        "{error}"
+    );
+    assert!(
+        destination.read_dir().unwrap().next().is_none(),
+        "wrong-key restore must leave no published journal, staging file or lock"
+    );
+    assert_eq!(std::fs::read(&archive).unwrap(), original_archive);
+
+    // No manual cleanup or a new destination should be needed for the retry.
     let restored = command(&[
         "restore",
         "--input",
@@ -729,6 +753,7 @@ fn authenticated_journals_back_up_and_restore_only_with_the_matching_key() {
         server.shutdown().unwrap();
     }
     let _ = std::fs::remove_dir_all(&source);
+    assert_eq!(std::fs::read(&archive).unwrap(), original_archive);
     let _ = std::fs::remove_dir_all(&archive_dir);
     let _ = std::fs::remove_dir_all(&destination);
     let _ = std::fs::remove_dir_all(&key_dir);
