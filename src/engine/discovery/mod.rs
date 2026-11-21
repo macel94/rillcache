@@ -1148,11 +1148,11 @@ impl ShardExecutor {
                 } else {
                     "unavailable_on_this_platform"
                 };
+                let payload_limit = self.payload_limit();
+                let payload_headroom = payload_limit.saturating_sub(payload_bytes);
                 let _ = writeln!(
                     text,
-                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nused_memory_rss:{resident}\r\nused_memory_rss_human:{resident_human}\r\nused_memory_rss_scope:{resident_scope}\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
-                    payload_bytes,
-                    self.payload_limit(),
+                    "# Memory\r\nrillcache_payload_bytes:{payload_bytes}\r\nrillcache_payload_limit_bytes:{payload_limit}\r\nrillcache_payload_headroom_bytes:{payload_headroom}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nused_memory_rss:{resident}\r\nused_memory_rss_human:{resident_human}\r\nused_memory_rss_scope:{resident_scope}\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     eviction.name(),
                     self.notify_flags().as_string()
                 );

@@ -462,6 +462,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Payload memory reporting (S98)
 
+- **R477 (event-driven):** When `INFO memory` or `INFO all` reports logical
+  payload use, `rillcache_payload_headroom_bytes` shall be the displayed
+  payload limit minus the displayed used bytes, clamped at zero. It shall not
+  imply RSS or cgroup headroom. A rejected write shall not consume headroom.
 - **R365 (event-driven):** `MEMORY STATS` shall return a flat RESP2 map containing
   `peak.allocated`, `total.allocated`, `keys.count`, `dataset.bytes`,
   `dataset.percentage`, `rillcache.payload.limit_bytes` and
