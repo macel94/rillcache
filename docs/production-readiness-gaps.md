@@ -455,8 +455,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   past a single SIGTERM, verifies successful exit within five seconds and a
   properly truncated reply, then checks on Linux that the acknowledged
   `appendfsync always` value is intact after restarting. This exercises the
-  bounded client drain on working storage, not TLS or the 25-second supervisor
-  deadline.
+  bounded client drain on working storage. The matching native TLS subprocess
+  test leaves its reply unread through one SIGTERM and verifies successful
+  exit within five seconds with only a valid reply prefix left to read. Neither
+  test exhausts the separate 25-second supervisor deadline.
   Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
   blocked clients connected through successful exit, then verify after restart
   that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
@@ -672,7 +674,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reactors, fixed workers and Tokio. Partial suffixes retain their original
   deadline. It does not bound TLS records that produce no plaintext.
   The native TLS pipeline case in V4 checks reply progress with an incomplete
-  request, not slow-client limits or overload shedding.
+  request, not steady-state slow-client limits or overload shedding. D7 also
+  covers abandonment of an unread native TLS reply during shutdown; that is
+  not evidence of overload shedding during normal service.
   Slow-client length/rate thresholds, global/user budgets, CPU quotas
   and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/

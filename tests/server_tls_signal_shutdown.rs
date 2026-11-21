@@ -219,15 +219,14 @@ mod unix {
             .expect("server stderr read failed")
     }
 
-    fn wait_for_forced_exit(server: &mut ServerProcess) -> std::process::ExitStatus {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    fn wait_for_exit_by(server: &mut ServerProcess, deadline: Instant) -> std::process::ExitStatus {
         loop {
             if let Some(status) = server.child.try_wait().unwrap() {
                 return status;
             }
             if Instant::now() >= deadline {
                 let _ = server.child.kill();
-                panic!("server did not force shutdown within 5 seconds");
+                panic!("TLS server exceeded the five-second shutdown test budget");
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -249,19 +248,7 @@ mod unix {
         sigterm(&mut restarted);
     }
 
-    #[test]
-    fn tls_second_sigterm_forces_nonzero_exit_with_reply_unread() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "rillcache-tls-signal-forced-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let (mut server, address) = start_with_fsync(&directory, "always");
-
+    fn dispatch_large_reply(address: SocketAddr) -> (TlsStream, Vec<u8>) {
         expect_ok(
             &mut connect(address),
             b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
@@ -293,6 +280,82 @@ mod unix {
             thread::sleep(Duration::from_millis(10));
         }
 
+        (pending, value)
+    }
+
+    #[test]
+    fn tls_sigterm_bounds_the_unread_reply_drain() {
+        let directory = signal_cancellation::TestDirectory::new();
+        let (mut server, address) = start(&directory.0);
+        let (mut pending, value) = dispatch_large_reply(address);
+
+        // No application bytes are read from this connection until after exit.
+        let started = Instant::now();
+        let budget = Duration::from_secs(5);
+        send_sigterm(&server);
+        let stopping = read_shutdown_log(&mut server);
+        assert!(
+            stopping.contains("received SIGTERM; stopping admission"),
+            "{stopping:?}"
+        );
+        let status = wait_for_exit_by(&mut server, started + budget);
+        let elapsed = started.elapsed();
+        assert!(status.success(), "bounded TLS drain exited with {status}");
+        assert!(
+            (Duration::from_millis(800)..budget).contains(&elapsed),
+            "unexpected TLS drain duration: {elapsed:?}"
+        );
+        let complete = read_shutdown_log(&mut server);
+        assert!(
+            complete.contains("workers joined and enabled journal flushed"),
+            "{complete:?}"
+        );
+
+        pending.sock.set_read_timeout(Some(budget)).unwrap();
+        let header = format!("${}\r\n", value.len());
+        let reply_len = header.len() + value.len() + 2;
+        let mut partial = Vec::new();
+        if let Err(error) = (&mut pending)
+            .take(reply_len as u64)
+            .read_to_end(&mut partial)
+        {
+            // A timeout may close the socket without room for a TLS close_notify.
+            assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                ),
+                "unexpected TLS read error: {error}"
+            );
+        }
+        assert!(partial.starts_with(header.as_bytes()));
+        assert!(
+            partial.len() < reply_len,
+            "the entire TLS reply fit before exit"
+        );
+        let body = &partial[header.len()..];
+        let body_len = value.len().min(body.len());
+        assert!(
+            body[..body_len] == value[..body_len],
+            "TLS reply prefix changed"
+        );
+        assert!(b"\r\n".starts_with(&body[body_len..]));
+    }
+
+    #[test]
+    fn tls_second_sigterm_forces_nonzero_exit_with_reply_unread() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-tls-signal-forced-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (mut server, address) = start_with_fsync(&directory, "always");
+        let (pending, value) = dispatch_large_reply(address);
+
         send_sigterm(&server);
         let stopping = read_shutdown_log(&mut server);
         assert!(
@@ -305,7 +368,7 @@ mod unix {
             forced.contains("forced termination: SIGTERM"),
             "unexpected forced-shutdown log: {forced:?}"
         );
-        let status = wait_for_forced_exit(&mut server);
+        let status = wait_for_exit_by(&mut server, Instant::now() + Duration::from_secs(5));
         assert!(!status.success(), "forced TLS shutdown exited successfully");
         drop(pending);
         drop(server);
@@ -334,37 +397,7 @@ mod unix {
         ));
         std::fs::create_dir(&directory).unwrap();
         let (mut server, address) = start(&directory);
-
-        expect_ok(
-            &mut connect(address),
-            b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
-        );
-        let value = vec![b'x'; 8 * 1024 * 1024];
-        let mut set = format!("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n${}\r\n", value.len()).into_bytes();
-        set.extend_from_slice(&value);
-        set.extend_from_slice(b"\r\n");
-        expect_ok(&mut connect(address), &set);
-
-        let mut pending = connect(address);
-        pending
-            .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
-            .unwrap();
-        let mut admin = connect(address);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let stats = command(&mut admin, b"*2\r\n$4\r\nINFO\r\n$12\r\ncommandstats\r\n");
-            if stats
-                .windows(b"cmdstat_get:calls=1".len())
-                .any(|window| window == b"cmdstat_get:calls=1")
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "TLS GET was not dispatched before SIGTERM"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
+        let (mut pending, value) = dispatch_large_reply(address);
 
         send_sigterm(&server);
         assert_eq!(read_bulk(&mut pending), value);

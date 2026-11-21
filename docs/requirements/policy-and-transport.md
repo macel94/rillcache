@@ -310,6 +310,12 @@ platforms retain timeout-based fallback admission.
   that an `appendfsync always` acknowledged write survives restart from the same
   journal directory. Cover Mio and opt-in Tokio. This is not the supervisor's
   25-second forced-exit path.
+- **R468 (state-driven):** When a native TLS client leaves a dispatched reply
+  unread, a single SIGTERM shall bound the client drain and let the workers
+  join. In the worker-mode matrix, a subprocess test shall verify a successful
+  exit within a five-second budget and read only a proper reply prefix after
+  exit. This does not exercise the 25-second supervisor deadline or require a
+  TLS `close_notify` on an abandoned reply.
 
 ## Client registry and administrative kill (S38)
 

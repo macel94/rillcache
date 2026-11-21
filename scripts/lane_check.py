@@ -155,6 +155,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/io-scheduling.md",
         "docs/client-sessions.md",
         "tests/server*.rs",
+        "tests/support/signal_cancellation.rs",
         "tests/protocol*.rs",
         "tests/native_tls.rs",
         "tests/inactive_pause.rs",
