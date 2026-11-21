@@ -415,6 +415,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   with the matching key and verifies the archive is unchanged. An insufficient
   logical payload budget also rejects verify and restore without publication or
   residue; retry at a sufficient budget restores both original binary values.
+  A two-process restore case checks that only one archive is published into a
+  shared offline destination, with both originals and the winning bytes intact.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
