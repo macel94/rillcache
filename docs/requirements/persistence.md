@@ -213,6 +213,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   bytes. After restoring, new CRC-framed appends shall retain the original
   prefix and both old and new data shall replay after restart. This is a
   format-level test, not a version-skew or downgrade guarantee.
+- **R482 (event-driven):** When `create --filename` selects a non-default AOF
+  and `restore --filename` names a different destination AOF, restore shall
+  preserve exact journal bytes and shall not create the default journal. An
+  isolated server using the restored basename shall replay the original data.
 
 ## Authenticated journal records (S119)
 

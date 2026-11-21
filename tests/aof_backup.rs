@@ -274,6 +274,74 @@ fn offline_backup_restore_preserves_strings_ttl_and_stream_pel() {
 }
 
 #[test]
+fn offline_backup_restores_a_named_journal_under_a_new_basename() {
+    let root = temp_dir("named-journal");
+    let source = root.join("source");
+    let destination = root.join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let archive = root.join("checkpoint.rcb");
+    let source_name = "source-history.aof";
+    let destination_name = "recovered-history.aof";
+    let start_named = |dir: &Path, filename: &str| {
+        Server::bind(Config {
+            appendfilename: filename.into(),
+            ..config(dir)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap()
+    };
+    {
+        let server = start_named(&source, source_name);
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"SET", b"k\0", b"v\xff"]), b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let original = std::fs::read(source.join(source_name)).unwrap();
+    assert!(!source.join("appendonly.aof").exists());
+
+    let created = command(&[
+        "create",
+        "--dir",
+        source.to_str().unwrap(),
+        "--filename",
+        source_name,
+        "--output",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(created.status.success(), "{created:?}");
+    let checkpoint = std::fs::read(&archive).unwrap();
+    let verified = command(&["verify", "--input", archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+        "--filename",
+        destination_name,
+    ]);
+    assert!(restored.status.success(), "{restored:?}");
+    let restored_path = destination.join(destination_name);
+    assert_eq!(std::fs::read(&restored_path).unwrap(), original);
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    {
+        let server = start_named(&destination, destination_name);
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"DBSIZE"]), b":1\r\n");
+        assert_eq!(call(&mut stream, &[b"GET", b"k\0"]), b"$2\r\nv\xff\r\n");
+        server.shutdown().unwrap();
+    }
+    assert_eq!(std::fs::read(&restored_path).unwrap(), original);
+    assert!(!destination.join("appendonly.aof").exists());
+    assert_eq!(std::fs::read(source.join(source_name)).unwrap(), original);
+    assert_eq!(std::fs::read(&archive).unwrap(), checkpoint);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
     let source = temp_dir("rollback-source");
     let rollback = temp_dir("rollback-target");
