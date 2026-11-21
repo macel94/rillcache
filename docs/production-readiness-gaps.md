@@ -941,7 +941,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **L6. Production deployment artifacts are incomplete.** [P1]
   There are restricted Docker/Compose/Kubernetes examples but no HA topology,
   backup job, certificate rotation, systemd unit, Helm chart/operator, or
-  production configuration profiles.
+  production configuration profiles. The optional Kubernetes password overlay
+  wires the same read-only Secret into the server and both health probes; it
+  does not add persistence, automatic rotation or live cluster evidence.
   **Closes when:** the profile's deployment path has reviewed manifests and
   runbooks; examples do not imply unsupported HA/persistence guarantees.
 
