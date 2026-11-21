@@ -92,7 +92,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|DEBUG|KILL`, `FUNCTION
   LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` and `FCALL`/`FCALL_RO` are absent.
   Only `SCRIPT FLUSH` and `FUNCTION FLUSH` return `+OK` for an empty registry.
-  The dependency policy does not permit a Lua runtime.
+  Native TCP verification covers those no-ops, execution command discovery,
+  and rejection of execution and representative registry subcommands. The
+  dependency policy does not permit a Lua runtime.
   **Closes when:** a reviewed runtime decision exists; scripts/functions execute
   atomically with bounded CPU/memory/instruction use, deterministic journal and
   replication behavior, exact error/result mapping and no filesystem/network

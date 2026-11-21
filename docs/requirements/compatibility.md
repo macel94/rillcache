@@ -73,6 +73,12 @@ ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
   When a client explicitly selects DB 0, its `COPY ... DB 0` and `FLUSHDB` shall
   affect the same keyspace as on a connection that never selected a DB.
 
+- **R469 (unwanted behavior):** If a client discovers or invokes `EVAL`,
+  `EVALSHA`, `FCALL` or `FCALL_RO`, it shall observe missing command metadata
+  or an unknown-command error, respectively. `SCRIPT FLUSH` and `FUNCTION
+  FLUSH` shall remain empty-registry no-ops; acknowledgement shall not change
+  discovery, enable execution, or alter existing keys.
+
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
 RESP3 types are not implemented. See [client sessions](../client-sessions.md) for
