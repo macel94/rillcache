@@ -3,6 +3,7 @@
 #[cfg(test)]
 use super::ShardExecutor;
 use std::net::{SocketAddr, TcpStream};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -18,6 +19,12 @@ pub struct ClientRecord {
     pub(super) user: Option<Vec<u8>>,
     pub(super) created: Instant,
     pub(super) blocked: std::sync::atomic::AtomicBool,
+    /// File descriptor of the connection, captured once at registration.
+    pub(super) fd: u64,
+    /// Queued MULTI commands and watched-key count, refreshed by the owning
+    /// session on the rare commands that change them.
+    pub(super) multi: usize,
+    pub(super) watch: usize,
     pub(super) control: Option<TcpStream>,
 }
 
@@ -40,6 +47,9 @@ pub struct ClientSnapshot {
     pub age_seconds: u64,
     pub age_ms: u64,
     pub blocked: bool,
+    pub fd: u64,
+    pub multi: usize,
+    pub watch: usize,
     pub sub: usize,
     pub psub: usize,
     pub ssub: usize,
@@ -119,6 +129,7 @@ impl super::ServerServices {
         laddr: SocketAddr,
         control: TcpStream,
     ) {
+        let fd = u64::try_from(control.as_raw_fd()).unwrap_or(0);
         if let Ok(mut clients) = self.clients.write() {
             clients.insert(
                 id,
@@ -133,6 +144,9 @@ impl super::ServerServices {
                     user: None,
                     created: Instant::now(),
                     blocked: std::sync::atomic::AtomicBool::new(false),
+                    fd,
+                    multi: 0,
+                    watch: 0,
                     control: Some(control),
                 },
             );
@@ -193,6 +207,18 @@ impl super::ServerServices {
         }
     }
 
+    /// Refresh the live MULTI queue length and WATCH count visible to
+    /// `CLIENT LIST`/`INFO`. Called only from the rare commands that change
+    /// them, so no per-command registry write is added.
+    pub fn update_client_transaction_state(&self, id: u64, multi: usize, watch: usize) {
+        if let Ok(mut clients) = self.clients.write()
+            && let Some(record) = clients.get_mut(&id)
+        {
+            record.multi = multi;
+            record.watch = watch;
+        }
+    }
+
     pub fn connected_clients(&self) -> usize {
         self.clients.read().map_or(0, |clients| clients.len())
     }
@@ -220,6 +246,9 @@ impl super::ServerServices {
                 age_seconds: record.created.elapsed().as_secs(),
                 age_ms: u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
                 blocked: record.blocked.load(std::sync::atomic::Ordering::Relaxed),
+                fd: record.fd,
+                multi: record.multi,
+                watch: record.watch,
                 sub,
                 psub,
                 ssub,

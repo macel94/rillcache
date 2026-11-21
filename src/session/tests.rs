@@ -57,6 +57,34 @@ fn client_info_reports_watch_state() {
 }
 
 #[test]
+fn registration_tracks_live_multi_and_watch_state() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (control, _) = listener.accept().unwrap();
+    let peer_addr = control.peer_addr().unwrap();
+    let local_addr = control.local_addr().unwrap();
+    store.register_client(session.id(), peer_addr, local_addr, control);
+    drop(client);
+
+    let snapshot = store.client_snapshot(session.id()).unwrap();
+    assert!(snapshot.fd > 2, "implausible fd {}", snapshot.fd);
+    assert_eq!((snapshot.multi, snapshot.watch), (0, 0));
+
+    assert_eq!(call(&mut session, &store, &[b"WATCH", b"key"]), b"+OK\r\n");
+    assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+    assert_eq!(call(&mut session, &store, &[b"GET", b"a"]), b"+QUEUED\r\n");
+    let snapshot = store.client_snapshot(session.id()).unwrap();
+    assert_eq!((snapshot.multi, snapshot.watch), (1, 1));
+
+    assert_eq!(call(&mut session, &store, &[b"DISCARD"]), b"+OK\r\n");
+    let snapshot = store.client_snapshot(session.id()).unwrap();
+    assert_eq!((snapshot.multi, snapshot.watch), (0, 0));
+    store.unregister_client(session.id());
+}
+
+#[test]
 fn hello_no_argument_reports_current_protocol_and_setname_is_atomic() {
     let store = Store::new(1024);
     let mut session = Session::new();

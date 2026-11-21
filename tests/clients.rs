@@ -445,3 +445,48 @@ fn client_kill_skipme_no_can_kill_the_caller_and_absent_types_are_empty() {
     send(&mut victim, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
+
+fn client_field(list: &str, id: u64, name: &str) -> String {
+    list.lines()
+        .find(|line| line.starts_with(&format!("id={id} ")))
+        .unwrap_or_else(|| panic!("client {id} missing from {list}"))
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
+        .unwrap_or_else(|| panic!("field {name} missing from {list}"))
+        .to_string()
+}
+
+#[test]
+fn client_list_reports_fd_and_live_transaction_state() {
+    let server = start();
+    let mut admin = connect(&server);
+    let mut worker = connect(&server);
+    let worker_id = client_id(&mut worker);
+
+    let idle = client_list(&mut admin, &[b"ID", worker_id.to_string().as_bytes()]);
+    let fd = client_field(&idle, worker_id, "fd");
+    let fd_number: i64 = fd.parse().unwrap();
+    assert!(fd_number > 2, "implausible connection fd {fd}");
+    assert_eq!(client_field(&idle, worker_id, "multi"), "0");
+    assert_eq!(client_field(&idle, worker_id, "watch"), "0");
+
+    send(&mut worker, &[b"WATCH", b"watched"], b"+OK\r\n");
+    send(&mut worker, &[b"MULTI"], b"+OK\r\n");
+    send(&mut worker, &[b"GET", b"a"], b"+QUEUED\r\n");
+    send(&mut worker, &[b"SET", b"b", b"c"], b"+QUEUED\r\n");
+    let queued = client_list(&mut admin, &[b"ID", worker_id.to_string().as_bytes()]);
+    assert_eq!(client_field(&queued, worker_id, "multi"), "2");
+    assert_eq!(client_field(&queued, worker_id, "watch"), "1");
+    assert_eq!(client_field(&queued, worker_id, "fd"), fd);
+
+    send(&mut worker, &[b"EXEC"], b"*2\r\n$-1\r\n+OK\r\n");
+    let done = client_list(&mut admin, &[b"ID", worker_id.to_string().as_bytes()]);
+    assert_eq!(client_field(&done, worker_id, "multi"), "0");
+    assert_eq!(client_field(&done, worker_id, "watch"), "0");
+
+    send(&mut worker, &[b"CLIENT", b"INFO"], b"");
+    let own = String::from_utf8(bulk(&mut worker)).unwrap();
+    assert!(own.contains(&format!(" fd={fd} ")), "{own}");
+    assert!(own.contains(" multi=0 watch=0"), "{own}");
+    server.shutdown().unwrap();
+}

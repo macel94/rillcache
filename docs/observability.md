@@ -38,7 +38,8 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 `INFO clients` reports `connected_clients` (the process-local registry size),
 `cluster_connections:0` and `maxclients` (the live connection limit, changeable
 through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
-RESP/subscription metadata.
+RESP/subscription metadata plus the connection file descriptor, live MULTI queue
+length and WATCH count.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`,
 plus `used_memory_rss`/`used_memory_rss_human` from Linux `/proc/self/status`
