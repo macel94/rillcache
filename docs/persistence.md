@@ -266,8 +266,11 @@ rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb --temp-dir /ve
 rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restore
 ```
 
-`--filename` selects a non-default AOF basename. If the source uses non-default
-`max-data-bytes`, protocol frame/bulk or argument limits, pass matching
+`--filename` selects the source AOF basename for `create` and the destination
+basename for `restore`. They need not match. Set the recovering server's
+`appendfilename` to the restored name before starting it; otherwise it may open
+or create a different journal. If the source uses non-default `max-data-bytes`,
+protocol frame/bulk or argument limits, pass matching
 `--max-data-bytes`, `--max-frame-bytes`, `--max-bulk-bytes`, and
 `--max-arguments` values to create/verify/restore. If replay exceeds the logical
 payload budget, verification and restore fail without publishing a partial
