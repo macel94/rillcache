@@ -51,6 +51,73 @@ fn collector_appends_two_datagrams_and_exits() {
     let _ = std::fs::remove_file(output);
 }
 
+#[test]
+fn collector_bounds_current_and_rotated_output_including_added_newline() {
+    let output = temp_name("output-cap");
+    let rotated = output.with_file_name(format!(
+        "{}.1",
+        output.file_name().unwrap().to_str().unwrap()
+    ));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+        .args([
+            "--bind",
+            "127.0.0.1:0",
+            "--max-bytes",
+            "1024",
+            "--max-datagram",
+            "2048",
+            "--max-datagrams",
+            "2",
+            "--print-address",
+            "--output",
+        ])
+        .arg(&output)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let address: SocketAddr = line
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sender.send_to(&[b'x'; 1024], address).unwrap();
+    sender.send_to(&[b'a'; 1023], address).unwrap();
+    let mut second = [b'b'; 1024];
+    second[1023] = b'\n';
+    sender.send_to(&second, address).unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("collector did not exit after two accepted datagrams");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let summary = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        summary
+            .lines()
+            .any(|line| line == "audit collector accepted 2, rejected 1, rejected_hmac 0"),
+        "{summary}"
+    );
+    let mut first = [b'a'; 1024];
+    first[1023] = b'\n';
+    assert_eq!(std::fs::read(&rotated).unwrap(), first);
+    assert_eq!(std::fs::read(&output).unwrap(), second);
+    std::fs::remove_file(output).unwrap();
+    std::fs::remove_file(rotated).unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn collector_output_failure_reports_counts_without_echoing_the_datagram() {

@@ -173,6 +173,11 @@ fn load_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
     rillcache::engine::read_audit_keyring(path)
 }
 
+fn line_fits_output(line: &[u8], max_bytes: u64) -> bool {
+    let newline = u64::from(!line.ends_with(b"\n"));
+    (line.len() as u64).saturating_add(newline) <= max_bytes
+}
+
 fn run(options: Options) -> io::Result<()> {
     if options.hmac_key_file.is_some() && options.hmac_keyring_file.is_some() {
         return Err(io::Error::new(
@@ -205,7 +210,10 @@ fn run(options: Options) -> io::Result<()> {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
         };
-        if length == 0 || length > options.max_datagram {
+        if length == 0
+            || length > options.max_datagram
+            || !line_fits_output(&buffer[..length], options.max_bytes)
+        {
             rejected = rejected.saturating_add(1);
             continue;
         }
@@ -270,6 +278,16 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ))
+    }
+
+    #[test]
+    fn output_budget_includes_any_added_newline() {
+        let plain = vec![b'x'; 1024];
+        assert!(line_fits_output(&plain[..1023], 1024));
+        assert!(!line_fits_output(&plain, 1024));
+        let mut terminated = plain;
+        terminated[1023] = b'\n';
+        assert!(line_fits_output(&terminated, 1024));
     }
 
     #[test]
