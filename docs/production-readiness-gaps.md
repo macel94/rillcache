@@ -381,8 +381,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
   write survives with `appendfsync always` (so the reply cannot precede the
   durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. The Linux torn-tail drill explicitly truncates a disposable journal
-  after process exit, then verifies that restart discards the final integrity
+  holes. A separate Linux drill kills the process after a local `WAITAOF`
+  acknowledgement with either `no` or `everysec` and checks binary values after
+  restart; it does not simulate device loss. The Linux torn-tail drill truncates
+  a disposable journal after process exit, then verifies that restart discards the final integrity
   group for a multi-key `MSET` and that new writes survive another restart.
   This models a torn integrity marker, not a real disk write failure. `EXEC`
   currently commits queued writes as separate journal groups, so recovery from
