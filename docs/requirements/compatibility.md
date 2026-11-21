@@ -78,6 +78,10 @@ ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
   or an unknown-command error, respectively. `SCRIPT FLUSH` and `FUNCTION
   FLUSH` shall remain empty-registry no-ops; acknowledgement shall not change
   discovery, enable execution, or alter existing keys.
+- **R472 (state-driven):** While in standalone mode, `ROLE` and `INFO replication`
+  shall report no replication stream or replicas, even after local writes and
+  rejected replication reconfiguration. `CLUSTER SHARDS`, `SLOTS`, and `NODES`
+  shall report that cluster support is disabled, not return topology metadata.
 
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other

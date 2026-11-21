@@ -44,8 +44,11 @@ show what has actually been checked, including exclusions and failures.
   and `COPY ... DB n` are rejected without changing data; `MOVE` and `SWAPDB`
   are unsupported. `FLUSHDB` clears the only keyspace. Clients that require a
   nonzero logical database or DB-based isolation are incompatible. Replication,
-  failover and Redis Cluster routing are not supported. Sharded-channel pub/sub
-  is a messaging namespace, not a distributed cluster.
+  failover and Redis Cluster routing are not supported. `ROLE` reports a
+  standalone master with no replicas or replication stream; it does not imply
+  replica or failover support. Cluster clients that need `CLUSTER SHARDS`,
+  `SLOTS`, or `NODES` cannot connect as a cluster. Sharded-channel pub/sub is a
+  messaging namespace, not a distributed cluster.
   See [replication status](replication.md) and [unsupported capabilities](unsupported.md).
 - **No scripts or functions.** Clients that require Lua-backed operations
   (including script registration and `EVALSHA` fallback), server-side functions,
