@@ -47,8 +47,11 @@ show what has actually been checked, including exclusions and failures.
   failover and Redis Cluster routing are not supported. Sharded-channel pub/sub
   is a messaging namespace, not a distributed cluster.
   See [replication status](replication.md) and [unsupported capabilities](unsupported.md).
-- **No scripts or functions.** Applications depending on Lua, server-side
-  functions or loadable modules need functionality not currently available.
+- **No scripts or functions.** Clients that require Lua-backed operations
+  (including script registration and `EVALSHA` fallback), server-side functions,
+  or loadable modules are incompatible. `SCRIPT FLUSH` and `FUNCTION FLUSH`
+  acknowledge an empty registry; neither indicates execution support.
+  `COMMAND INFO` returns no metadata for the execution commands.
 - **Rebuildable data, not a system of record.** The journal supports replay and
   synchronous compaction, but there is no Redis RDB interoperability,
   background/incremental rewrite or validated crash/backup/restore guarantee.
