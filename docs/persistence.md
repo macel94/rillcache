@@ -269,7 +269,10 @@ rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restor
 `--filename` selects a non-default AOF basename. If the source uses non-default
 `max-data-bytes`, protocol frame/bulk or argument limits, pass matching
 `--max-data-bytes`, `--max-frame-bytes`, `--max-bulk-bytes`, and
-`--max-arguments` values to create/verify/restore. Destination directories must
+`--max-arguments` values to create/verify/restore. If replay exceeds the logical
+payload budget, verification and restore fail without publishing a partial
+journal. Retry with the source's configured budget if appropriate; this limit
+is not an RSS bound. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
 never overwrites an existing journal. If validating the source would require

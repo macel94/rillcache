@@ -733,6 +733,100 @@ fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
 }
 
 #[test]
+fn insufficient_replay_payload_budget_rejects_archive_and_allows_retry() {
+    let source = temp_dir("payload-budget-source");
+    let scratch = temp_dir("payload-budget-scratch");
+    let destination = temp_dir("payload-budget-destination");
+    let archive = scratch.join("checkpoint.rcb");
+    let stage = scratch.join("verify");
+    std::fs::create_dir(&stage).unwrap();
+    let entries: [(&[u8], [u8; 512]); 2] = [(b"first", [0; 512]), (b"other", [0xff; 512])];
+    {
+        let server = start(&source);
+        let mut stream = connect(&server);
+        for &(key, ref value) in &entries {
+            assert_eq!(call(&mut stream, &[b"SET", key, value]), b"+OK\r\n");
+        }
+        server.shutdown().unwrap();
+    }
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original = std::fs::read(&archive).unwrap();
+    let input = archive.to_str().unwrap();
+    let staging = stage.to_str().unwrap();
+    let target = destination.to_str().unwrap();
+
+    // Each write fits individually; cumulative logical payload exceeds 800 B.
+    // Fail after a verified prefix has already populated the staged store.
+    for (action, option, directory) in [
+        ("verify", "--temp-dir", staging),
+        ("restore", "--dir", target),
+    ] {
+        let rejected = command(&[
+            action,
+            "--input",
+            input,
+            option,
+            directory,
+            "--max-data-bytes",
+            "800",
+        ]);
+        assert!(
+            !rejected.status.success(),
+            "{action} accepted too small a budget"
+        );
+        let error = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            error.contains(
+                "backup journal failed replay validation: AOF command failed during replay"
+            ),
+            "{error}"
+        );
+        assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
+        assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+    }
+
+    for (action, option, directory) in [
+        ("verify", "--temp-dir", staging),
+        ("restore", "--dir", target),
+    ] {
+        let accepted = command(&[
+            action,
+            "--input",
+            input,
+            option,
+            directory,
+            "--max-data-bytes",
+            "2048",
+        ]);
+        assert!(accepted.status.success(), "{accepted:?}");
+    }
+    assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
+    let server = Server::bind(Config {
+        max_data_bytes: 2048,
+        ..config(&destination)
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"DBSIZE"]), b":2\r\n");
+    for &(key, ref value) in &entries {
+        assert_eq!(
+            call(&mut stream, &[b"GET", key]),
+            [&b"$512\r\n"[..], value, b"\r\n"].concat()
+        );
+    }
+    server.shutdown().unwrap();
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
+
+    for path in [source, scratch, destination] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
 fn authenticated_restore_rejects_the_wrong_key_and_can_retry_in_place() {
     let source = temp_dir("auth-source");
     let archive_dir = temp_dir("auth-archive");
