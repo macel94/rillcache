@@ -27,7 +27,7 @@ fn request(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
     reply
 }
 
-fn read_frame(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usize, depth: usize) {
+fn read_frame(stream: &mut impl Read, output: &mut Vec<u8>, remaining: &mut usize, depth: usize) {
     assert!(depth <= 16, "RESP nesting limit exceeded");
     let mut prefix = [0];
     stream.read_exact(&mut prefix).expect("RESP frame prefix");
@@ -71,7 +71,7 @@ fn read_frame(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usiz
     }
 }
 
-fn read_line(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usize) -> String {
+fn read_line(stream: &mut impl Read, output: &mut Vec<u8>, remaining: &mut usize) -> String {
     let mut line = Vec::new();
     loop {
         let mut byte = [0];
@@ -477,6 +477,49 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             expected_list.extend_from_slice(b"\r\n");
         }
         assert_eq!(request(&mut client, &[b"COMMAND", b"LIST"]), expected_list);
+        assert_eq!(request(&mut client, &[b"COMMAND"]), all_info);
+
+        // Rebuild the complete reply from bounded, targeted lookups. Uppercase
+        // names and reversed order distinguish lookup from just
+        // returning the registry in its sorted order.
+        let mut metadata = Vec::new();
+        write!(&mut metadata, "*{}\r\n", expected_names.len()).unwrap();
+        for names in expected_names.chunks(24) {
+            let upper: Vec<_> = names
+                .iter()
+                .rev()
+                .map(|name| name.to_ascii_uppercase())
+                .collect();
+            let mut args: Vec<&[u8]> = vec![b"COMMAND", b"INFO"];
+            args.extend(upper.iter().map(Vec::as_slice));
+            let reply = request(&mut client, &args);
+            let header = format!("*{}\r\n", names.len());
+            let mut remaining = reply
+                .strip_prefix(header.as_bytes())
+                .expect("targeted INFO array");
+            let mut rows = Vec::new();
+            for name in names.iter().rev() {
+                let mut row = Vec::new();
+                let mut budget = remaining.len();
+                read_frame(&mut remaining, &mut row, &mut budget, 0);
+                let expected = format!(
+                    "*6\r\n${}\r\n{}\r\n",
+                    name.len(),
+                    std::str::from_utf8(name).unwrap()
+                );
+                assert!(
+                    row.starts_with(expected.as_bytes()),
+                    "incorrect metadata row for {}",
+                    String::from_utf8_lossy(name)
+                );
+                rows.push(row);
+            }
+            assert!(remaining.is_empty(), "unexpected metadata after batch");
+            for row in rows.into_iter().rev() {
+                metadata.extend(row);
+            }
+        }
+        assert_eq!(metadata, all_info);
         let info = request(&mut client, &[b"INFO"]);
         let text = std::str::from_utf8(&info).unwrap();
         assert_eq!(info.first(), Some(&b'$'));
