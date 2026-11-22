@@ -126,8 +126,9 @@ RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
 become the genuine RESP3 null (`_\r\n`), including RESP2 null arrays
 (`*-1\r\n`) and null children. Conversion is by frame boundaries. Binary bulk payload bytes—including bytes that resemble a
-RESP null frame—are preserved. RESP2 behavior and `Store::execute` remain
-unchanged.
+RESP null frame—are preserved. `HRANDFIELD ... WITHVALUES` returns an array of
+two-element field/value arrays in RESP3, including deferred replies and
+inside `EXEC`. RESP2 and `Store::execute` retain the flat array shape.
 
 ## Session module layout
 
