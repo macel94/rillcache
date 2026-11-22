@@ -389,7 +389,11 @@ client-observed delays, and is not a pause limit or a standalone fsync measure.
 It is omitted before the first success and retained across failed attempts.
 `aof_last_bgrewrite_status:ok|err` describes the last completed attempt,
 including failure to initialize the staging file. A staging setup failure does
-not latch the live append status. The final snapshot checksum is written and
+not latch the live append status. A failed final rename before replacement
+also leaves the existing journal writable and reports a rewrite error. The
+Unix regression tests this with a missing staging filename while its file
+handle is still open; it is not evidence of recovery from a storage-device
+fault or failure after rename. The final snapshot checksum is written and
 synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every

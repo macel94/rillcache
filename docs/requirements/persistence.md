@@ -108,6 +108,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   microseconds from acquiring exclusive data access through final tail
   reconciliation, journal sync and publication, and rewrite bookkeeping. Omit
   the field before first success; a failed attempt shall not overwrite it.
+- **R493 (unwanted behavior):** If the final staging rename fails before the
+  live journal is replaced, report a failed rewrite and drop the rewrite job
+  without disabling live appends. The previous journal shall remain intact,
+  acknowledged writes shall replay after restart, and a subsequent rewrite
+  shall be possible. Test with a disposable local Unix fixture.
 
 ## Journal configuration visibility and runtime fsync (S87)
 
