@@ -1088,8 +1088,21 @@ impl ShardExecutor {
         let payload_bytes = data.payload_bytes;
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
-        let resident_bytes = process_memory::snapshot().map(|memory| memory.resident_bytes);
-        let cgroup_memory = process_memory::cgroup_snapshot();
+        // Only the memory section reports process memory; `INFO keyspace` must
+        // not pay for the /proc and cgroup reads that feed it.
+        let wants_memory = sections.iter().any(|section| {
+            section.eq_ignore_ascii_case(b"memory")
+                || section.eq_ignore_ascii_case(b"default")
+                || section.eq_ignore_ascii_case(b"all")
+        });
+        let (resident_bytes, cgroup_memory) = if wants_memory {
+            (
+                process_memory::snapshot().map(|memory| memory.resident_bytes),
+                process_memory::cgroup_snapshot(),
+            )
+        } else {
+            (None, None)
+        };
         // Do not hold data across helpers that can take data or another lock:
         // std RwLock reads are not reentrant when a writer is queued.
         drop(data);
