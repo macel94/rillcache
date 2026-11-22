@@ -862,6 +862,58 @@ fn config_preflight_accepts_the_size_limit_and_rejects_one_more_byte() {
 }
 
 #[test]
+fn config_preflight_enforces_the_combined_file_budget() {
+    const FILE_LIMIT: usize = 1024 * 1024;
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-total-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    let extra = directory.join("extra.conf");
+    let mut input = b"config-version 1\nmax-clients 12\n#".to_vec();
+    input.resize(FILE_LIMIT, b' ');
+    std::fs::write(&config, input).unwrap();
+    std::fs::write(&extra, b"max-clients 24\n").unwrap();
+    let run = |preflight: bool, include_extra: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        if preflight {
+            command.arg("--check-config");
+        }
+        for flag in ["--config", "-c", "--config", "-c"] {
+            command.arg(flag).arg(&config);
+        }
+        if include_extra {
+            command.arg("--config").arg(&extra);
+        }
+        // Keep ordinary startup from binding even if the limit regresses.
+        command
+            .args(["--max-clients", if preflight { "36" } else { "0" }])
+            .output()
+            .unwrap()
+    };
+    let exact = run(true, false);
+    assert!(exact.status.success(), "{exact:?}");
+    let redacted = run(true, true);
+    assert_eq!(redacted.status.code(), Some(2), "{redacted:?}");
+    assert!(redacted.stdout.is_empty());
+    assert_eq!(
+        redacted.stderr.as_slice(),
+        b"rillcache: configuration check requires valid startup options\n"
+    );
+    let oversized = run(false, true);
+    assert_eq!(oversized.status.code(), Some(2), "{oversized:?}");
+    assert!(oversized.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&oversized.stderr)
+            .contains("--config files exceed the 4194304 byte total limit"),
+        "{oversized:?}"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_values() {
     use std::os::unix::fs::PermissionsExt as _;

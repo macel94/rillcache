@@ -9,6 +9,7 @@
 use std::io::{self, Read};
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_TOTAL_CONFIG_BYTES: usize = 4 * MAX_CONFIG_BYTES;
 const CONFIG_VERSION: &str = "1";
 
 const ALIASES: &[(&str, &str)] = &[
@@ -66,14 +67,20 @@ const SUPPORTED: &[&str] = &[
 ];
 
 /// Read and translate a startup file into command-line arguments.
-pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
+pub(crate) fn load(path: &str, remaining: &mut usize) -> Result<Vec<String>, String> {
     if path.is_empty() {
         return Err("--config requires a nonempty path".into());
     }
+    let limit = MAX_CONFIG_BYTES.min(*remaining);
     let bytes = std::fs::File::open(path)
-        .and_then(read_capped)
+        .and_then(|file| read_capped(file, limit))
         .map_err(|error| format!("--config could not read {path}: {error}"))?;
-    if bytes.len() > MAX_CONFIG_BYTES {
+    if bytes.len() > limit {
+        if limit < MAX_CONFIG_BYTES {
+            return Err(format!(
+                "--config files exceed the {MAX_TOTAL_CONFIG_BYTES} byte total limit"
+            ));
+        }
         return Err(format!(
             "--config file exceeds the {} byte limit",
             MAX_CONFIG_BYTES
@@ -85,15 +92,14 @@ pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
     if arguments.is_empty() {
         return Err("--config file must contain at least one directive".into());
     }
+    *remaining -= bytes.len();
     Ok(arguments)
 }
 
-fn read_capped(reader: impl Read) -> io::Result<Vec<u8>> {
+fn read_capped(reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
     // Read one extra byte so an oversized file cannot pass as a valid prefix.
     let mut bytes = Vec::new();
-    reader
-        .take(MAX_CONFIG_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -274,10 +280,13 @@ mod tests {
         let data = vec![b' '; MAX_CONFIG_BYTES + 32];
         let mut reader = io::Cursor::new(data);
         assert_eq!(
-            read_capped(&mut reader).unwrap().len(),
+            read_capped(&mut reader, MAX_CONFIG_BYTES).unwrap().len(),
             MAX_CONFIG_BYTES + 1
         );
         assert_eq!(reader.position() as usize, MAX_CONFIG_BYTES + 1);
+        let mut reader = std::io::Cursor::new(b"12345");
+        assert_eq!(read_capped(&mut reader, 2).unwrap().as_slice(), b"123");
+        assert_eq!(reader.position(), 3);
     }
 
     #[test]
