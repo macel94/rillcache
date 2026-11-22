@@ -378,6 +378,32 @@ fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
     server.shutdown().unwrap();
     let newer_journal = std::fs::read(&source_journal).unwrap();
 
+    let refused = create(&source, &archive);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("backup output already exists; refusing to overwrite"),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    assert_eq!(std::fs::read(&source_journal).unwrap(), newer_journal);
+    assert_eq!(
+        std::fs::read_dir(&source).unwrap().count(),
+        2,
+        "refusal must not leave staging or lock files"
+    );
+
+    let newer_archive = source.join("newer.rcb");
+    let created = create(&source, &newer_archive);
+    assert!(created.status.success(), "{created:?}");
+    let newer_archive_bytes = std::fs::read(&newer_archive).unwrap();
+    assert_eq!(
+        &newer_archive_bytes[MAGIC.len() + 8 + 4..],
+        newer_journal.as_slice()
+    );
+    let verified = command(&["verify", "--input", newer_archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+
     let restore = |target: &Path| {
         command(&[
             "restore",
@@ -414,6 +440,7 @@ fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
 
     assert_eq!(std::fs::read(&source_journal).unwrap(), newer_journal);
     assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    assert_eq!(std::fs::read(&newer_archive).unwrap(), newer_archive_bytes);
     std::fs::remove_dir_all(source).unwrap();
     std::fs::remove_dir_all(rollback).unwrap();
 }
