@@ -123,6 +123,71 @@ fn rewrite_setup_failure_is_visible_and_does_not_latch_live_writes() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn rewrite_publish_failure_preserves_live_journal_and_allows_retry() {
+    let path = aof_path("rewrite-publish-failure");
+    let staging = path.with_file_name(format!(
+        ".{}.rewrite-{}",
+        path.file_name().unwrap().to_str().unwrap(),
+        std::process::id()
+    ));
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"SET", b"first", b"old\0"]), b"+OK\r\n");
+    let original = std::fs::read(&path).unwrap();
+    store
+        .call(move |executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            for _ in 0..8 {
+                if executor.persistence_status().rewrite_phase == "commit" {
+                    break;
+                }
+                executor.rewrite_step()?;
+            }
+            assert_eq!(executor.persistence_status().rewrite_phase, "commit");
+            // The opened staging file remains usable on Unix, but cannot be
+            // renamed into place. This injects a publication failure only.
+            std::fs::remove_file(staging)?;
+            executor.journal_sync()?;
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(status.rewrite_failed);
+            assert!(!status.write_failed);
+            assert_eq!(status.last_rewrite_finish_usec, None);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(run(&store, &[b"SET", b"second", b"new\xff"]), b"+OK\r\n");
+    drop(store);
+
+    let reopened = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&reopened, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    reopened
+        .call(|executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    break;
+                }
+            }
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(!status.rewrite_failed);
+            assert!(status.last_rewrite_finish_usec.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(reopened);
+    let rewritten = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&rewritten, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&rewritten, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    drop(rewritten);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn rewrite_setup_timing_is_recorded_only_when_a_rewrite_starts() {
     let path = aof_path("rewrite-setup-timing");
