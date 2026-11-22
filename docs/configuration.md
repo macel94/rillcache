@@ -106,5 +106,9 @@ on the command line. Prefer `requirepass-file` with restrictive file
 permissions, or an ACL file. Configuration errors name the line and directive,
 not the supplied value.
 
-Startup configuration changes require a restart in this phase; atomic reload and
-rollback are tracked in [production readiness gaps](production-readiness-gaps.md).
+Startup configuration changes require a restart in this phase. For runtime
+`CONFIG SET`, startup-only journal options reject the entire command. A failed
+[`appendfsync` policy transition](persistence.md#runtime-configuration-visibility)
+also leaves the other settings in that command unchanged. This is not live
+configuration-file reload or a guarantee of atomic visibility to concurrent
+clients. Further work is tracked in the [production readiness gaps](production-readiness-gaps.md).
