@@ -270,6 +270,10 @@ platforms retain timeout-based fallback admission.
   shall stop after the first excess byte and reject the file before parsing
   any directives. Test the read bound and both sides of the size boundary
   without changing config preflight redaction.
+- **R492 (unwanted behavior):** Startup and config preflight shall read at most
+  4 MiB of combined configuration input plus one overflow byte. Count repeated
+  `--config`/`-c` paths each time, keep the 1 MiB per-file limit, and reject excess
+  bytes before parsing the over-budget file. Valid inputs keep positional precedence.
 - **R460 (event-driven):** When startup options include the file directive
   `secure-secret-files yes|no` or its explicit CLI forms, the last choice shall
   select the existing secret-file policy. The bare CLI flag shall still enable

@@ -74,10 +74,11 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
     let mut sni_files: BTreeMap<String, SniFiles> = BTreeMap::new();
     let mut tls_client_cert_users = BTreeMap::new();
     let mut arguments: VecDeque<String> = arguments.into_iter().collect();
+    let mut remaining_config_bytes = config_file::MAX_TOTAL_CONFIG_BYTES;
     while let Some(option) = arguments.pop_front() {
         if option == "--config" || option == "-c" {
             let path = arguments.pop_front().ok_or("missing value for --config")?;
-            let file_arguments = config_file::load(&path)?;
+            let file_arguments = config_file::load(&path, &mut remaining_config_bytes)?;
             for argument in file_arguments.into_iter().rev() {
                 arguments.push_front(argument);
             }

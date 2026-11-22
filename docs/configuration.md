@@ -42,8 +42,10 @@ allowed.
   does not cancel an earlier request).
 - The file must be valid UTF-8 and at most 1 MiB. The reader stops after at
   most 1 MiB plus one byte and rejects oversized input before parsing any
-  directives. This is a per-file byte limit, not an I/O timeout. An empty file
-  is an error.
+  directives. All file arguments in one invocation share a 4 MiB total budget;
+  repeated paths count each time. Each read stops after at most the smaller of
+  the per-file limit and remaining total budget, plus one overflow byte. These
+  are byte limits, not I/O timeouts. An empty file is an error.
 
 ```conf
 # /etc/rillcache/rillcache.conf
