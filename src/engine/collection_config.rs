@@ -176,8 +176,9 @@ impl ShardExecutor {
                 glob_match(&folded_pattern, b"maxmemory")
             } else {
                 pattern.eq_ignore_ascii_case(b"maxmemory")
+                    || pattern.eq_ignore_ascii_case(b"max-data-bytes")
             };
-            if wants_maxmemory {
+            if wants_maxmemory && !matches.iter().any(|(name, _)| *name == b"maxmemory") {
                 matches.push((b"maxmemory", self.payload_limit().to_string()));
             }
             let wants_notify = if wildcard {
@@ -687,6 +688,27 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
             b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
         );
+    }
+
+    #[test]
+    fn config_get_accepts_the_exact_startup_payload_budget_name() {
+        let store = ShardExecutor::new(100);
+        let reply = b"*2\r\n$9\r\nmaxmemory\r\n$3\r\n100\r\n";
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"MAX-DATA-BYTES"]), reply);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"GET",
+                    b"max-data-bytes",
+                    b"maxmemory",
+                    b"maxmem?ry"
+                ]
+            ),
+            reply
+        );
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"max-data-*"]), b"*0\r\n");
     }
 
     #[test]
