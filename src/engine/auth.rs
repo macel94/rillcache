@@ -884,8 +884,7 @@ impl Auth {
     }
 }
 
-/// Split an ACL-file line into tokens, keeping a parenthesized selector
-/// (which may contain spaces) as one token.
+/// Read one extra byte to distinguish an exact-limit file from overflow.
 fn read_acl_bytes(reader: impl Read) -> Result<Vec<u8>, AclError> {
     let mut bytes = Vec::new();
     reader
@@ -898,6 +897,8 @@ fn read_acl_bytes(reader: impl Read) -> Result<Vec<u8>, AclError> {
     Ok(bytes)
 }
 
+/// Split an ACL-file line into tokens, keeping a parenthesized selector
+/// (which may contain spaces) as one token.
 fn acl_tokens(line: &str) -> Option<Vec<String>> {
     let mut tokens = Vec::new();
     let mut current = String::new();
