@@ -117,14 +117,23 @@ def run(reference, suite, name, directory):
     return result
 
 
+def missing_native_passes(native, candidate):
+    return list((Counter(native.get("ok", [])) - Counter(candidate.get("ok", []))).elements())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", choices=PINS["upstreams"], required=True)
-    parser.add_argument("--suite", choices=SCOPE["compatibility"]["suites"], required=True)
+    config = SCOPE["compatibility"]
+    parser.add_argument("--suite", choices=config["suites"] + config["diagnostic_suites"], required=True)
+    parser.add_argument("--diagnostic", action="store_true", help="Run a diagnostic-only suite")
     args = parser.parse_args()
+    if args.suite not in config["diagnostic_suites" if args.diagnostic else "suites"]:
+        parser.error("--diagnostic is required exactly for diagnostic-only suites")
     directory = EVIDENCE / f"compat-{args.reference}-{args.suite.replace('/', '-')}"
     directory.mkdir(parents=True, exist_ok=True)
-    result = {"reference": args.reference, "suite": args.suite, "native": {"status": "not_run"},
+    result = {"reference": args.reference, "suite": args.suite, "diagnostic": args.diagnostic,
+              "native": {"status": "not_run"},
               "candidate": {"status": "not_run"}, "status": "infrastructure_error"}
     code = 2
     try:
@@ -151,11 +160,16 @@ def main():
         candidate_names = Counter(candidate.get("ok", []) + candidate.get("err", []) + candidate.get("skip", []))
         result["unreached_native_observed_tests"] = list((native_names - candidate_names).elements())
         result["unreached_limit"] = "Native-observed names only; dynamic/conditional tests absent from native output are unknown, not counted as covered. Group ignore events are not test counts."
+        if args.diagnostic:
+            result["native_passes_missing_from_candidate"] = missing_native_passes(native, candidate)
         if result["native"]["status"] != "passed_selected_scope":
             result["status"] = "invalid_native_control"
             code = 2
         elif result["candidate"]["status"] != "passed_selected_scope":
             result["status"] = "candidate_failed"
+            code = 1
+        elif args.diagnostic and result["native_passes_missing_from_candidate"]:
+            result["status"] = "candidate_incomplete"
             code = 1
         else:
             result["status"] = "passed_selected_scope"
@@ -176,6 +190,11 @@ def main():
         text += "Single DB; encoding/digest checks disabled; DEBUG/replication/slow tags excluded identically. "
         text += "See scope, complete unit inventory, revisions, prerequisites and raw native/candidate logs in artifacts.\n\n"
         text += f"Candidate startup error dialect: `{args.reference}` (MSETEX short-pair wording only; not a full vendor compatibility mode).\n\n"
+        if args.diagnostic:
+            missing = result.get("native_passes_missing_from_candidate")
+            if missing is not None:
+                text += f"Native passes missing from candidate passes: **{len(missing)}** (names in JSON).\n\n"
+            text += "Diagnostic only: this result is not an every-PR check or a supported-profile decision.\n\n"
         text += f"Redis `{PINS['upstreams']['redis']['revision']}`; Valkey `{PINS['upstreams']['valkey']['revision']}`.\n"
         summary(text, directory / "summary.md")
     return code

@@ -45,6 +45,10 @@ P0 gates are closed or explicitly excluded by a reviewed profile decision.
   the offline `rillcache-backup` archive described in [persistence](persistence.md).
 - Bounded startup files through `--config` (where available on the tested head).
 
+The [original upstream Tcl hash diagnostic](upstream-ci.md#compatibility-contract-and-exclusions)
+compares the pinned native Redis and Valkey controls with Rillcache. Its result
+is evidence for the selected files and revision, not approval of the hash row.
+
 ## Explicit exclusions
 
 The following are **not** part of this draft profile and must not be inferred from

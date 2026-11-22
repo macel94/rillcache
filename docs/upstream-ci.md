@@ -85,6 +85,15 @@ the same connection without changing the original Tcl/support sources.
 A failed native control invalidates attribution, but candidate diagnostics still
 run; it is not silently retried or treated as candidate conformance evidence.
 
+For additional hash coverage, manually dispatch the existing `Upstream Tcl
+compatibility` workflow with `hash_diagnostic=true` on the revision under study.
+Two separate diagnostic jobs run the original `unit/type/hash` suite, one for
+each pinned reference, using the same native-first runner and exclusions. Retain
+the `upstream-tcl-hash-diagnostic-*` archives even when a control or candidate
+fails. These jobs do not run on PRs or replace any of the six required Tcl rows.
+A passing diagnostic applies only to its tested revision and selection; it does
+not approve a release profile or establish full hash compatibility.
+
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
 This selects only the verified MSETEX short-pair error wording: pinned Redis
