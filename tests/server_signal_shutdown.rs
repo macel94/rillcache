@@ -273,15 +273,7 @@ mod unix {
     }
 
     fn verify_shutdown_with_unread_reply(server_mode: &[&str], scenario: ShutdownWithPendingReply) {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "rillcache-signal-unread-reply-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&directory).unwrap();
+        let directory = signal_cancellation::TestDirectory::new();
         let mut server_args = vec![
             "--appendfsync",
             "always",
@@ -291,7 +283,7 @@ mod unix {
             "8388608",
         ];
         server_args.extend_from_slice(server_mode);
-        let (mut server, address) = start_with(&directory, &server_args);
+        let (mut server, address) = start_with(&directory.0, &server_args);
         request(
             address,
             b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
@@ -402,7 +394,7 @@ mod unix {
         // the crash-stale AOF lock after the forced owner exits.
         #[cfg(target_os = "linux")]
         {
-            let (mut restarted, address) = start_with(&directory, &server_args);
+            let (mut restarted, address) = start_with(&directory.0, &server_args);
             let mut recovery = TcpStream::connect(address).unwrap();
             recovery
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -413,7 +405,6 @@ mod unix {
             assert_eq!(read_bulk(&mut recovery), value);
             sigterm(&mut restarted);
         }
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
