@@ -380,7 +380,16 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
     std::fs::create_dir(&directory).unwrap();
     let acl = directory.join("users.acl");
     let password = directory.join("password");
-    std::fs::write(&acl, b"user default on nopass ~* &* +@all\nuser probe on >test-only-journal-secret -@all +ping +info\nuser pingonly on >test-only-journal-secret -@all +ping\n").unwrap();
+    std::fs::write(
+        &acl,
+        b"user default on nopass ~* &* +@all\n\
+user probe on >test-only-journal-secret -@all +ping +info\n\
+user pingonly on >test-only-journal-secret -@all +ping\n\
+user memoryonly on >test-only-journal-secret -@all +ping +info|memory\n\
+user aofonly on >test-only-journal-secret -@all +ping +info|persistence\n\
+user sections on >test-only-journal-secret -@all +ping +info|memory +info|persistence\n",
+    )
+    .unwrap();
     std::fs::write(&password, b"test-only-journal-secret\n").unwrap();
     let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
     for enabled in [false, true] {
@@ -434,6 +443,52 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
             }
         }
         if enabled {
+            // The same named probe can require both sections without granting
+            // the full INFO command. A single section grant must not suffice.
+            let aof = "--healthcheck-require-aof";
+            let headroom = "--healthcheck-min-payload-headroom";
+            for (user, checks, error) in [
+                ("memoryonly", &[headroom, "1"][..], ""),
+                ("aofonly", &[aof][..], ""),
+                ("sections", &[aof, headroom, "1"][..], ""),
+                (
+                    "memoryonly",
+                    &[aof, headroom, "1"][..],
+                    "invalid or unhealthy journal status",
+                ),
+                (
+                    "aofonly",
+                    &[aof, headroom, "1"][..],
+                    "invalid logical payload headroom",
+                ),
+            ] {
+                let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                    .args([
+                        "--healthcheck",
+                        &address,
+                        "--healthcheck-user",
+                        user,
+                        "--healthcheck-password-file",
+                    ])
+                    .arg(&password)
+                    .args(checks)
+                    .output()
+                    .unwrap();
+                assert!(output.stdout.is_empty(), "{user}: {output:?}");
+                if error.is_empty() {
+                    assert!(
+                        output.status.success() && output.stderr.is_empty(),
+                        "{user}: {output:?}"
+                    );
+                } else {
+                    assert_eq!(output.status.code(), Some(1), "{user}: {output:?}");
+                    assert_eq!(
+                        output.stderr,
+                        format!("rillcache: health check failed: {error}\n").into_bytes(),
+                        "{user}"
+                    );
+                }
+            }
             let writable = Command::new(env!("CARGO_BIN_EXE_rillcache"))
                 .args([
                     "--healthcheck",

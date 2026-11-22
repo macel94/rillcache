@@ -157,6 +157,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   minimum and exactly one `key_and_value_bytes_not_RSS` scope. Missing, invalid
   or duplicate required fields shall fail without echoing peer values. The
   default PING-only probe shall be unchanged.
+- **R496 (event-driven):** With named ACL authentication, grant only the INFO
+  sections used by the selected readiness checks. Each section must be
+  authorized independently when both checks are enabled. If denied, fail
+  with a fixed diagnostic without echoing peer reply or credential bytes.
 - **R463 (unwanted behavior):** If the journal-status probe recognizes loading,
   disabled AOF, a failed last write or a failed last rewrite, it shall return a
   fixed diagnostic for that state, preferring a write failure over a rewrite
