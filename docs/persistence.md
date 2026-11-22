@@ -256,7 +256,9 @@ the normal exclusive ownership lock, replays it, and forces a journal sync befor
 copying. A running writer therefore causes backup to fail without publishing an
 archive. The archive stores the AOF bytes with their length and CRC32, streams in
 1 MiB chunks, and is limited to 16 GiB. The temporary archive is mode 0600 on Unix,
-synced, then hard-linked into place without replacing an existing output. Pass
+synced, then hard-linked into place without replacing an existing output. If
+reusing a filename is refused, choose a new one so the previous checkpoint
+remains available for rollback. Pass
 `--aof-hmac-key-file` for an authenticated journal; see the authentication section
 above. The archive and destination must be on a local filesystem that supports same-directory
 hard links and directory fsync; shared/network filesystems are unsupported.
