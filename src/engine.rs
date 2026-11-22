@@ -224,6 +224,7 @@ pub struct Stats {
     pub evicted_keys: u64,
     pub pubsub_channels: usize,
     pub pubsub_patterns: usize,
+    pub pubsub_queue_full_drops: u64,
     pub audit_log_write_failures: u64,
     pub audit_syslog_write_failures: u64,
 }
@@ -843,9 +844,14 @@ impl ServerServices {
         &self,
         (expired_keys, expired_subkeys, evicted_keys): (u64, u64, u64),
     ) -> Stats {
-        let (pubsub_channels, pubsub_patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
-            (pubsub.channel_names(None).len(), pubsub.numpat())
-        });
+        let (pubsub_channels, pubsub_patterns, pubsub_queue_full_drops) =
+            self.pubsub.read().map_or((0, 0, 0), |pubsub| {
+                (
+                    pubsub.channel_names(None).len(),
+                    pubsub.numpat(),
+                    pubsub.queue_full_drops(),
+                )
+            });
         Stats {
             total_connections_received: self.connections_received.load(Ordering::Relaxed),
             total_commands_processed: self
@@ -859,6 +865,7 @@ impl ServerServices {
             evicted_keys,
             pubsub_channels,
             pubsub_patterns,
+            pubsub_queue_full_drops,
             audit_log_write_failures: self.audit_log_write_failures.load(Ordering::Relaxed),
             audit_syslog_write_failures: self.audit_syslog_write_failures.load(Ordering::Relaxed),
         }
