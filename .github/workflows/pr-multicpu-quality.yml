@@ -215,7 +215,7 @@ jobs:
             fi
           fi
           echo "path=$harness" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v5.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v5.0.0
         with:
           name: multicpu-binaries-${{ needs.context.outputs.pr }}-${{ github.sha }}
           path: ${{ runner.temp }}/tools
@@ -319,7 +319,7 @@ jobs:
         run: |
           [[ "$BUILD_RESULT" == success ]] || { echo "build job: $BUILD_RESULT"; exit 1; }
           [[ "$MATRIX_RESULT" == success ]] || { echo "per-row jobs: $MATRIX_RESULT"; exit 1; }
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v5.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v5.0.0
         with:
           pattern: multicpu-partial-*-${{ needs.context.outputs.pr }}-${{ github.sha }}-${{ github.run_attempt }}
           path: partials
