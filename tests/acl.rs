@@ -156,6 +156,49 @@ user alice on >alice-password resetkeys ~app:* resetchannels &events:* -@all +@r
 }
 
 #[test]
+fn acl_load_rejects_an_oversized_file_without_publishing_partial_rules() {
+    let path = temp_name("bounded-load");
+    let default = b"user default on nopass ~* &* +@all\n";
+    let mut initial = default.to_vec();
+    initial.extend_from_slice(b"user reader on >fixture-password ~app:* -@all +get\n");
+    std::fs::write(&path, initial).unwrap();
+    let server = start(Config {
+        aclfile: Some(path.clone()),
+        ..Config::default()
+    });
+    let mut admin = connect(&server);
+    let mut reader = connect(&server);
+    send(&mut admin, &[b"SET", b"app:key", b"value"], b"+OK\r\n");
+    send(
+        &mut reader,
+        &[b"AUTH", b"reader", b"fixture-password"],
+        b"+OK\r\n",
+    );
+
+    let mut replacement = default.to_vec();
+    replacement.resize(4 * 1024 * 1024 + 1, b'#');
+    std::fs::write(&path, &replacement).unwrap();
+    send(
+        &mut admin,
+        &[b"ACL", b"LOAD"],
+        b"-ERR ACL file or rule set exceeds configured bounds\r\n",
+    );
+    send(&mut reader, &[b"GET", b"app:key"], b"$5\r\nvalue\r\n");
+
+    replacement.pop();
+    std::fs::write(&path, &replacement).unwrap();
+    send(&mut admin, &[b"ACL", b"LOAD"], b"+OK\r\n");
+    send(
+        &mut reader,
+        &[b"GET", b"app:key"],
+        b"-NOAUTH Authentication required.\r\n",
+    );
+    send(&mut admin, &[b"GET", b"app:key"], b"$5\r\nvalue\r\n");
+    server.shutdown().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn acl_file_and_authentication_failures_are_visible_at_startup() {
     let missing = temp_name("missing");
     let error = Server::bind(Config {
