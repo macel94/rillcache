@@ -40,8 +40,13 @@ Messages are RESP2 arrays or RESP3 push frames:
 ## Delivery model
 
 Each connection owns a bounded message queue (1,024 frames). A publisher uses
-non-blocking sends; a full or disconnected queue is removed and not delivered to,
-so a slow subscriber cannot block the publisher or other clients. Delivery is
+non-blocking sends; a send that finds a full or disconnected queue removes the
+matching registration, so a slow subscriber cannot block the publisher or other
+clients. `INFO stats` reports `pubsub_queue_full_drops`, a process-lifetime count
+of failed enqueue attempts due to a full queue across channels, patterns, and
+shard channels. It excludes disconnected queues, previously removed registrations,
+and socket write failures. It is not a count of distinct clients or undelivered
+messages after enqueue. Delivery is
 at-most-once: messages can be lost on disconnect, backpressure, process restart
 or crash. There is no replay, acknowledgment, durability or ordering guarantee
 across different publishers beyond the order their frames were enqueued.
