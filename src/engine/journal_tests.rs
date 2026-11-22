@@ -70,9 +70,10 @@ fn rewrite_setup_failure_is_visible_and_does_not_latch_live_writes() {
     assert!(text.contains("aof_last_write_status:ok\r\n"), "{text}");
     assert!(text.contains("aof_rewrite_in_progress:0\r\n"), "{text}");
     assert!(!text.contains("aof_last_rewrite_start_usec:"), "{text}");
+    assert!(!text.contains("aof_last_rewrite_finish_usec:"), "{text}");
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(run(&store, &[b"SET", b"second", b"new\xff"]), b"+OK\r\n");
-    std::fs::remove_dir(staging).unwrap();
+    std::fs::remove_dir(&staging).unwrap();
     assert_eq!(
         run(&store, &[b"BGREWRITEAOF"]),
         b"+Background append only file rewriting started\r\n"
@@ -91,6 +92,29 @@ fn rewrite_setup_failure_is_visible_and_does_not_latch_live_writes() {
     let info = run(&store, &[b"INFO", b"persistence"]);
     let text = std::str::from_utf8(&info).unwrap();
     assert!(text.contains("aof_last_bgrewrite_status:ok\r\n"), "{text}");
+    let finish_usec = text
+        .lines()
+        .find_map(|line| line.strip_prefix("aof_last_rewrite_finish_usec:"))
+        .expect("successful finalization timing");
+    assert!(finish_usec.parse::<u64>().is_ok(), "{text}");
+    std::fs::create_dir(&staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"-ERR append-only journal is not enabled or cannot be rewritten\r\n"
+    );
+    let failed_info = run(&store, &[b"INFO", b"persistence"]);
+    let failed_text = std::str::from_utf8(&failed_info).unwrap();
+    assert!(
+        failed_text.contains("aof_last_bgrewrite_status:err\r\n"),
+        "{failed_text}"
+    );
+    assert_eq!(
+        failed_text
+            .lines()
+            .find_map(|line| line.strip_prefix("aof_last_rewrite_finish_usec:")),
+        Some(finish_usec)
+    );
+    std::fs::remove_dir(staging).unwrap();
     drop(store);
     let reopened = open(&path, FsyncPolicy::Always);
     assert_eq!(run(&reopened, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");

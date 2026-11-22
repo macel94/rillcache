@@ -103,6 +103,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `aof_last_bgrewrite_status` shall report `err` without latching a live append
   error or keeping a rewrite active. The original journal shall be preserved
   and a later successful rewrite shall clear the rewrite error.
+- **R484 (event-driven):** When rewrite finalization succeeds, the persistence
+  report shall expose `aof_last_rewrite_finish_usec`, the elapsed monotonic
+  microseconds from acquiring exclusive data access through final tail
+  reconciliation, journal sync and publication, and rewrite bookkeeping. Omit
+  the field before first success; a failed attempt shall not overwrite it.
 
 ## Journal configuration visibility and runtime fsync (S87)
 
