@@ -165,7 +165,7 @@ TLS adds transport verification, not evidence of journal durability or recovery.
 
 Append `--healthcheck-min-payload-headroom BYTES` to query `INFO memory` after
 PING and require at least that many bytes of reported logical payload headroom.
-The probe user needs `+info` as well as `+ping`. This shares the one-second
+Grant the probe user `+ping` and either `+info|memory` or `+info`. This shares the one-second
 socket deadline and the 16 KiB RESP2 bulk limit used by the journal probe.
 Missing, duplicate or invalid fields fail the check without echoing the reply.
 This is a point-in-time key/value budget check, not a reservation or a measure
@@ -185,8 +185,10 @@ Append `--healthcheck-require-aof` after the address to additionally query
 /rillcache --healthcheck 127.0.0.1:6379 --healthcheck-require-aof --healthcheck-user probe --healthcheck-password-file /run/secrets/probe-password
 ```
 
-This form needs `+info` as well as `+ping`; ordinary PING-only probes need no new
-permission. AUTH, PING and INFO share the same socket deadline. The INFO reply
+Grant the probe user `+ping` and either `+info|persistence` or `+info`. A probe
+using both checks can use `+ping +info|persistence +info|memory` without granting
+all INFO sections. Ordinary PING-only probes need no new permission. AUTH, PING
+and INFO share the same socket deadline. The INFO reply
 must be a RESP2 bulk no larger than 16 KiB with a header no larger than 32 bytes.
 Disabled persistence, reported errors, missing/duplicate required fields, denied
 INFO, malformed/truncated/oversized replies and timeouts fail the probe without
