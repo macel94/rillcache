@@ -104,6 +104,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "tests/audit*.rs",
         "src/engine/acl_log.rs",
         "src/engine/clients.rs",
+        "src/session/auth.rs",
         "src/session/client.rs",
         "src/engine/discovery/acl.rs",
         "docs/security.md",
