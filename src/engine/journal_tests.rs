@@ -302,6 +302,70 @@ fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn rewrite_reconciles_an_expiry_observed_after_the_snapshot() {
+    use crate::engine::Clock;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    let path = aof_path("rewrite-observed-expiry");
+    let initial_time = 1_700_000_000_000_i64;
+    let clock = Arc::new(TestClock(AtomicI64::new(initial_time)));
+    let store = Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock.clone()).unwrap();
+    assert_eq!(
+        run(&store, &[b"SET", b"ttl\0", b"old\xff", b"PX", b"1000"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(run(&store, &[b"SET", b"live", b"before"]), b"+OK\r\n");
+    store
+        .call(|executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            executor.rewrite_step()?;
+            let status = executor.persistence_status();
+            assert!(status.rewrite_in_progress);
+            assert_eq!(status.rewrite_keys_done, 2);
+            Ok(())
+        })
+        .unwrap();
+
+    clock.0.store(initial_time + 2_000, Ordering::SeqCst);
+    assert_eq!(run(&store, &[b"GET", b"ttl\0"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"SET", b"live", b"after\xff"]), b"+OK\r\n");
+    store
+        .call(|executor| -> std::io::Result<()> {
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    break;
+                }
+            }
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(!status.rewrite_failed);
+            assert!(status.last_rewrite_finish_usec.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+
+    // Open before the original deadline so it cannot mask a stale snapshot
+    // record. The observed expiry must have removed the earlier entry.
+    clock.0.store(initial_time + 500, Ordering::SeqCst);
+    let reopened = Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock).unwrap();
+    assert_eq!(run(&reopened, &[b"GET", b"ttl\0"]), b"$-1\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"live"]), b"$6\r\nafter\xff\r\n");
+    assert_eq!(run(&reopened, &[b"DBSIZE"]), b":1\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
 const AUTH_KEY: &[u8] = b"0123456789abcdef";
 
 fn open_with_auth(path: &std::path::Path, key: &[u8], migrate: bool) -> std::io::Result<Store> {
