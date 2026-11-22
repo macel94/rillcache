@@ -276,7 +276,10 @@ protocol frame/bulk or argument limits, pass matching
 payload budget, verification and restore fail without publishing a partial
 journal. Retry with the source's configured budget if appropriate; this limit
 is not an RSS bound. Destination directories must
-already exist and the restored AOF/lock must be absent. Restore verifies archive
+already exist and the restored AOF and its ownership lock must both be absent.
+Restore refuses a lock even if the AOF is missing, without removing the lock.
+Use a separate empty directory rather than deleting a lock whose owner has not
+been verified. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
 never overwrites an existing journal. A complete legacy RESP archive restores
 byte-for-byte; subsequent appends add CRC-framed records without changing its

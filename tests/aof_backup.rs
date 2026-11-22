@@ -419,6 +419,65 @@ fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
 }
 
 #[test]
+fn offline_restore_preserves_a_lock_only_destination_and_allows_retry() {
+    let source = temp_dir("locked-restore-source");
+    let target = temp_dir("locked-restore-target");
+    let archive = source.join("checkpoint.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(
+        call(&mut stream, &[b"SET", b"key\0", b"value\xff"]),
+        b"+OK\r\n"
+    );
+    server.shutdown().unwrap();
+    let source_bytes = std::fs::read(source.join("appendonly.aof")).unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let archive_bytes = std::fs::read(&archive).unwrap();
+
+    let lock = target.join("appendonly.aof.lock");
+    let journal = target.join("appendonly.aof");
+    let lock_contents = b"disposable ownership marker\n";
+    std::fs::write(&lock, lock_contents).unwrap();
+    let restore = || {
+        command(&[
+            "restore",
+            "--input",
+            archive.to_str().unwrap(),
+            "--dir",
+            target.to_str().unwrap(),
+        ])
+    };
+    let blocked = restore();
+    assert!(!blocked.status.success(), "{blocked:?}");
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("ownership lock already exists"),
+        "{blocked:?}"
+    );
+    assert_eq!(std::fs::read(&lock).unwrap().as_slice(), lock_contents);
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+
+    // Remove only the synthetic marker in the fixture; never clear a real
+    // ownership lock without checking the recovery runbook.
+    std::fs::remove_file(&lock).unwrap();
+    let restored = restore();
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(std::fs::read(&journal).unwrap(), source_bytes);
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    let server = start(&target);
+    let mut stream = connect(&server);
+    assert_eq!(
+        call(&mut stream, &[b"GET", b"key\0"]),
+        b"$6\r\nvalue\xff\r\n"
+    );
+    server.shutdown().unwrap();
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(target).unwrap();
+}
+
+#[test]
 fn empty_journals_can_be_backed_up_verified_and_restored() {
     let source = temp_dir("empty-source");
     let archive_dir = temp_dir("empty-archive");

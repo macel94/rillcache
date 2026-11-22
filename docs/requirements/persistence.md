@@ -222,6 +222,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and `restore --filename` names a different destination AOF, restore shall
   preserve exact journal bytes and shall not create the default journal. An
   isolated server using the restored basename shall replay the original data.
+- **R485 (unwanted behavior):** If the destination has an ownership lock but no
+  AOF, `restore` shall refuse without changing the lock or archive or leaving
+  staging files. A retry in the empty offline fixture shall restore the exact
+  journal and replay the original value. This does not cover concurrent startup.
 
 ## Authenticated journal records (S119)
 
