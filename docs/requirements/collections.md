@@ -347,6 +347,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `abs(count)` duplicate-capable fields for negative counts, and flat field/value
   pairs with WITHVALUES. Missing keys and zero counts shall return empty/null
   shapes as documented; wrong types and malformed counts/options shall fail.
+- **R500 (unwanted behavior):** If a parsed `HRANDFIELD` count has a magnitude
+  above `i64::MAX` (above `i64::MAX / 2` with `WITHVALUES`), return `ERR value is
+  out of range` before looking up the hash or sampling any fields. This bounds
+  arithmetic for invalid arguments, not the cost of valid requests.
 - **R258 (event-driven):** `HGETDEL key FIELDS numfields field [field ...]` shall
   require the FIELDS token, a positive numfields exactly matching the supplied
   fields, and return one value-or-null per field while atomically deleting
