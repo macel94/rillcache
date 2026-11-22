@@ -375,11 +375,16 @@ or a completion percentage. `aof_last_rewrite_start_usec` measures the latest
 successful rewrite setup in whole microseconds, from starting snapshot key
 collection through writing the staging header and initial record. It is omitted
 before the first successful setup and excludes later rewrite work and time spent
-waiting for the request to reach the owner. `aof_last_bgrewrite_status:ok|err`
-describes the last completed attempt, including failure to initialize the
-staging file. A staging setup failure does not latch the live append status.
-The final
-snapshot checksum is written and synced before the atomic rename. A crash before
+waiting for the request to reach the owner. `aof_last_rewrite_finish_usec`
+measures the latest successful finalization under exclusive data access, from
+acquiring that access through encoding remaining changes, syncing and replacing
+the journal, and resetting rewrite bookkeeping. It excludes earlier work and
+client-observed delays, and is not a pause limit or a standalone fsync measure.
+It is omitted before the first success and retained across failed attempts.
+`aof_last_bgrewrite_status:ok|err` describes the last completed attempt,
+including failure to initialize the staging file. A staging setup failure does
+not latch the live append status. The final snapshot checksum is written and
+synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every
 acknowledged write (covered by `tests/durability_crash.rs`).

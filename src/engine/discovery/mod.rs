@@ -1266,6 +1266,9 @@ impl ShardExecutor {
                     if let Some(micros) = persistence.last_rewrite_start_usec {
                         let _ = write!(text, "\r\naof_last_rewrite_start_usec:{micros}");
                     }
+                    if let Some(micros) = persistence.last_rewrite_finish_usec {
+                        let _ = write!(text, "\r\naof_last_rewrite_finish_usec:{micros}");
+                    }
                     if let Some(size) = persistence.current_size {
                         let _ = write!(text, "\r\naof_current_size:{size}");
                     }

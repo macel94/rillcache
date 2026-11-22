@@ -252,7 +252,11 @@ is not a durability or percent-complete metric. `aof_current_size` still
 describes the live journal, not the temporary file.
 `aof_last_rewrite_start_usec` is absent before the first successful setup. It
 measures setup (snapshot key collection and staging writes), not the full
-rewrite or client-observed latency. It is process-local and not persisted.
+rewrite or client-observed latency. `aof_last_rewrite_finish_usec` measures
+successful finalization under exclusive data access, including tail
+reconciliation and publication. It is absent before the first successful
+completion, and a failed rewrite does not replace it. Both timings are
+process-local and not persisted.
 RDB, backlog, bio and fork fields are omitted because they are not implemented or
 measured.
 

@@ -137,6 +137,10 @@ fn persistence_info_reports_disabled_state_in_all_modes() {
             field(&text, "aof_last_rewrite_start_usec").is_none(),
             "{text}"
         );
+        assert!(
+            field(&text, "aof_last_rewrite_finish_usec").is_none(),
+            "{text}"
+        );
         assert!(field(&text, "aof_current_size").is_none(), "{text}");
         assert!(field(&text, "rdb_last_save_time").is_none(), "{text}");
         server.shutdown().unwrap();
@@ -278,6 +282,10 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                 field(&text, "aof_last_rewrite_start_usec").is_none(),
                 "{text}"
             );
+            assert!(
+                field(&text, "aof_last_rewrite_finish_usec").is_none(),
+                "{text}"
+            );
             let size = field(&text, "aof_current_size")
                 .and_then(|value| value.parse::<u64>().ok())
                 .expect("AOF size");
@@ -291,7 +299,7 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
             // Wait for the cooperative rewrite to finish so the status fields
             // below describe a completed attempt, not one still in progress.
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let start_usec = loop {
+            let (start_usec, finish_usec) = loop {
                 let mut request = Vec::new();
                 encode_request(&[b"INFO", b"persistence"], &mut request);
                 stream.write_all(&request).unwrap();
@@ -300,6 +308,10 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                     .and_then(|value| value.parse::<u64>().ok())
                     .expect("measured rewrite setup duration");
                 if field(&text, "aof_rewrite_in_progress") == Some("1") {
+                    assert!(
+                        field(&text, "aof_last_rewrite_finish_usec").is_none(),
+                        "{text}"
+                    );
                     let phase = field(&text, "aof_rewrite_phase").expect("rewrite phase");
                     assert!(
                         matches!(
@@ -321,7 +333,10 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                     assert!(bytes > 0, "{text}");
                 }
                 if field(&text, "aof_rewrite_in_progress") == Some("0") {
-                    break start_usec;
+                    let finish_usec = field(&text, "aof_last_rewrite_finish_usec")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .expect("measured rewrite finalization duration");
+                    break (start_usec, finish_usec);
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -339,6 +354,12 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                 field(&all, "aof_last_rewrite_start_usec")
                     .and_then(|value| value.parse::<u64>().ok()),
                 Some(start_usec),
+                "{all}"
+            );
+            assert_eq!(
+                field(&all, "aof_last_rewrite_finish_usec")
+                    .and_then(|value| value.parse::<u64>().ok()),
+                Some(finish_usec),
                 "{all}"
             );
             assert_eq!(
