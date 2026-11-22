@@ -162,8 +162,9 @@ segment on their first new append; rewriting compacts the legacy prefix into one
 checksummed snapshot.
 
 At startup, Rillcache verifies each complete checksum group before replaying any
-command. Valid-RESP byte corruption fails closed with a checksum mismatch. A torn
-final transaction/checksum is truncated to the previous verified boundary, so
+command. Valid-RESP byte corruption in a complete group, including the last
+one, fails startup with a checksum mismatch and leaves the journal unchanged.
+A torn final transaction/checksum is truncated to the previous verified boundary, so
 commands from an incomplete group are never replayed. The `ECHO` markers have no
 database effect if the RESP journal is inspected or replayed by another
 Redis-compatible server.

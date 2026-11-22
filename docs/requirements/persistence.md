@@ -118,6 +118,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   effect from replay and preserve subsequent acknowledged writes. In a fixture
   with a controlled clock, replay before the original expiry to distinguish
   reconciliation from a stale record hidden by its deadline.
+- **R497 (unwanted behavior):** If a complete AOF group fails its CRC check,
+  startup shall refuse it without modifying the journal, even if it is the
+  final group. A verified replacement shall replay without manual removal of
+  the ownership lock after the refused startup.
 
 ## Journal configuration visibility and runtime fsync (S87)
 
