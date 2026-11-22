@@ -98,6 +98,62 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[test]
+fn trim_accounts_for_only_removed_binary_fields_and_values() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        for (id, field, value) in [
+            (b"1-0".as_slice(), b"f\0".as_slice(), b"\xff".as_slice()),
+            (b"2-0", b"f", b"two"),
+            (b"3-0", b"field", b"\0v"),
+        ] {
+            assert_eq!(
+                reply(&mut stream, &[b"XADD", b"trim", id, field, value]),
+                [b"$3\r\n".as_slice(), id, b"\r\n"].concat()
+            );
+        }
+        let check_payload = |client: &mut TcpStream, bytes| {
+            let info = reply(client, &[b"INFO", b"memory"]);
+            let text = std::str::from_utf8(&info).unwrap();
+            let expected = format!("rillcache_payload_bytes:{bytes}");
+            assert!(text.lines().any(|line| line == expected), "{text}");
+        };
+        check_payload(&mut stream, 18);
+        command(
+            &mut stream,
+            &[b"XTRIM", b"trim", b"MAXLEN", b"3"],
+            b":0\r\n",
+        );
+        check_payload(&mut stream, 18);
+        command(
+            &mut stream,
+            &[b"XTRIM", b"trim", b"MAXLEN", b"~", b"0", b"LIMIT", b"1"],
+            b":1\r\n",
+        );
+        check_payload(&mut stream, 15);
+        command(
+            &mut stream,
+            &[b"XTRIM", b"trim", b"MINID", b"3-0"],
+            b":1\r\n",
+        );
+        check_payload(&mut stream, 11);
+        command(
+            &mut stream,
+            &[b"XRANGE", b"trim", b"-", b"+"],
+            b"*1\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$5\r\nfield\r\n$2\r\n\0v\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"XTRIM", b"trim", b"MAXLEN", b"0"],
+            b":1\r\n",
+        );
+        check_payload(&mut stream, 4);
+        command(&mut stream, &[b"DEL", b"trim"], b":1\r\n");
+        check_payload(&mut stream, 0);
+    }
+}
+
+#[test]
 fn stream_trimming_works_over_tcp_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);
