@@ -90,7 +90,17 @@ pub fn read_audit_hmac_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 
 /// Read a hex audit keyring with a 64 KiB text bound, including comments.
 pub fn read_audit_keyring(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> {
-    audit::read_keyring(path)
+    audit::read_keyring(std::fs::File::open(path)?)
+}
+
+/// Read one audit key from an already-opened source using the same key bound.
+pub fn read_audit_hmac_key_from(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    audit::read_hmac_key(reader)
+}
+
+/// Read a bounded audit keyring from an already-opened source.
+pub fn read_audit_keyring_from(reader: impl std::io::Read) -> std::io::Result<Vec<Vec<u8>>> {
+    audit::read_keyring(reader)
 }
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
