@@ -344,7 +344,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R257 (event-driven):** `HRANDFIELD key [count [WITHVALUES]]` shall return one
   random field without count, distinct fields for positive counts, up to
-  `abs(count)` duplicate-capable fields for negative counts, and flat field/value
+  `abs(count)` duplicate-capable fields for negative counts, and field/value
   pairs with WITHVALUES. Missing keys and zero counts shall return empty/null
   shapes as documented; wrong types and malformed counts/options shall fail.
 - **R500 (unwanted behavior):** If a parsed `HRANDFIELD` count has a magnitude
@@ -364,6 +364,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   bounded errors without partial mutation. Tests shall cover random single/count/
   negative/WITHVALUES shapes, missing keys, TTL/empty deletion, WATCH/MULTI,
   notifications and all worker modes. Hash-field expiration remains unsupported.
+- **R501 (event-driven):** When a client has negotiated RESP3 and successfully
+  executes `HRANDFIELD key count WITHVALUES`, return one two-element array per
+  sampled pair, also for deferred replies and inside `EXEC`. Keep errors and
+  empty arrays unchanged; RESP2 and the store API keep a flat field/value list.
 
 ## List element moves (S68)
 
