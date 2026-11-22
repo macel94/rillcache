@@ -1,9 +1,10 @@
 import importlib.util
+import ssl
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "redis_py_conformance.py"
 SPEC = importlib.util.spec_from_file_location("redis_py_conformance", SCRIPT)
@@ -51,6 +52,33 @@ class ManagedServerTests(unittest.TestCase):
             process.wait.assert_called_once_with(timeout=0)
             self.assertIsNone(server.process)
             self.assertIsNone(server.log)
+
+    def test_tls_uses_distinct_loopback_endpoint_and_strict_identity(self):
+        server = HARNESS.ManagedServer(Path("candidate"), "mio", Path("."), certificate="alternate")
+        command = server.command()
+        self.assertEqual(command[command.index("--bind") + 1], "127.0.0.1:0")
+        self.assertEqual(command[command.index("--tls-bind") + 1], f"127.0.0.1:{server.port}")
+        self.assertEqual(Path(command[command.index("--tls-cert-file") + 1]).name, "alternate.crt")
+        options = HARNESS.client_options(server.port, tls=True)
+        self.assertEqual(options["ssl_cert_reqs"], "required")
+        self.assertTrue(options["ssl_check_hostname"])
+        self.assertEqual(Path(options["ssl_ca_certs"]).name, "ca.crt")
+
+    def test_identity_control_distinguishes_ip_mismatch_from_generic_connection_error(self):
+        redis = MagicMock()
+        redis.exceptions.ConnectionError = ConnectionError
+        ping = redis.Redis.return_value.__enter__.return_value.ping
+        with self.assertRaisesRegex(RuntimeError, "client accepted"):
+            HARNESS.wrong_identity(redis, 10000)
+        ping.side_effect = ConnectionError("cannot connect")
+        with self.assertRaisesRegex(RuntimeError, "did not produce an IP mismatch"):
+            HARNESS.wrong_identity(redis, 10000)
+        cause = ssl.SSLCertVerificationError()
+        cause.verify_code = 64
+        wrapped = ConnectionError("wrapped mismatch")
+        wrapped.__context__ = cause
+        ping.side_effect = wrapped
+        self.assertEqual(HARNESS.wrong_identity(redis, 10000), {"status": "rejected", "verify_code": 64})
 
     def test_client_dependency_is_pinned_and_missing_dependency_fails_explicitly(self):
         self.assertEqual(HARNESS.CLIENT_VERSION, "5.2.1")

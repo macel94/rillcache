@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ PASSWORD = "redis-py-test-secret"
 USERNAME = "redis_py"
 STARTUP_TIMEOUT = 8.0
 COMMAND_TIMEOUT = 2.0
+TLS_FIXTURES = Path(__file__).resolve().parents[1] / "tests/fixtures/tls"
 
 
 def require_client():
@@ -42,18 +44,24 @@ def reserve_port() -> int:
 class ManagedServer:
     """Owns one subprocess and log; every startup/exit path reaps the child."""
 
-    def __init__(self, binary: Path, mode: str, directory: Path):
+    def __init__(self, binary: Path, mode: str, directory: Path, *, certificate: str | None = None):
         self.binary = binary
         self.mode = mode
         self.directory = directory
         self.port = reserve_port()
+        self.certificate = certificate
         self.process: subprocess.Popen | None = None
-        self.log_path = directory / f"server-{mode}.log"
+        label = f"{mode}-tls-{certificate}" if certificate else mode
+        self.log_path = directory / f"server-{label}.log"
         self.log = None
 
     def command(self) -> list[str]:
-        command = [str(self.binary), "--bind", f"127.0.0.1:{self.port}",
+        command = [str(self.binary), "--bind", f"127.0.0.1:{0 if self.certificate else self.port}",
                    "--aclfile", str(self.directory / "users.acl"), "--idle-timeout-ms", "5000"]
+        if self.certificate:
+            command += ["--tls-bind", f"127.0.0.1:{self.port}",
+                        "--tls-cert-file", str(TLS_FIXTURES / f"{self.certificate}.crt"),
+                        "--tls-key-file", str(TLS_FIXTURES / f"{self.certificate}.key")]
         if self.mode == "fixed-one":
             command += ["--threads", "1"]
         elif self.mode == "tokio":
@@ -107,10 +115,18 @@ class ManagedServer:
         self.stop()
 
 
-def exercise(redis, mode: str, port: int) -> dict:
-    address = {"host": "127.0.0.1", "port": port, "username": USERNAME,
+def client_options(port: int, tls: bool) -> dict:
+    options = {"host": "127.0.0.1", "port": port, "username": USERNAME,
                "password": PASSWORD, "socket_connect_timeout": COMMAND_TIMEOUT,
                "socket_timeout": COMMAND_TIMEOUT, "decode_responses": False}
+    if tls:
+        options.update(ssl=True, ssl_ca_certs=str(TLS_FIXTURES / "ca.crt"),
+                       ssl_cert_reqs="required", ssl_check_hostname=True)
+    return options
+
+
+def exercise(redis, mode: str, port: int, *, tls: bool = False) -> dict:
+    address = client_options(port, tls)
     outcomes = []
     for protocol in (2, 3):
         client = redis.Redis(**address, protocol=protocol)
@@ -150,7 +166,21 @@ def exercise(redis, mode: str, port: int) -> dict:
     return {"mode": mode, "port": port, "protocols": [2, 3], "checks": outcomes}
 
 
-def run(binary: Path, output: Path) -> dict:
+def wrong_identity(redis, port: int) -> dict:
+    with redis.Redis(**client_options(port, tls=True)) as client:
+        try:
+            client.ping()
+        except redis.exceptions.ConnectionError as error:
+            # redis-py 5.2.1 wraps the OpenSSL verification exception. A refusal,
+            # generic disconnect or trust-chain error cannot pass this control.
+            cause = error.__cause__ or error.__context__
+            if isinstance(cause, ssl.SSLCertVerificationError) and cause.verify_code == 64:
+                return {"status": "rejected", "verify_code": cause.verify_code}
+            raise RuntimeError("wrong TLS endpoint did not produce an IP mismatch") from error
+    raise RuntimeError("client accepted a certificate without the expected IP SAN")
+
+
+def run(binary: Path, output: Path, *, tls: bool = False) -> dict:
     redis = require_client()
     binary = binary.resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -169,6 +199,17 @@ def run(binary: Path, output: Path) -> dict:
     result = {"schema_version": 1, "status": "passed", "client": "redis-py",
               "client_version": CLIENT_VERSION, "server_binary": str(binary),
               "modes": records, "checks_per_mode": 10}
+    if tls:
+        try:
+            with ManagedServer(binary, "mio", directory, certificate="server") as server:
+                result["tls"] = {"positive": exercise(redis, "mio-tls", server.port, tls=True)}
+            with ManagedServer(binary, "mio", directory, certificate="alternate") as server:
+                result["tls"]["wrong_identity"] = wrong_identity(redis, server.port)
+        except Exception as error:
+            result["status"] = "failed"
+            result["tls_failure_type"] = type(error).__name__
+            (directory / "failed.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            raise
     path = output / "redis-py-conformance.json"
     path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
@@ -180,9 +221,10 @@ def main(argv=None) -> int:
                         help="candidate rillcache executable (default: target/release/rillcache)")
     parser.add_argument("--output", type=Path, default=Path("target/upstream/redis-py-conformance"),
                         help="directory for JSON result and per-mode server logs")
+    parser.add_argument("--tls", action="store_true", help="also verify the native TLS endpoint")
     args = parser.parse_args(argv)
     try:
-        result = run(args.server, args.output)
+        result = run(args.server, args.output, tls=args.tls)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except Exception as error:

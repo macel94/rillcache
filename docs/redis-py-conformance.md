@@ -14,7 +14,8 @@ environment, then run from the repository root:
 ```sh
 cargo build --locked --offline --release --bin rillcache
 python3 -m venv .venv-redis-py
-.venv-redis-py/bin/python -m pip install 'redis==5.2.1'
+.venv-redis-py/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps \
+  -r scripts/redis-py-requirements.txt
 .venv-redis-py/bin/python scripts/redis_py_conformance.py \
   --server target/release/rillcache
 ```
@@ -33,6 +34,18 @@ unique `run-*` subdirectory, and failure logs/ACL inputs are retained there; the
 summary JSON is written after all modes pass. Use `--output DIR` to select another
 evidence directory. No external Redis/Valkey server is used.
 
+Pass `--tls` to add the same RESP2/RESP3 client checks over the default native
+TLS listener using the repository test CA and strict endpoint identity checks.
+A second disposable server presents a certificate signed by that CA that does
+not identify `127.0.0.1`. The pinned client must reject it specifically for an
+IP mismatch; an unrelated connection failure does not pass.
+
+For hosted evidence, manually dispatch [Upstream Tcl compatibility](../.github/workflows/upstream-compatibility.yml)
+with `redis_py_tls=true`. The optional job consumes the exact same-run release
+binary, installs only the hash-pinned wheel, and retains client results and
+server logs. A failed TLS check exits nonzero and retains a per-run failure
+result. This job does not replace any required PR check.
+
 A focused lifecycle and fail-closed dependency test is available with:
 
 ```sh
@@ -40,8 +53,8 @@ python3 -m unittest scripts.upstream.test_redis_py_conformance -v
 ```
 
 The tested surface is intentionally small. This is not the full C7 acceptance
-matrix: TLS/certificate identity, negative/error paths, node-redis, go-redis,
-Redis-version coverage, and automated CI execution remain unverified. A single
-successful run does not establish production support or drop-in compatibility.
-The generated result is local evidence for the exact binary/client invocation,
-not a cross-version compatibility claim.
+matrix: client certificates, certificate status/revocation, other negative
+paths, node-redis, go-redis and Redis-version coverage remain unverified by this
+harness. Results apply only to the tested binary, client, protocol and fixture
+certificates. A pass does not establish production support or approve a TLS
+termination policy.

@@ -82,7 +82,8 @@
         ]
       },
       "non_pr_jobs": {
-        "hash-diagnostic": "not-pull-request"
+        "hash-diagnostic": "not-pull-request",
+        "redis-py-tls": "not-pull-request"
       }
     },
     "pr-branch-updater.yml": {
