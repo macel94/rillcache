@@ -216,6 +216,10 @@ platforms retain timeout-based fallback admission.
   `CONFIG SET maxmemory <positive integer>` shall update it atomically with other
   valid `CONFIG SET` pairs. Invalid, negative, non-numeric or zero values shall
   return an explicit error and leave both the budget and other pairs unchanged.
+- **R491 (event-driven):** When `CONFIG GET` names `max-data-bytes` exactly
+  (ignoring ASCII case), return the live payload budget under `maxmemory`.
+  Return that key once even if another argument matches it. This read alias
+  does not add a wildcard-visible setting or change `CONFIG SET`.
 - **R360 (state-driven):** Applying a lower budget shall evict keys down to it
   using the active policy, with `allkeys` and eligible `volatile` candidates only.
   When the policy cannot evict enough (`noeviction`, or volatile without TTL

@@ -582,6 +582,21 @@ fn info_payload_headroom_tracks_admission_and_deletion() {
         check(&mut client, b"all", 8, 0);
         assert_eq!(request(&mut client, &[b"DEL", b"x"]), b":1\r\n");
         check(&mut client, b"memory", 0, 8);
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"CONFIG", b"GET", b"MAX-DATA-BYTES", b"maxmemory"]
+            ),
+            b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"16"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"CONFIG", b"GET", b"max-data-bytes"]),
+            b"*2\r\n$9\r\nmaxmemory\r\n$2\r\n16\r\n"
+        );
         server.shutdown().unwrap();
     }
 }
