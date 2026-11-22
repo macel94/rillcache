@@ -85,6 +85,32 @@ fn reply(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
     read_frame(stream, 0)
 }
 
+/// Read the `histogram_usec` pairs out of one `LATENCY HISTOGRAM` reply.
+fn histogram_buckets(raw: &[u8]) -> Vec<(i64, i64)> {
+    let marker = b"$14\r\nhistogram_usec\r\n";
+    let start = raw
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("histogram_usec field")
+        + marker.len();
+    let rest = std::str::from_utf8(&raw[start..]).unwrap();
+    let mut parts = rest.split("\r\n");
+    let count: usize = parts.next().unwrap()[1..].parse::<usize>().unwrap();
+    (0..count / 2)
+        .map(|_| {
+            let upper = parts.next().unwrap()[1..].parse().unwrap();
+            let calls = parts.next().unwrap()[1..].parse().unwrap();
+            (upper, calls)
+        })
+        .collect()
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
     assert_eq!(reply(stream, args), expected, "{args:?}");
 }
@@ -299,6 +325,59 @@ fn info_commandstats_counts_authentication_rejections_in_all_modes() {
         let config = stat_line(&stats, "config").expect("CONFIG statistics");
         assert!(config.contains("calls=1"), "{config}");
 
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn latency_histogram_reports_bounded_buckets_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, None);
+        let mut stream = connect(&server);
+
+        // The histogram is fed by the same collector as INFO latencystats.
+        command(&mut stream, &[b"LATENCY", b"HISTOGRAM"], b"*0\r\n");
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"yes"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(&mut stream, &[b"SET", b"k", b"v"], b"+OK\r\n");
+
+        let ping = reply(&mut stream, &[b"LATENCY", b"HISTOGRAM", b"PING"]);
+        assert!(
+            ping.starts_with(b"*2\r\n$4\r\nping\r\n*4\r\n$5\r\ncalls\r\n"),
+            "{ping:?}"
+        );
+        assert!(contains(&ping, b"$14\r\nhistogram_usec"), "{ping:?}");
+
+        // Buckets are strictly increasing microsecond upper bounds whose
+        // counts add up to the series call count.
+        let buckets = histogram_buckets(&ping);
+        assert!(!buckets.is_empty(), "{ping:?}");
+        assert!(
+            buckets.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "{buckets:?}"
+        );
+        assert!(buckets.iter().all(|(_, count)| *count > 0), "{buckets:?}");
+        assert_eq!(buckets.iter().map(|(_, count)| count).sum::<i64>(), 1);
+
+        // Unfiltered output still lists every recorded series, and unknown
+        // filter names simply match nothing.
+        let all = reply(&mut stream, &[b"LATENCY", b"HISTOGRAM"]);
+        assert!(contains(&all, b"$3\r\nset\r\n"), "{all:?}");
+        command(
+            &mut stream,
+            &[b"LATENCY", b"HISTOGRAM", b"nosuch"],
+            b"*0\r\n",
+        );
+        command(&mut stream, &[b"GET", b"missing"], b"$-1\r\n");
+        let get = reply(&mut stream, &[b"LATENCY", b"HISTOGRAM", b"get"]);
+        assert!(get.starts_with(b"*2\r\n$3\r\nget\r\n"), "{get:?}");
+
+        let help = reply(&mut stream, &[b"LATENCY", b"HELP"]);
+        assert!(contains(&help, b"HISTOGRAM [<command> ...]"), "{help:?}");
         server.shutdown().unwrap();
     }
 }

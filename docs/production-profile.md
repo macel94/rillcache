@@ -58,7 +58,8 @@ a command returning a generic error:
 - Replication, Sentinel, cluster routing, failover and multi-node topologies
   (A1–A5).
 - `CLIENT TRACKING`/client-side caching, `OBJECT IDLETIME`/`FREQ`, full RESP3
-  attributes/push tracking and `LATENCY GRAPH|HISTOGRAM` (C5, C6, O2, O3).
+  attributes/push tracking and `LATENCY GRAPH` (C5, C6, O2, O3). `LATENCY
+  HISTOGRAM` exists only as the documented bounded 32-bucket approximation.
 - Redis-compatible HyperLogLog payload interchange and diagnostics (C10).
 - A full `redis.conf` language, `CONFIG REWRITE`, includes and live reload (C13,
   O5).
