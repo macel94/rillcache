@@ -1011,6 +1011,71 @@ fn client_crl_policy_allows_current_nonrevoked_and_rejects_revoked_or_expired() 
 }
 
 #[test]
+fn client_crl_reload_keeps_the_last_valid_policy_and_applies_revocation_to_new_handshakes() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-crl-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let crl = directory.join("client.crl");
+    let trigger = directory.join("generation");
+    let publish = |bytes: &[u8], generation: &[u8]| {
+        let staged_crl = directory.join("client.next");
+        let staged_trigger = directory.join("generation.next");
+        std::fs::write(&staged_crl, bytes).unwrap();
+        std::fs::rename(staged_crl, &crl).unwrap();
+        std::fs::write(&staged_trigger, generation).unwrap();
+        std::fs::rename(staged_trigger, &trigger).unwrap();
+    };
+    let good = std::fs::read(fixture("client-good.crl.der")).unwrap();
+    let revoked = std::fs::read(fixture("client-revoked.crl.der")).unwrap();
+    publish(&good, b"initial");
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_client_crl_file: Some(crl.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        idle_timeout: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut established = connect(&server, true);
+    ping(&mut established);
+
+    publish(b"invalid DER", b"invalid");
+    let mut retained = connect(&server, true);
+    ping(&mut retained);
+
+    publish(&revoked, b"revoked");
+    let mut client = connect(&server, true);
+    let mut reply = [0; 7];
+    let outcome = client
+        .write_all(b"*1\r\n$4\r\nPING\r\n")
+        .and_then(|()| client.read_exact(&mut reply));
+    let error = outcome.expect_err("revoked client reached the command loop");
+    assert!(
+        !matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+        "{error}"
+    );
+    ping(&mut established);
+    ping(&mut retained);
+
+    publish(&good, b"restored");
+    ping(&mut connect(&server, true));
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn tls12_is_rejected_and_client_certificates_can_be_required() {
     let server = start(None, false);
     let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
