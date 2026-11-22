@@ -151,6 +151,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and AUTH shall follow successful TLS verification. Client-certificate probe
   authentication remains unsupported. No external runtime probe tool shall be
   required.
+- **R490 (event-driven):** With `--healthcheck-min-payload-headroom BYTES`,
+  query `INFO memory` under the existing socket deadline and INFO reply size
+  limit. Require exactly one unsigned headroom value at least as large as the
+  minimum and exactly one `key_and_value_bytes_not_RSS` scope. Missing, invalid
+  or duplicate required fields shall fail without echoing peer values. The
+  default PING-only probe shall be unchanged.
 - **R463 (unwanted behavior):** If the journal-status probe recognizes loading,
   disabled AOF, a failed last write or a failed last rewrite, it shall return a
   fixed diagnostic for that state, preferring a write failure over a rewrite

@@ -305,6 +305,66 @@ fn named_healthcheck_accepts_only_an_enabled_user_with_ping_permission() {
 }
 
 #[test]
+fn payload_headroom_healthcheck_tracks_logical_budget_without_changing_ping() {
+    use std::io::{Read as _, Write as _};
+    use std::time::Duration;
+
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    let server = rillcache::Server::bind(rillcache::Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        max_data_bytes: 64,
+        worker_threads: std::env::var("RILLCACHE_TEST_THREADS")
+            .ok()
+            .map(|value| value.parse().unwrap())
+            .filter(|&workers| workers != 0),
+        ..rillcache::Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let address = server.local_addr().to_string();
+    let probe = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let flag = "--healthcheck-min-payload-headroom";
+    let empty = probe(&[flag, "64"]);
+    assert!(
+        empty.status.success() && empty.stdout.is_empty() && empty.stderr.is_empty(),
+        "{empty:?}"
+    );
+    let mut writer = TcpStream::connect(server.local_addr()).unwrap();
+    writer
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writer
+        .write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$4\r\ndata\r\n")
+        .unwrap();
+    let mut reply = [0; 5];
+    writer.read_exact(&mut reply).unwrap();
+    assert_eq!(&reply, b"+OK\r\n");
+    let at_limit = probe(&[flag, "59"]);
+    assert!(at_limit.status.success(), "{at_limit:?}");
+    let below = probe(&[flag, "60"]);
+    assert_eq!(below.status.code(), Some(1));
+    assert!(below.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&below.stderr)
+            .contains("logical payload headroom is below the configured minimum"),
+        "{below:?}"
+    );
+    assert!(probe(&[]).status.success());
+    for invalid in [vec![flag], vec![flag, "-1"], vec![flag, "1", flag, "2"]] {
+        assert_eq!(probe(&invalid).status.code(), Some(2));
+    }
+    drop(writer);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};

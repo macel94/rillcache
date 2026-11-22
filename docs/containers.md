@@ -161,6 +161,16 @@ guarantee. Client-certificate (mTLS) probe credentials are not supported: a
 listener requiring them fails this probe rather than weakening authentication.
 TLS adds transport verification, not evidence of journal durability or recovery.
 
+### Require logical payload headroom
+
+Append `--healthcheck-min-payload-headroom BYTES` to query `INFO memory` after
+PING and require at least that many bytes of reported logical payload headroom.
+The probe user needs `+info` as well as `+ping`. This shares the one-second
+socket deadline and the 16 KiB RESP2 bulk limit used by the journal probe.
+Missing, duplicate or invalid fields fail the check without echoing the reply.
+This is a point-in-time key/value budget check, not a reservation or a measure
+of RSS, cgroup capacity or future admission. Leave it off for liveness probes.
+
 ### Require reported journal health
 
 Append `--healthcheck-require-aof` after the address to additionally query
