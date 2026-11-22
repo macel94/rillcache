@@ -211,6 +211,11 @@ platforms retain timeout-based fallback admission.
 
 ## Runtime payload budget (S96)
 
+- **R498 (unwanted behavior):** If `COPY ... REPLACE` would exceed the logical
+  payload budget under `noeviction`, reject it without changing either live
+  value, its absolute expiry, or the live key count. A retry that fits exactly
+  shall copy the source value and deadline to the destination.
+
 - **R359 (event-driven):** `CONFIG GET maxmemory` (including pattern and
   wildcard matches) shall report the current positive payload byte budget, and
   `CONFIG SET maxmemory <positive integer>` shall update it atomically with other

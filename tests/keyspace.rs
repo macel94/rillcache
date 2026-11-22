@@ -95,6 +95,71 @@ fn database_zero_rejections_leave_the_shared_keyspace_unchanged() {
 }
 
 #[test]
+fn copy_replace_budget_refusal_preserves_values_and_expiry_over_tcp() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: workers,
+            max_data_bytes: 20,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut writer = connect(&server);
+        let mut observer = connect(&server);
+        let source = b"src\0";
+        let destination = b"dst\xff";
+        command(
+            &mut writer,
+            &[b"SET", source, b"source\0\xff", b"PXAT", b"4102444800000"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"SET", destination, b"old\0", b"PXAT", b"4102444900000"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"COPY", source, destination, b"REPLACE"],
+            b"-OOM configured payload limit exceeded\r\n",
+        );
+        command(&mut observer, &[b"GET", source], b"$8\r\nsource\0\xff\r\n");
+        command(&mut observer, &[b"GET", destination], b"$4\r\nold\0\r\n");
+        command(
+            &mut observer,
+            &[b"PEXPIRETIME", source],
+            b":4102444800000\r\n",
+        );
+        command(
+            &mut observer,
+            &[b"PEXPIRETIME", destination],
+            b":4102444900000\r\n",
+        );
+        command(&mut observer, &[b"DBSIZE"], b":2\r\n");
+
+        // Two four-byte keys and two eight-byte values fit the new budget exactly.
+        command(
+            &mut writer,
+            &[b"CONFIG", b"SET", b"maxmemory", b"24"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"COPY", source, destination, b"REPLACE"],
+            b":1\r\n",
+        );
+        for key in [source, destination] {
+            command(&mut observer, &[b"GET", key], b"$8\r\nsource\0\xff\r\n");
+            command(&mut observer, &[b"PEXPIRETIME", key], b":4102444800000\r\n");
+        }
+        command(&mut observer, &[b"DBSIZE"], b":2\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);
