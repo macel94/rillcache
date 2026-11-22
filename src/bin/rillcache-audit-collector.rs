@@ -9,7 +9,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --hmac-key-file PATH    Optional 16..=1024-byte shared key; verify each line\n  --hmac-keyring-file PATH  Hex keyring; verify against any active key\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. With\n--hmac-key-file, tampered or wrong-key lines are dropped; sender identity and\ntransport encryption are not authenticated. Bind it to loopback or a private\nnetwork and protect the output file with filesystem permissions.";
+const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --hmac-key-file PATH    Optional 16..=1024-byte shared key; verify each line\n  --hmac-keyring-file PATH  Hex keyring; verify against any active key\n  --secure-secret-files   Require a regular HMAC key file with no group/other permissions (Unix)\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. With\n--hmac-key-file, tampered or wrong-key lines are dropped; sender identity and\ntransport encryption are not authenticated. Bind it to loopback or a private\nnetwork and protect the output file with filesystem permissions.";
 
 struct Options {
     bind: SocketAddr,
@@ -19,6 +19,7 @@ struct Options {
     max_datagrams: u64,
     hmac_key_file: Option<PathBuf>,
     hmac_keyring_file: Option<PathBuf>,
+    secure_secret_files: bool,
     print_address: bool,
 }
 
@@ -31,6 +32,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         max_datagrams: 0,
         hmac_key_file: None,
         hmac_keyring_file: None,
+        secure_secret_files: false,
         print_address: false,
     };
     let mut arguments = arguments.into_iter();
@@ -44,6 +46,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
                 ));
             }
             "--print-address" => options.print_address = true,
+            "--secure-secret-files" => options.secure_secret_files = true,
             "--bind" => {
                 options.bind = arguments
                     .next()
@@ -169,8 +172,44 @@ fn open_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-fn load_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
-    rillcache::engine::read_audit_keyring(path)
+fn open_secret(path: &Path, secure: bool) -> io::Result<File> {
+    if !secure {
+        return File::open(path);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fn check(metadata: &fs::Metadata) -> io::Result<()> {
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--secure-secret-files requires a regular key file",
+                ));
+            }
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "--secure-secret-files rejects key files with group or other permissions",
+                ));
+            }
+            Ok(())
+        }
+
+        // Reject known nonregular files before open, then check the same
+        // handle that will be read rather than trusting the path lookup.
+        check(&fs::metadata(path)?)?;
+        let file = File::open(path)?;
+        check(&file.metadata()?)?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "--secure-secret-files is supported on Unix only",
+        ))
+    }
 }
 
 fn line_fits_output(line: &[u8], max_bytes: u64) -> bool {
@@ -186,14 +225,18 @@ fn run(options: Options) -> io::Result<()> {
         ));
     }
     let hmac_keys = if let Some(path) = options.hmac_keyring_file.as_deref() {
-        Some(load_keyring(path)?)
+        let file = open_secret(path, options.secure_secret_files)?;
+        Some(rillcache::engine::read_audit_keyring_from(file)?)
+    } else if let Some(path) = options.hmac_key_file.as_deref() {
+        let file = open_secret(path, options.secure_secret_files)?;
+        Some(vec![rillcache::engine::read_audit_hmac_key_from(file)?])
+    } else if options.secure_secret_files {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--secure-secret-files requires an HMAC key or keyring file",
+        ));
     } else {
-        options
-            .hmac_key_file
-            .as_deref()
-            .map(rillcache::engine::read_audit_hmac_key)
-            .transpose()?
-            .map(|key| vec![key])
+        None
     };
     let socket = UdpSocket::bind(options.bind)?;
     if options.print_address {

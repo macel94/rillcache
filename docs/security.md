@@ -213,7 +213,12 @@ bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
 16..=1024-byte key and retains only lines with a valid per-line HMAC, while
 `--hmac-keyring-file PATH` verifies against any listed rotation key; malformed,
 tampered and wrong-key datagrams are dropped and counted, and a collector without
-a key stores lines unverified. Verification does not authenticate sender
+a key stores lines unverified. On Unix, pass `--secure-secret-files` with either
+key option to require a regular file with no group or other permission bits
+(for example, mode `0400` or `0600`). The collector checks the opened file before
+reading and rejects invalid settings before binding. Use a trusted directory;
+this checks mode bits, not owner identity or managed secret custody.
+Verification does not authenticate sender
 identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
 multiple collectors; UDP loss and spoofing remain possible. The output is created
 mode-`0600` on Unix, but directory permissions and key/log custody are operator

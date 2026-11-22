@@ -130,9 +130,7 @@ pub(super) fn format_line(
     }
 }
 
-/// Parse a hex-encoded audit keyring. Blank lines and `#` comments are ignored;
-/// at most eight unique 16..=1024-byte keys are accepted. The first key is the
-/// signing key for this process, while a collector may verify against all.
+/// Read a bounded single audit HMAC key.
 pub(super) fn read_hmac_key(reader: impl Read) -> io::Result<Vec<u8>> {
     // Allow exactly one CRLF and read one additional byte to detect overflow.
     let mut key = Vec::new();
@@ -154,14 +152,15 @@ pub(super) fn read_hmac_key(reader: impl Read) -> io::Result<Vec<u8>> {
     Ok(key)
 }
 
-pub(super) fn read_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+pub(super) fn read_keyring(reader: impl Read) -> io::Result<Vec<Vec<u8>>> {
     let mut text = String::new();
-    File::open(path)?
+    reader
         .take((MAX_KEYRING_BYTES + 1) as u64)
         .read_to_string(&mut text)?;
     parse_keyring(&text).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
+/// Parse a hex keyring of up to eight unique keys. The first signs; all verify.
 pub(super) fn parse_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
     if text.len() > MAX_KEYRING_BYTES {
         return Err("audit keyring text exceeds 64 KiB".into());
@@ -394,10 +393,10 @@ mod tests {
         let mut text = format!("{eight}\n#");
         text.push_str(&"x".repeat(MAX_KEYRING_BYTES - text.len()));
         fs::write(&path, &text).unwrap();
-        assert_eq!(read_keyring(&path).unwrap().len(), 8);
+        assert_eq!(read_keyring(File::open(&path).unwrap()).unwrap().len(), 8);
         text.push('x');
         fs::write(&path, &text).unwrap();
-        assert!(read_keyring(&path).is_err());
+        assert!(read_keyring(File::open(&path).unwrap()).is_err());
         assert!(parse_keyring(&text).is_err());
         fs::remove_file(path).unwrap();
     }

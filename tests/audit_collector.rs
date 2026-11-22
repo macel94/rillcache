@@ -178,7 +178,14 @@ fn collector_with_hmac_key_rejects_tampered_and_accepts_signed_line() {
     let output = temp_name("hmac-output");
     let key = temp_name("hmac-key");
     std::fs::write(&key, b"0123456789abcdef\n").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        command.arg("--secure-secret-files");
+    }
+    let mut child = command
         .args([
             "--bind",
             "127.0.0.1:0",
@@ -218,6 +225,52 @@ fn collector_with_hmac_key_rejects_tampered_and_accepts_signed_line() {
     );
     let _ = std::fs::remove_file(output);
     let _ = std::fs::remove_file(key);
+}
+
+#[cfg(unix)]
+#[test]
+fn collector_refuses_nonprivate_audit_secrets_before_binding() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let secret = temp_name("nonprivate-secret");
+    // If validation regresses, output open must still fail, not hang waiting
+    // for data. A regular file cannot act as the output's parent directory.
+    let output = secret.join("never-opened.log");
+    for (flag, contents) in [
+        ("--hmac-key-file", b"0123456789abcdef\n".as_slice()),
+        (
+            "--hmac-keyring-file",
+            b"30313233343536373839616263646566\n".as_slice(),
+        ),
+    ] {
+        std::fs::write(&secret, contents).unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+            .args([
+                "--bind",
+                "127.0.0.1:0",
+                "--print-address",
+                "--secure-secret-files",
+                flag,
+            ])
+            .arg(&secret)
+            .arg("--output")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "{result:?}");
+        assert!(result.stdout.is_empty(), "bound before validating secret");
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            error.contains("rejects key files with group or other permissions"),
+            "{error}"
+        );
+        assert!(
+            !error.contains(std::str::from_utf8(contents).unwrap().trim()),
+            "secret echoed"
+        );
+    }
+    std::fs::remove_file(secret).unwrap();
 }
 
 #[test]

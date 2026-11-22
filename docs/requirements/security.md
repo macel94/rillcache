@@ -341,6 +341,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   if its raw size fits `--max-datagram`. A record exactly at the file bound
   shall fit and subsequent accepted records shall rotate normally.
 
+- **R489 (unwanted behavior):** When the collector uses `--secure-secret-files`,
+  it shall require one HMAC key or keyring file on Unix, check that the opened
+  file is regular and has no group or other permission bits, and refuse invalid
+  settings before binding or opening its output. Do not echo key contents.
+
 ## Authenticated UDP collector lines (S111)
 
 - **R405 (event-driven):** When `rillcache-audit-collector` receives
