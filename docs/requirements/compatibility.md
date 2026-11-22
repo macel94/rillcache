@@ -82,6 +82,11 @@ ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
   shall report no replication stream or replicas, even after local writes and
   rejected replication reconfiguration. `CLUSTER SHARDS`, `SLOTS`, and `NODES`
   shall report that cluster support is disabled, not return topology metadata.
+- **R486 (state-driven):** For the RESP2 command registry, `COMMAND COUNT` shall
+  equal the number of sorted names in unfiltered `COMMAND LIST`. `COMMAND`,
+  unfiltered `COMMAND INFO`, and case-insensitive targeted `COMMAND INFO` shall
+  agree on each listed name's metadata. Targeted replies shall preserve the
+  caller's requested order. Registry consistency is not command conformance.
 
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
