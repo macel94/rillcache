@@ -113,6 +113,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   without disabling live appends. The previous journal shall remain intact,
   acknowledged writes shall replay after restart, and a subsequent rewrite
   shall be possible. Test with a disposable local Unix fixture.
+- **R495 (event-driven):** When a key expires and is removed after its snapshot
+  slice was encoded, rewrite reconciliation shall remove the stale record's
+  effect from replay and preserve subsequent acknowledged writes. In a fixture
+  with a controlled clock, replay before the original expiry to distinguish
+  reconciliation from a stale record hidden by its deadline.
 
 ## Journal configuration visibility and runtime fsync (S87)
 

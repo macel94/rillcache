@@ -362,7 +362,9 @@ rewrite change it is **not** a single blocking pass:
    1 MiB of encoded state). Between slices the server keeps serving commands.
    Every key changed since the previous round is re-encoded as a **whole value**
    (`DEL` plus rebuild), never as the original incremental command, so a key
-   visited twice cannot duplicate collection members.
+   visited twice cannot duplicate collection members. An expiry observed and
+   removed after a key's snapshot slice is reconciled as a deletion. This does
+   not provide a general persisted clock high-water mark.
 3. The snapshot is fsynced outside the exclusive gate. A final round re-encodes
    the keys written during that fsync, then a short gate appends the residual,
    fsyncs, renames the temporary file over the journal and reopens it at the
