@@ -13,7 +13,7 @@ use super::ReplyMode;
 use super::Session;
 use super::client::select;
 use super::command::{allows_subscriber_command, arity, command_name, is_auth_exempt};
-use super::reply::convert_resp2_reply;
+use super::reply::{convert_hash_pairs, convert_resp2_reply, uses_hash_pairs};
 
 /// Commands whose reply or connection state is produced by the session itself,
 /// plus blocking/pub-sub operations. They always keep the synchronous path so a
@@ -113,10 +113,15 @@ impl Session {
 
     /// Append an owner reply in its original pipeline position, applying the
     /// session's RESP3 conversion. Returns the reply start for error accounting.
-    pub(crate) fn append_deferred_reply(&self, output: &mut Vec<u8>, reply: &[u8]) -> usize {
+    pub(crate) fn append_deferred_reply(
+        &self,
+        output: &mut Vec<u8>,
+        reply: &[u8],
+        arguments: Option<&[Vec<u8>]>,
+    ) -> usize {
         let start = output.len();
         output.extend_from_slice(reply);
-        self.convert_reply(start, output);
+        self.convert_command_reply(start, output, arguments);
         start
     }
 
@@ -242,10 +247,7 @@ impl Session {
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"EXEC") {
-            let start = output.len();
-            let action = self.exec(store, arguments, output);
-            self.convert_reply(start, output);
-            return action;
+            return self.exec(store, arguments, output);
         }
         if command.eq_ignore_ascii_case(b"DISCARD") {
             self.discard(arguments, output);
@@ -426,8 +428,23 @@ impl Session {
         }
         let start = output.len();
         let action = store.execute(arguments, output);
-        self.convert_reply(start, output);
+        self.convert_command_reply(start, output, Some(arguments));
         action
+    }
+
+    fn convert_command_reply<B: AsRef<[u8]>>(
+        &self,
+        start: usize,
+        output: &mut Vec<u8>,
+        arguments: Option<&[B]>,
+    ) {
+        if self.protocol == Protocol::Resp3 && arguments.is_some_and(uses_hash_pairs) {
+            let converted = convert_hash_pairs(&output[start..]);
+            output.truncate(start);
+            output.extend_from_slice(&converted);
+        } else {
+            self.convert_reply(start, output);
+        }
     }
 
     pub(super) fn convert_reply(&self, start: usize, output: &mut Vec<u8>) {

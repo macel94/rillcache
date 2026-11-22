@@ -135,7 +135,7 @@ fn deferred_reply_conversion_keeps_resp3_framing_and_prefix() {
         ..Session::new()
     };
     let mut output = b"prefix:".to_vec();
-    let start = session.append_deferred_reply(&mut output, b"$-1\r\n");
+    let start = session.append_deferred_reply(&mut output, b"$-1\r\n", None);
     assert_eq!(&output[..7], b"prefix:");
     assert_eq!(&output[start..], b"_\r\n");
 }
