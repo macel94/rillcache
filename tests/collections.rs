@@ -84,6 +84,50 @@ fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
 }
 
 #[test]
+fn hash_random_count_range_is_checked_before_lookup_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        command(&mut stream, &[b"HSET", b"h", b"f", b"v"], b":1\r\n");
+        let range_error = b"-ERR value is out of range\r\n";
+        for key in [b"h".as_slice(), b"missing"] {
+            command(
+                &mut stream,
+                &[b"HRANDFIELD", key, b"-9223372036854775808"],
+                range_error,
+            );
+            for count in [
+                b"-9223372036854775808".as_slice(),
+                b"-4611686018427387904",
+                b"4611686018427387904",
+            ] {
+                command(
+                    &mut stream,
+                    &[b"HRANDFIELD", key, count, b"WITHVALUES"],
+                    range_error,
+                );
+            }
+        }
+        command(
+            &mut stream,
+            &[b"HRANDFIELD", b"h", b"4611686018427387903", b"WITHVALUES"],
+            b"*2\r\n$1\r\nf\r\n$1\r\nv\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"HRANDFIELD",
+                b"missing",
+                b"-4611686018427387903",
+                b"WITHVALUES",
+            ],
+            b"*0\r\n",
+        );
+        command(&mut stream, &[b"HGET", b"h", b"f"], b"$1\r\nv\r\n");
+    }
+}
+
+#[test]
 fn collection_mutations_work_over_tcp_in_all_execution_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);

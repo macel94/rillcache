@@ -1484,15 +1484,25 @@ impl ShardExecutor {
 
     fn hash_random_field(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let with_values = args.len() == 4 && args[3].eq_ignore_ascii_case(b"WITHVALUES");
-        if args.len() == 4 && !with_values {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        }
         let count = if args.len() >= 3 {
             let Some(value) = parse_i64(args[2]) else {
                 out.extend_from_slice(NOT_INTEGER);
                 return;
             };
+            if value == i64::MIN {
+                out.extend_from_slice(b"-ERR value is out of range\r\n");
+                return;
+            }
+            if args.len() == 4 && !with_values {
+                out.extend_from_slice(SYNTAX);
+                return;
+            }
+            // The pinned references require the magnitude, and twice that
+            // magnitude for field/value pairs, to fit a signed 64-bit integer.
+            if with_values && !(-i64::MAX / 2..=i64::MAX / 2).contains(&value) {
+                out.extend_from_slice(b"-ERR value is out of range\r\n");
+                return;
+            }
             Some(value)
         } else {
             None
