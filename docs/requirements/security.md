@@ -525,6 +525,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   partially publish either that identity or the default identity. No-SNI and
   named handshakes shall still receive their previous stapled bytes; fixing the
   key and publishing a fresh token shall activate both staged responses.
+- **R494 (unwanted behavior):** If a replacement client CRL cannot be parsed,
+  retain the previous TLS verification policy. A valid client CRL published
+  with a fresh token shall apply to new handshakes without disconnecting
+  established sessions. Exercise rejection and recovery using local fixtures.
 
 ## Keyspace-wide ACL isolation (S120)
 
