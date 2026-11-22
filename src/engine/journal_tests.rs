@@ -1764,6 +1764,63 @@ fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn checksum_failure_in_a_complete_record_refuses_startup_without_truncation() {
+    let path = aof_path("complete-record-checksum-failure");
+    let records: [(&[u8], &[u8]); 2] = [
+        (b"earlier", b"earlier-payload\0"),
+        (b"last", b"last-payload\xff"),
+    ];
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        for (key, value) in records {
+            assert_eq!(run(&store, &[b"SET", key, value]), b"+OK\r\n");
+        }
+    }
+    let original = std::fs::read(&path).unwrap();
+    for (_, value) in records {
+        let mut damaged = original.clone();
+        let offset = damaged
+            .windows(value.len())
+            .position(|part| part == value)
+            .unwrap();
+        // Model a single altered byte in a complete record, leaving the
+        // recorded length and checksum marker intact.
+        damaged[offset] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let error = Store::with_auth_and_journal(
+            1024,
+            Auth::default(),
+            &path,
+            FsyncPolicy::Always,
+            Limits::default(),
+            None,
+        )
+        .err()
+        .expect("a complete corrupted record must not be repaired as a torn tail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("AOF checksum mismatch"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    }
+    // A failed startup must release local ownership so an operator can
+    // restart from a verified copy without clearing a lock by hand.
+    std::fs::write(&path, &original).unwrap();
+    let reopened = open(&path, FsyncPolicy::Always);
+    for (key, value) in records {
+        let mut expected = format!("${}\r\n", value.len()).into_bytes();
+        expected.extend_from_slice(value);
+        expected.extend_from_slice(b"\r\n");
+        assert_eq!(run(&reopened, &[b"GET", key]), expected);
+    }
+    assert_eq!(run(&reopened, &[b"DBSIZE"]), b":2\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
     let path = aof_path("runtime-fsync");
