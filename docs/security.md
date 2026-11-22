@@ -228,8 +228,11 @@ renames it over the target and fsyncs the directory (where supported); hashes ar
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
 10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
 user; exceeding a bound is a visible error, not truncation.
-`ACL LOAD` parses a replacement map before publishing it. `ACL SAVE/LOAD` require
-a configured ACL file. The `default` user cannot be deleted.
+Startup and `ACL LOAD` read at most 4 MiB plus one byte to detect overflow,
+regardless of the size reported by file metadata. This caps bytes read, not
+I/O time or total memory use. `ACL LOAD` parses a replacement map before
+publishing it; a rejected file leaves the previous rules active. `ACL SAVE/LOAD`
+require a configured ACL file. The `default` user cannot be deleted.
 
 Authorization is evaluated before command dispatch and store access for known
 commands with declared keys. `EXEC` re-checks every queued command against the

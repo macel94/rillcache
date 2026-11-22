@@ -33,6 +33,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   users/rules before accepting clients, require an enabled `default` user, reject
   malformed or missing files at startup, reject combining `--aclfile` with
   `--requirepass`, and preserve the single-password `--requirepass` mode otherwise.
+- **R487 (unwanted behavior):** At startup and during `ACL LOAD`, the ACL file
+  loader shall read at most 4 MiB plus one byte to detect overflow, independent
+  of reported file size. An oversized file shall be rejected without publishing
+  a replacement map. A valid file exactly at the limit shall still load.
 - **R114 (state-driven):** While a connection is authenticated as a user, the
   server shall evaluate ordered command/category rules and declared key positions
   before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall

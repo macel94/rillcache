@@ -10,7 +10,7 @@
 use super::{discovery, sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, Read, Write as _};
 use std::path::{Path, PathBuf};
 
 const MAX_PASSWORD_BYTES: usize = 1024;
@@ -783,14 +783,14 @@ impl Auth {
 
     /// Load a complete ACL file into a replacement map before publishing it.
     pub fn load_file(&mut self, path: &Path) -> Result<(), AclError> {
-        let metadata = fs::metadata(path).map_err(|error| AclError::Io(error.to_string()))?;
+        let file = fs::File::open(path).map_err(|error| AclError::Io(error.to_string()))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| AclError::Io(error.to_string()))?;
         if metadata.len() > MAX_ACL_FILE_BYTES {
             return Err(AclError::TooLarge);
         }
-        let bytes = fs::read(path).map_err(|error| AclError::Io(error.to_string()))?;
-        if bytes.len() as u64 > MAX_ACL_FILE_BYTES {
-            return Err(AclError::TooLarge);
-        }
+        let bytes = read_acl_bytes(file)?;
         let text = String::from_utf8(bytes).map_err(|_| AclError::Syntax)?;
         let mut users: BTreeMap<Vec<u8>, User> = BTreeMap::new();
         for line in text.lines() {
@@ -882,6 +882,19 @@ impl Auth {
     pub fn restricted(&self) -> bool {
         !self.open()
     }
+}
+
+/// Read one extra byte to distinguish an exact-limit file from overflow.
+fn read_acl_bytes(reader: impl Read) -> Result<Vec<u8>, AclError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_ACL_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AclError::Io(error.to_string()))?;
+    if bytes.len() as u64 > MAX_ACL_FILE_BYTES {
+        return Err(AclError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 /// Split an ACL-file line into tokens, keeping a parenthesized selector
@@ -1799,6 +1812,18 @@ mod tests {
             auth.setuser(b"has space", &[b"on"]),
             Err(AclError::InvalidName)
         );
+    }
+
+    #[test]
+    fn acl_reader_consumes_at_most_the_limit_and_one_sentinel_byte() {
+        let exact = io::repeat(b'#').take(MAX_ACL_FILE_BYTES);
+        assert_eq!(
+            read_acl_bytes(exact).unwrap().len() as u64,
+            MAX_ACL_FILE_BYTES
+        );
+        let mut longer = io::repeat(b'#').take(MAX_ACL_FILE_BYTES + 8);
+        assert_eq!(read_acl_bytes(&mut longer), Err(AclError::TooLarge));
+        assert_eq!(longer.limit(), 7);
     }
 
     #[test]
