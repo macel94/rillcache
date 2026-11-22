@@ -876,20 +876,33 @@ fn config_preflight_enforces_the_combined_file_budget() {
     input.resize(FILE_LIMIT, b' ');
     std::fs::write(&config, input).unwrap();
     std::fs::write(&extra, b"max-clients 24\n").unwrap();
-    let run = |include_extra: bool| {
+    let run = |preflight: bool, include_extra: bool| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
-        command.arg("--check-config");
+        if preflight {
+            command.arg("--check-config");
+        }
         for flag in ["--config", "-c", "--config", "-c"] {
             command.arg(flag).arg(&config);
         }
         if include_extra {
             command.arg("--config").arg(&extra);
         }
-        command.args(["--max-clients", "36"]).output().unwrap()
+        // Keep ordinary startup from binding even if the limit regresses.
+        command
+            .args(["--max-clients", if preflight { "36" } else { "0" }])
+            .output()
+            .unwrap()
     };
-    let exact = run(false);
+    let exact = run(true, false);
     assert!(exact.status.success(), "{exact:?}");
-    let oversized = run(true);
+    let redacted = run(true, true);
+    assert_eq!(redacted.status.code(), Some(2), "{redacted:?}");
+    assert!(redacted.stdout.is_empty());
+    assert_eq!(
+        redacted.stderr.as_slice(),
+        b"rillcache: configuration check requires valid startup options\n"
+    );
+    let oversized = run(false, true);
     assert_eq!(oversized.status.code(), Some(2), "{oversized:?}");
     assert!(oversized.stdout.is_empty());
     assert!(
