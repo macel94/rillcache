@@ -1072,32 +1072,19 @@ impl ShardExecutor {
             return;
         };
         let (mut live_keys, mut expiring_keys, mut subexpiry_keys) = (0usize, 0usize, 0usize);
-        let (mut ttl_sum, mut ttl_count) = (0u64, 0u64);
+        let mut avg_ttl = 0u64;
         if sections.iter().any(|section| {
             section.eq_ignore_ascii_case(b"keyspace")
                 || section.eq_ignore_ascii_case(b"default")
                 || section.eq_ignore_ascii_case(b"all")
         }) {
-            if data.expirations.is_empty() && data.field_ttls == 0 {
-                // No key or field deadline exists, so every entry is alive and
-                // the expiry fields are zero; avoid the per-entry walk.
-                live_keys = data.entries.len();
-            } else {
-                let now = self.now(&data);
-                for entry in data.entries.values().filter(|entry| entry.alive(now)) {
-                    live_keys += 1;
-                    subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
-                    if let Some(deadline) = entry.expires {
-                        expiring_keys += 1;
-                        ttl_count += 1;
-                        ttl_sum = ttl_sum.saturating_add(
-                            u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
-                        );
-                    }
-                }
-            }
+            let now = self.now(&data);
+            let (live, expiring, subexpiry, average) = data.keyspace_stats(now);
+            live_keys = live;
+            expiring_keys = expiring;
+            subexpiry_keys = subexpiry;
+            avg_ttl = average;
         }
-        let avg_ttl = ttl_sum.checked_div(ttl_count).unwrap_or(0);
         let payload_bytes = data.payload_bytes;
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);

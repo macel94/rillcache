@@ -107,6 +107,113 @@ fn field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+fn keyspace(stream: &mut TcpStream) -> String {
+    let mut request = Vec::new();
+    encode_request(&[b"INFO", b"keyspace"], &mut request);
+    stream.write_all(&request).unwrap();
+    bulk_text(&read_frame(stream, 0))
+}
+
+fn assert_keyspace(stream: &mut TcpStream, keys: usize, expires: usize, subexpiry: usize) {
+    let text = keyspace(stream);
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("db0:keys="))
+        .unwrap_or("");
+    let expected = format!("keys={keys},expires={expires},");
+    assert!(
+        line.contains(&expected),
+        "expected {expected:?} in {line:?}"
+    );
+    assert!(
+        line.contains(&format!("subexpiry={subexpiry}")),
+        "expected subexpiry={subexpiry} in {line:?}"
+    );
+}
+
+#[test]
+fn keyspace_counters_track_key_field_and_copy_churn() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+
+        command(
+            &mut stream,
+            &[b"SET", b"k", b"v", b"EX", b"100"],
+            b"+OK\r\n",
+        );
+        assert_keyspace(&mut stream, 1, 1, 0);
+
+        command(&mut stream, &[b"HSET", b"h", b"f", b"v"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HPEXPIRE", b"h", b"100000", b"FIELDS", b"1", b"f"],
+            b"*1\r\n:1\r\n",
+        );
+        assert_keyspace(&mut stream, 2, 1, 1);
+
+        command(
+            &mut stream,
+            &[b"HPERSIST", b"h", b"FIELDS", b"1", b"f"],
+            b"*1\r\n:1\r\n",
+        );
+        assert_keyspace(&mut stream, 2, 1, 0);
+        command(
+            &mut stream,
+            &[b"HPEXPIRE", b"h", b"100000", b"FIELDS", b"1", b"f"],
+            b"*1\r\n:1\r\n",
+        );
+        assert_keyspace(&mut stream, 2, 1, 1);
+        command(&mut stream, &[b"HSET", b"h", b"f", b"v2"], b":0\r\n");
+        assert_keyspace(&mut stream, 2, 1, 0);
+
+        command(&mut stream, &[b"SET", b"h", b"str"], b"+OK\r\n");
+        assert_keyspace(&mut stream, 2, 1, 0);
+
+        command(&mut stream, &[b"PERSIST", b"k"], b":1\r\n");
+        assert_keyspace(&mut stream, 2, 0, 0);
+        command(
+            &mut stream,
+            &[b"SET", b"k", b"v", b"EX", b"100"],
+            b"+OK\r\n",
+        );
+        assert_keyspace(&mut stream, 2, 1, 0);
+
+        command(&mut stream, &[b"COPY", b"k", b"k2"], b":1\r\n");
+        assert_keyspace(&mut stream, 3, 2, 0);
+        command(&mut stream, &[b"RENAME", b"k2", b"k3"], b"+OK\r\n");
+        assert_keyspace(&mut stream, 3, 2, 0);
+        command(&mut stream, &[b"DEL", b"k3"], b":1\r\n");
+        assert_keyspace(&mut stream, 2, 1, 0);
+        command(&mut stream, &[b"DEL", b"k"], b":1\r\n");
+        assert_keyspace(&mut stream, 1, 0, 0);
+
+        command(&mut stream, &[b"HSET", b"g", b"f", b"v"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HPEXPIRE", b"g", b"100000", b"FIELDS", b"1", b"f"],
+            b"*1\r\n:1\r\n",
+        );
+        assert_keyspace(&mut stream, 2, 0, 1);
+        command(&mut stream, &[b"DEL", b"g"], b":1\r\n");
+        assert_keyspace(&mut stream, 1, 0, 0);
+
+        // A due key that has not been reaped yet must still be excluded.
+        command(
+            &mut stream,
+            &[b"SET", b"due", b"v", b"PX", b"20"],
+            b"+OK\r\n",
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        assert_keyspace(&mut stream, 1, 0, 0);
+
+        command(&mut stream, &[b"FLUSHALL"], b"+OK\r\n");
+        assert_keyspace(&mut stream, 0, 0, 0);
+
+        server.shutdown().unwrap();
+    }
+}
+
 #[test]
 fn string_overwrite_clears_hash_field_ttls() {
     for workers in [None, Some(1), Some(4)] {
