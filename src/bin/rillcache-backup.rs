@@ -392,6 +392,26 @@ fn validate_archive(
             "backup length outside supported bounds",
         ));
     }
+    // Fail before creating scratch space when a regular archive already has
+    // the wrong length. Keep the stream checks below: the same file may change
+    // after this snapshot of its metadata.
+    let metadata = archive.metadata()?;
+    if metadata.is_file() {
+        let header_length = (MAGIC.len() + u64_bytes.len() + u32_bytes.len()) as u64;
+        let expected_file_length = header_length + expected_length;
+        if metadata.len() < expected_file_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "backup length or CRC32 does not match",
+            ));
+        }
+        if metadata.len() > expected_file_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing bytes after backup payload",
+            ));
+        }
+    }
     let stage_destination = if let Some(output) = output_journal {
         output.to_path_buf()
     } else {

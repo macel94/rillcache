@@ -226,6 +226,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   AOF, `restore` shall refuse without changing the lock or archive or leaving
   staging files. A retry in the empty offline fixture shall restore the exact
   journal and replay the original value. This does not cover concurrent startup.
+- **R488 (unwanted behavior):** If a regular backup archive's length disagrees
+  with its header, `verify` and `restore` shall reject it before creating a
+  staging file. Matching length does not waive streamed length and CRC checks,
+  trailing-data detection, or journal replay validation.
 
 ## Authenticated journal records (S119)
 

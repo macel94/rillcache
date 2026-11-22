@@ -574,6 +574,61 @@ fn verify_can_stage_on_an_explicit_volume_and_cleans_up() {
 }
 
 #[test]
+fn malformed_regular_archive_lengths_are_rejected_before_staging() {
+    let source = temp_dir("archive-length-source");
+    let destination = temp_dir("archive-length-target");
+    let archive = source.join("snapshot.rcb");
+    let altered = source.join("altered.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", b"key", b"value"]), b"+OK\r\n");
+    server.shutdown().unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original = std::fs::read(&archive).unwrap();
+    let mut truncated = original.clone();
+    truncated.pop();
+    let mut trailing = original.clone();
+    trailing.push(b'\n');
+    for (bytes, error) in [
+        (truncated, "backup length or CRC32 does not match"),
+        (trailing, "trailing bytes after backup payload"),
+    ] {
+        std::fs::write(&altered, &bytes).unwrap();
+        // Default verifier scratch cannot be opened; the length error must
+        // win over a staging I/O error, not rely on cleanup afterward.
+        let verified = Command::new(env!("CARGO_BIN_EXE_rillcache-backup"))
+            .args(["verify", "--input"])
+            .arg(&altered)
+            .env("TMPDIR", destination.join("no-scratch"))
+            .output()
+            .unwrap();
+        assert!(!verified.status.success(), "{verified:?}");
+        assert!(
+            String::from_utf8_lossy(&verified.stderr).contains(error),
+            "{verified:?}"
+        );
+        let restored = command(&[
+            "restore",
+            "--input",
+            altered.to_str().unwrap(),
+            "--dir",
+            destination.to_str().unwrap(),
+        ]);
+        assert!(!restored.status.success(), "{restored:?}");
+        assert!(
+            String::from_utf8_lossy(&restored.stderr).contains(error),
+            "{restored:?}"
+        );
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(std::fs::read(&altered).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(destination).unwrap();
+}
+
+#[test]
 fn verify_temp_dir_rejects_duplicate_empty_missing_and_other_actions() {
     for (args, error) in [
         (

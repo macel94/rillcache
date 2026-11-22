@@ -301,6 +301,9 @@ no staged journal or lock, then retries with the matching key in the same
 directory and reads back the restored value. The archive remains unchanged.
 This does not imply cleanup after interruption or filesystem failure.
 
+For regular files, `verify` and `restore` check that the archive file size
+matches the header and declared payload before creating a staging file. They
+still validate the streamed length, CRC, end of file and journal replay.
 Verification stages a temporary copy of the journal payload. Use `verify --temp-dir DIR`
 with an existing, trusted writable local directory to select a volume with space
 for the payload (up to 16 GiB). Without the option, verify uses the platform
