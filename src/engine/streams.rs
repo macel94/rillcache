@@ -1441,42 +1441,36 @@ impl ShardExecutor {
             );
             return;
         };
-        let mut remove = Vec::new();
-        match strategy {
-            Strategy::MaxLen(maxlen) => {
-                let mut length = stream.entries.len();
-                for id in stream.entries.keys() {
-                    if length as u64 <= maxlen || cap.is_some_and(|cap| remove.len() >= cap) {
-                        break;
-                    }
-                    remove.push(*id);
-                    length -= 1;
-                }
-            }
-            Strategy::MinId(minid) => {
-                for id in stream.entries.keys() {
-                    if *id >= minid || cap.is_some_and(|cap| remove.len() >= cap) {
-                        break;
-                    }
-                    remove.push(*id);
-                }
-            }
-        }
         let mut deleted = 0;
-        for id in remove {
-            if stream.entries.remove(&id).is_some() {
-                deleted += 1;
-                stream.max_deleted = stream.max_deleted.max(id);
+        let mut removed_bytes = 0;
+        while cap.is_none_or(|cap| deleted < cap) {
+            let should_remove = match strategy {
+                Strategy::MaxLen(maxlen) => stream.entries.len() as u64 > maxlen,
+                Strategy::MinId(minid) => stream
+                    .entries
+                    .first_key_value()
+                    .is_some_and(|(id, _)| *id < minid),
+            };
+            if !should_remove {
+                break;
             }
+            let Some((id, removed)) = stream.entries.pop_first() else {
+                break;
+            };
+            for (field, value) in &removed.fields {
+                removed_bytes += field.len() + value.len();
+            }
+            deleted += 1;
+            stream.max_deleted = stream.max_deleted.max(id);
         }
         if deleted > 0 {
-            let bytes = stream.payload_bytes().unwrap_or(0);
-            let previous = entry.payload_len;
-            entry.payload_len = bytes;
-            data.payload_bytes = data.payload_bytes - previous + bytes;
+            // The entry already accounts for its field/value bytes; group and
+            // pending metadata and the stream key are not removed by XTRIM.
+            entry.payload_len -= removed_bytes;
+            data.payload_bytes -= removed_bytes;
             data.touch(a[1]);
         }
-        integer(deleted, out);
+        integer(deleted as i64, out);
     }
 
     fn xgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {
