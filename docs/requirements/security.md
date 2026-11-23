@@ -336,6 +336,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   fails, emit counts for previously accepted and rejected datagrams and
   `output_failures 1`, then exit nonzero. Do not increment the accepted count
   for the failed write or echo datagram contents.
+- **R508 (unwanted behavior):** If the audit producer or collector cannot
+  rename the active file over the previous generation, keep the previous
+  generation unchanged. A successful rename may replace it as before.
 - **R483 (unwanted behavior):** If the newline-normalized record exceeds
   `--max-bytes`, count and drop the datagram before writing or rotating, even
   if its raw size fits `--max-datagram`. A record exactly at the file bound

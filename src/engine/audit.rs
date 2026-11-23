@@ -83,11 +83,7 @@ impl AuditLog {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        match fs::remove_file(&self.rotated) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        // Replace the previous generation only if the rename succeeds.
         fs::rename(&self.path, &self.rotated)?;
         self.file = open_append(&self.path)?;
         self.written = 0;
@@ -286,6 +282,31 @@ mod tests {
         let mut rotated_path = OsString::from(path.as_os_str());
         rotated_path.push(".1");
         let _ = fs::remove_file(rotated_path);
+    }
+
+    #[test]
+    fn failed_audit_rotation_keeps_the_previous_generation() {
+        let path = temp_path("rotate-failure");
+        let parked = path.with_extension("parked");
+        let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
+        let active = "x".repeat(MIN_MAX_BYTES as usize - 1) + "\n";
+        log.record_line(&active).unwrap();
+        fs::write(&log.rotated, b"previous generation\n").unwrap();
+        fs::rename(&path, &parked).unwrap();
+        assert_eq!(
+            log.record_line("next\n").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&log.rotated).unwrap(), b"previous generation\n");
+        assert_eq!(fs::read(&parked).unwrap(), active.as_bytes());
+        fs::rename(&parked, &path).unwrap();
+        log.record_line("next\n").unwrap();
+        assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        assert_eq!(fs::read(&path).unwrap(), b"next\n");
+        let rotated = log.rotated.clone();
+        drop(log);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
