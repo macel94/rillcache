@@ -75,6 +75,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover exact and dense promotion, cardinality tolerance, binary/empty
   elements, TTL, merge, malformed payloads, wrong types, ACL category metadata and
   transaction queueing in all execution modes.
+- **R506 (event-driven):** After a CRC or authenticated journal rewrite and
+  same-binary restart, replay the exact private HLL string payloads for a
+  small exact set and a promoted dense sketch, with unchanged cardinality
+  and absolute expiry.
 
 ## Geospatial sorted sets (S45)
 

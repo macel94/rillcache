@@ -1624,6 +1624,80 @@ fn transaction_batch_and_concurrent_writers_replay_to_the_final_state() {
 }
 
 #[test]
+fn hll_exact_and_dense_payloads_survive_integrity_rewrite_and_replay() {
+    for authenticated in [false, true] {
+        let path = aof_path("rewrite-hll");
+        let open_fixture = || {
+            if authenticated {
+                open_with_auth(&path, AUTH_KEY, false).unwrap()
+            } else {
+                open(&path, FsyncPolicy::Always)
+            }
+        };
+        let store = open_fixture();
+        assert_eq!(
+            run(&store, &[b"PFADD", b"exact", b"", b"f\0", b"\xff", b"f\0"]),
+            b":1\r\n"
+        );
+        for start in (0u32..5000).step_by(500) {
+            let values: Vec<_> = (start..start + 500).map(u32::to_be_bytes).collect();
+            let mut args: Vec<&[u8]> = vec![b"PFADD", b"dense"];
+            args.extend(values.iter().map(|value| value.as_slice()));
+            assert_eq!(run(&store, &args), b":1\r\n");
+        }
+        assert_eq!(
+            run(&store, &[b"PEXPIREAT", b"dense", b"4102444800000"]),
+            b":1\r\n"
+        );
+        // Use the union path with a missing key so PFCOUNT does not populate
+        // the read-only optimization cache in the stored payload.
+        let dense_count = run(&store, &[b"PFCOUNT", b"dense", b"missing"]);
+        let estimate: u64 = std::str::from_utf8(&dense_count)
+            .unwrap()
+            .strip_prefix(':')
+            .unwrap()
+            .trim_end()
+            .parse()
+            .unwrap();
+        assert!((4500..=5500).contains(&estimate));
+        let dense_bytes = run(&store, &[b"GET", b"dense"]);
+        assert!(dense_bytes.starts_with(b"$16400\r\nHYLL\x01\x01"));
+        let exact_bytes = run(&store, &[b"GET", b"exact"]);
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            run(&store, &[b"BGREWRITEAOF"]),
+            b"+Background append only file rewriting started\r\n"
+        );
+        for _ in 0..10_000 {
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "rewrite did not finish");
+        assert!(std::fs::metadata(&path).unwrap().len() < before);
+        drop(store);
+
+        let reopened = open_fixture();
+        assert_eq!(run(&reopened, &[b"GET", b"exact"]), exact_bytes);
+        assert_eq!(run(&reopened, &[b"GET", b"dense"]), dense_bytes);
+        assert_eq!(run(&reopened, &[b"PFCOUNT", b"exact"]), b":3\r\n");
+        assert_eq!(
+            run(&reopened, &[b"PFCOUNT", b"dense", b"missing"]),
+            dense_count
+        );
+        assert_eq!(
+            run(&reopened, &[b"PEXPIRETIME", b"dense"]),
+            b":4102444800000\r\n"
+        );
+        assert_eq!(run(&reopened, &[b"TYPE", b"dense"]), b"+string\r\n");
+        assert_eq!(run(&reopened, &[b"DBSIZE"]), b":2\r\n");
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn rewrite_compacts_history_and_still_replays_the_final_state() {
     let path = aof_path("rewrite");
     {
