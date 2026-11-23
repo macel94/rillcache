@@ -263,8 +263,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R288 (event-driven):** `LATENCY LATEST`, `HISTORY event`, `RESET [event ...]`,
   `DOCTOR` and `HELP` shall return Redis-shaped arrays, plain-text reports, reset
   counts and bounded errors. `HISTORY` for an unknown event shall return an empty
-  array; resetting unknown events shall count zero; `GRAPH` and `HISTOGRAM` shall
-  return explicit unsupported errors rather than partial output.
+  array; resetting unknown events shall count zero; `GRAPH` shall return an
+  explicit unsupported error rather than partial output. `HISTOGRAM
+  [command ...]` shall return, for each selected command with recorded
+  dispatches, its total `calls` and the non-empty buckets of the bounded
+  per-command histogram as `[upper_bound_usec, count]` pairs in increasing
+  upper-bound order, and an empty array when recording is disabled, no calls
+  were recorded or no requested command matches.
 - **R289 (state-driven):** While `latency-monitor-threshold` is non-zero, only
   measured events whose duration reaches the threshold shall be retained, up to
   160 samples per event with latest and all-time maximum values. The default
@@ -336,7 +341,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `CONFIG GET/SET commandstats-enabled` contract, calls, aggregate time shape,
   failed-call classification, authentication/ACL rejection classification,
   unknown-command exclusion, `INFO all` inclusion, reset clearing and every worker
-  mode. Documentation shall retain the absence of latency histograms/percentiles,
+  mode. `LATENCY HISTOGRAM` shall expose the same bounded logarithmic buckets as
+  `INFO latencystats` without adding recording work while the collector is
+  disabled. Documentation shall retain the absence of exact HDR percentiles,
   cross-process aggregation, persistence and billing-grade exactness. SLOWLOG
   shall capture client address/name only after a sample passes its threshold;
   tests shall prove rejected/disabled samples do not invoke metadata capture.

@@ -175,6 +175,10 @@ impl super::ServerServices {
                 b"    Return a human readable latency analysis report.",
                 b"HISTORY <event>",
                 b"    Return time-latency samples for the <event> class.",
+                b"HISTOGRAM [<command> ...]",
+                b"    Return per-command latency buckets in microseconds. Requires",
+                b"    commandstats-enabled; this is the same bounded logarithmic",
+                b"    histogram as INFO latencystats, not an exact HDR histogram.",
                 b"LATEST",
                 b"    Return the latest latency samples for all events.",
                 b"RESET [<event> ...]",
@@ -188,9 +192,21 @@ impl super::ServerServices {
         } else if subcommand.eq_ignore_ascii_case(b"GRAPH") {
             output.extend_from_slice(b"-ERR LATENCY GRAPH is unsupported; use LATENCY HISTORY\r\n");
         } else if subcommand.eq_ignore_ascii_case(b"HISTOGRAM") {
-            output.extend_from_slice(
-                b"-ERR LATENCY HISTOGRAM is unsupported; use LATENCY HISTORY\r\n",
-            );
+            // Optional command filters; unknown names simply match nothing.
+            let histograms = self.latency_histograms(&arguments[2..]);
+            write_array_len(histograms.len().saturating_mul(2), output);
+            for histogram in &histograms {
+                encode_bulk(Some(histogram.name.as_bytes()), output);
+                write_array_len(4, output);
+                encode_bulk(Some(b"calls"), output);
+                super::integer(i64::try_from(histogram.calls).unwrap_or(i64::MAX), output);
+                encode_bulk(Some(b"histogram_usec"), output);
+                write_array_len(histogram.buckets.len().saturating_mul(2), output);
+                for (upper, count) in &histogram.buckets {
+                    super::integer(i64::try_from(*upper).unwrap_or(i64::MAX), output);
+                    super::integer(i64::try_from(*count).unwrap_or(i64::MAX), output);
+                }
+            }
         } else {
             latency_syntax_error(subcommand, output);
         }
@@ -297,6 +313,57 @@ mod tests {
         assert!(store.execute_latency(&[b"LATENCY", b"RESET"], &mut output));
         assert_eq!(output, b":1\r\n");
         assert_eq!(store.latency.read().unwrap().series.len(), 0);
+    }
+
+    #[test]
+    fn histogram_is_disabled_empty_and_filtered() {
+        let store = ShardExecutor::new(1024);
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM"], &mut output));
+        assert_eq!(output, b"*0\r\n");
+
+        store.set_commandstats_enabled(true);
+        // Zero microseconds lands in bucket 0, whose upper bound is 0; three
+        // microseconds lands in bucket 2 (`2^1..=2^2-1`), upper bound 3.
+        store.record_command_stats(Some(b"SET"), Duration::from_micros(0), b"+OK\r\n");
+        store.record_command_stats(Some(b"SET"), Duration::from_micros(3), b"+OK\r\n");
+
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM"], &mut output));
+        assert_eq!(
+            output,
+            b"*2\r\n$3\r\nset\r\n*4\r\n$5\r\ncalls\r\n:2\r\n$14\r\nhistogram_usec\r\n*4\r\n:0\r\n:1\r\n:3\r\n:1\r\n"
+        );
+
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM", b"SET"], &mut output));
+        assert!(output.starts_with(b"*2\r\n$3\r\nset\r\n"));
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM", b"get"], &mut output));
+        assert_eq!(output, b"*0\r\n");
+
+        // Disabling stops recording but keeps already-observed buckets; the
+        // next enable starts from fresh counters, like `INFO latencystats`.
+        store.set_commandstats_enabled(false);
+        store.record_command_stats(Some(b"SET"), Duration::from_micros(64), b"+OK\r\n");
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM"], &mut output));
+        assert_eq!(
+            output,
+            b"*2\r\n$3\r\nset\r\n*4\r\n$5\r\ncalls\r\n:2\r\n$14\r\nhistogram_usec\r\n*4\r\n:0\r\n:1\r\n:3\r\n:1\r\n"
+        );
+        store.set_commandstats_enabled(true);
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HISTOGRAM"], &mut output));
+        assert_eq!(output, b"*0\r\n");
+
+        let mut output = Vec::new();
+        assert!(store.execute_latency(&[b"LATENCY", b"HELP"], &mut output));
+        assert!(
+            output
+                .windows(b"HISTOGRAM [<command> ...]".len())
+                .any(|window| window == b"HISTOGRAM [<command> ...]")
+        );
     }
 
     #[test]

@@ -122,14 +122,15 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   The registry contains 243 commands, but common surfaces are absent or bounded:
   `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
   `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH`;
-  `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
-  errors, others are unknown commands.
+  `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH`; and Redis 8+ command
+  extensions. Some return explicit errors, others are unknown commands.
   **Partial (2026-11-14): named exclusions for common surfaces.**
   `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
   `CONFIG REWRITE` now returns a specific
   capability error with normal arity validation, documented in
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
-  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT REPLY ON|OFF|SKIP`
+  `LATENCY GRAPH` was already explicit; `LATENCY HISTOGRAM` is now backed by the
+  bounded per-command histogram (see O3). `CLIENT REPLY ON|OFF|SKIP`
   now suppresses immediate, paused and blocked-completion replies (RESET
   restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
   clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
@@ -747,8 +748,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
-  only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
-  unsupported.
+  only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
+  `LATENCY HISTOGRAM` reports the same bounded 32-bucket approximation as
+  `INFO latencystats`, not exact HDR percentiles.
   **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
   and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
   `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
