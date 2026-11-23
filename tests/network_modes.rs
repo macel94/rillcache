@@ -97,6 +97,50 @@ fn read_resp_frame(stream: &mut TcpStream) -> Vec<u8> {
     frame
 }
 
+#[cfg(unix)]
+#[test]
+fn tokio_applies_live_connection_limit_to_admission_and_task_start() {
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        io_mode: rillcache::server::IoMode::Tokio,
+        max_clients: 1,
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"PING"]);
+    expect(&mut admin, b"+PONG\r\n");
+    expect(
+        &mut connect(&server),
+        b"-ERR max number of clients reached\r\n",
+    );
+
+    send(&mut admin, &[b"CONFIG", b"SET", b"maxclients", b"2"]);
+    expect(&mut admin, b"+OK\r\n");
+    let mut second = connect(&server);
+    send(&mut second, &[b"PING"]);
+    expect(&mut second, b"+PONG\r\n");
+
+    send(&mut admin, &[b"CONFIG", b"SET", b"maxclients", b"1"]);
+    expect(&mut admin, b"+OK\r\n");
+    expect(
+        &mut connect(&server),
+        b"-ERR max number of clients reached\r\n",
+    );
+    for client in [&mut admin, &mut second] {
+        send(client, &[b"PING"]);
+        expect(client, b"+PONG\r\n");
+    }
+    send(&mut admin, &[b"CONFIG", b"SET", b"maxclients", b"3"]);
+    expect(&mut admin, b"+OK\r\n");
+    let mut third = connect(&server);
+    send(&mut third, &[b"PING"]);
+    expect(&mut third, b"+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
 #[test]
 fn fragmented_and_pipelined_wire_errors_are_isolated_in_every_mode() {
     for (workers, async_io) in MODES {

@@ -62,8 +62,10 @@ CONFIG SET appendfsync no
 The update applies to the open journal immediately and affects subsequent
 appends. Switching away from `no` first syncs records that were previously only
 written to the operating system, so the stronger policy covers acknowledged
-writes already in the file; a sync failure leaves the journal failed and returns
-an error. `appendonly` and `appendfilename` are startup-only and reject
+writes already in the file. If that sync fails, the journal is marked failed,
+but retains the old policy and does not apply any other settings in the same
+`CONFIG SET` command or evict keys under a proposed smaller memory budget.
+`appendonly` and `appendfilename` are startup-only and reject
 `CONFIG SET` with a visible error. There is no `redis.conf` reload and no
 runtime `appendonly yes`/`no` toggle: restart with the desired flags to open,
 close or rename the journal. When append-only persistence is disabled the
@@ -247,6 +249,32 @@ The lock does not coordinate writers on a shared/network filesystem; such a volu
 is unsupported and is explicitly excluded by the
 [standalone production profile](production-profile.md). Keep journals on local
 storage or guarantee single-process access externally.
+
+## Import a bounded offline string journal
+
+For a deliberately exported DB 0 string dataset, `scripts/import_string_journal.py`
+converts RESP arrays of bulk strings to a legacy Rillcache journal. Supply one
+`SET key value` or `SET key value PXAT unix-ms` record per exported value; an
+initial `SELECT 0` is optional. Use binary bulk strings for keys and values and
+absolute (not relative) expirations. This tool does not extract a snapshot from
+a running server or read a native multipart AOF, RDB preamble, other database,
+transaction, or non-string records. Do not point it at a live source or target.
+
+```sh
+python3 scripts/import_string_journal.py snapshot.resp /isolated/appendonly.aof
+rillcache-backup create --dir /isolated --output /checkpoints/import.rcb
+rillcache-backup verify --input /checkpoints/import.rcb
+```
+
+Use a stopped, empty, trusted staging directory and a local filesystem that
+supports hard links. The tool accepts at most 16 MiB total, 2 MiB per frame and
+1 MiB per bulk argument. It stages the complete output beside the target and
+never overwrites an existing journal. A `PXAT` record becomes `SET` followed by
+`PEXPIREAT`; records replay in order. Keep the source and verified checkpoint,
+compare exact strings, expirations and counts with the source, and test
+recovery before allowing traffic. The destination must not be started until
+validation succeeds. Full native AOF interchange, power-loss durability of
+publication, and live cutover are not established by this conversion.
 
 ## Offline backup and restore
 

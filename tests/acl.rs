@@ -198,6 +198,52 @@ fn acl_load_rejects_an_oversized_file_without_publishing_partial_rules() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn secure_acl_load_checks_the_replacement_before_publishing() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = temp_name("secure-load");
+    let replacement = path.with_extension("replacement");
+    let default = b"user default on nopass ~* &* +@all\n";
+    let mut original = default.to_vec();
+    original.extend_from_slice(b"user reader on >fixture-password ~app:* -@all +get\n");
+    std::fs::write(&path, original).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = start(Config {
+        aclfile: Some(path.clone()),
+        secure_secret_files: true,
+        ..Config::default()
+    });
+    let mut admin = connect(&server);
+    let mut reader = connect(&server);
+    send(&mut admin, &[b"SET", b"app:key", b"value"], b"+OK\r\n");
+    send(
+        &mut reader,
+        &[b"AUTH", b"reader", b"fixture-password"],
+        b"+OK\r\n",
+    );
+    std::fs::write(&replacement, default).unwrap();
+    std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o640)).unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    send(
+        &mut admin,
+        &[b"ACL", b"LOAD"],
+        b"-ERR ACL file must be regular with no group or other permissions\r\n",
+    );
+    send(&mut reader, &[b"GET", b"app:key"], b"$5\r\nvalue\r\n");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    send(&mut admin, &[b"ACL", b"LOAD"], b"+OK\r\n");
+    send(
+        &mut reader,
+        &[b"GET", b"app:key"],
+        b"-NOAUTH Authentication required.\r\n",
+    );
+    send(&mut admin, &[b"GET", b"app:key"], b"$5\r\nvalue\r\n");
+    server.shutdown().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn acl_file_and_authentication_failures_are_visible_at_startup() {
     let missing = temp_name("missing");

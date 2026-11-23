@@ -155,9 +155,10 @@ impl Clock for SystemClock {
     }
 }
 
-/// Bounded logarithmic latency buckets for `INFO latencystats`. Bucket zero is
-/// zero microseconds; bucket n covers `2^(n-1) ..= 2^n - 1`, saturating at the
-/// last bucket. This is an approximation, not an HDR histogram.
+/// Bounded logarithmic latency buckets for `INFO latencystats` and
+/// `LATENCY HISTOGRAM`. Bucket zero is zero microseconds; bucket n covers
+/// `2^(n-1) ..= 2^n - 1`, saturating at the last bucket. This is an
+/// approximation, not an HDR histogram.
 const LATENCY_BUCKETS: usize = 32;
 
 /// Per-command counters exposed through `INFO commandstats`. Each slot maps to
@@ -189,11 +190,30 @@ pub(super) struct CommandLatencyValues {
     pub p999: u64,
 }
 
+/// One non-empty latency bucket: inclusive upper bound in microseconds and the
+/// number of calls observed inside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CommandHistogramValues {
+    pub name: &'static str,
+    pub calls: u64,
+    /// Non-empty `(upper_bound_usec, calls)` buckets in increasing order.
+    pub buckets: Vec<(u64, u64)>,
+}
+
 fn latency_bucket(micros: u64) -> usize {
     if micros == 0 {
         0
     } else {
         ((u64::BITS - micros.leading_zeros()) as usize).min(LATENCY_BUCKETS - 1)
+    }
+}
+
+/// Inclusive upper bound in microseconds of one bounded logarithmic bucket.
+fn latency_bucket_upper_usec(bucket: usize) -> u64 {
+    if bucket == 0 {
+        0
+    } else {
+        (1u64 << u32::try_from(bucket).unwrap_or(u32::MAX)).saturating_sub(1)
     }
 }
 
@@ -833,6 +853,49 @@ impl ServerServices {
                     p50: latency_percentile(&counts, total, 500),
                     p99: latency_percentile(&counts, total, 990),
                     p999: latency_percentile(&counts, total, 999),
+                })
+            })
+            .collect()
+    }
+
+    /// Approximate per-command latency histograms backed by the same bounded
+    /// logarithmic buckets as `INFO latencystats`. Only commands with recorded
+    /// calls and only non-empty buckets are returned, in increasing
+    /// upper-bound order. The upper bound of bucket 0 is zero microseconds.
+    pub(super) fn latency_histograms(&self, filters: &[&[u8]]) -> Vec<CommandHistogramValues> {
+        // The selection is bounded by the registry, not the number of filters.
+        let selected = (!filters.is_empty()).then(|| {
+            let mut selected = vec![false; self.command_stats.len()];
+            for index in filters
+                .iter()
+                .filter_map(|name| discovery::command_index(name))
+            {
+                selected[index] = true;
+            }
+            selected
+        });
+        self.command_stats
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stat)| {
+                if selected.as_ref().is_some_and(|mask| !mask[index]) {
+                    return None;
+                }
+                let calls = stat.calls.load(Ordering::Relaxed);
+                if calls == 0 {
+                    return None;
+                }
+                let mut buckets = Vec::new();
+                for (bucket, count) in stat.latency.iter().enumerate() {
+                    let count = count.load(Ordering::Relaxed);
+                    if count > 0 {
+                        buckets.push((latency_bucket_upper_usec(bucket), count));
+                    }
+                }
+                (!buckets.is_empty()).then(|| CommandHistogramValues {
+                    name: discovery::command_name_at(index).unwrap_or("unknown"),
+                    calls,
+                    buckets,
                 })
             })
             .collect()
@@ -1492,16 +1555,19 @@ impl ShardExecutor {
     }
 
     pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
-        if let Some(journal) = self.journal.as_ref() {
-            let mut journal = journal
-                .lock()
-                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
-            journal.set_policy(policy)?;
-        }
+        let mut journal = self
+            .journal
+            .as_ref()
+            .map(std::sync::Mutex::lock)
+            .transpose()
+            .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
         let mut config = self
             .aof_config
             .write()
             .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        if let Some(journal) = journal.as_mut() {
+            journal.set_policy(policy)?;
+        }
         config.policy = policy;
         Ok(())
     }

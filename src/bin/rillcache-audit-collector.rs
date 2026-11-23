@@ -149,11 +149,7 @@ impl Output {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        match fs::remove_file(&self.rotated) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        // Replace the previous generation only if the rename succeeds.
         fs::rename(&self.path, &self.rotated)?;
         self.file = open_append(&self.path)?;
         self.written = 0;
@@ -352,6 +348,32 @@ mod tests {
         let mut rotated = path.as_os_str().to_os_string();
         rotated.push(".1");
         let _ = fs::remove_file(PathBuf::from(rotated));
+    }
+
+    #[test]
+    fn failed_collector_rotation_keeps_the_previous_generation() {
+        let path = temp_path("rotate-failure");
+        let parked = path.with_extension("parked");
+        let mut output = Output::open(&path, 1024).unwrap();
+        let mut active = vec![b'x'; 1023];
+        output.append(&active).unwrap();
+        active.push(b'\n');
+        fs::write(&output.rotated, b"previous generation\n").unwrap();
+        fs::rename(&path, &parked).unwrap();
+        assert_eq!(
+            output.append(b"next").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&output.rotated).unwrap(), b"previous generation\n");
+        assert_eq!(fs::read(&parked).unwrap(), active);
+        fs::rename(&parked, &path).unwrap();
+        output.append(b"next").unwrap();
+        assert_eq!(fs::read(&output.rotated).unwrap(), active);
+        assert_eq!(fs::read(&path).unwrap(), b"next\n");
+        let rotated = output.rotated.clone();
+        drop(output);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

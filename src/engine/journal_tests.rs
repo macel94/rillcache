@@ -1927,6 +1927,62 @@ fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_appendfsync_sync_preserves_config_and_data() {
+    let path = aof_path("config-fsync-failure");
+    let store = open(&path, FsyncPolicy::No);
+    assert_eq!(
+        run(
+            &store,
+            &[b"CONFIG", b"SET", b"maxmemory-policy", b"allkeys-lru"]
+        ),
+        b"+OK\r\n"
+    );
+    assert_eq!(run(&store, &[b"SET", b"retained", b"v\0x"]), b"+OK\r\n");
+    let fields: &[&[u8]] = &[
+        b"CONFIG",
+        b"GET",
+        b"appendfsync",
+        b"maxmemory",
+        b"hash-max-listpack-entries",
+    ];
+    let before = run(&store, fields);
+    let journal_bytes = std::fs::read(&path).unwrap();
+    assert!(store.call(|executor| {
+        let mut journal = executor.journal.as_ref().unwrap().lock().unwrap();
+        // Linux /dev/null accepts writes but rejects sync_all. Swap only the
+        // isolated test store's open descriptor, never the journal on disk.
+        journal.file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        true
+    }));
+    assert_eq!(
+        run(
+            &store,
+            &[
+                b"CONFIG",
+                b"SET",
+                b"maxmemory",
+                b"1",
+                b"hash-max-listpack-entries",
+                b"64",
+                b"appendfsync",
+                b"always",
+            ]
+        ),
+        b"-ERR appendfsync update failed\r\n"
+    );
+    assert_eq!(store.journal_policy(), Some(FsyncPolicy::No));
+    assert_eq!(run(&store, fields), before);
+    assert_eq!(run(&store, &[b"GET", b"retained"]), b"$3\r\nv\0x\r\n");
+    assert_eq!(std::fs::read(&path).unwrap(), journal_bytes);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn automatic_rewrite_compacts_after_configured_growth() {
     let path = aof_path("auto-rewrite");

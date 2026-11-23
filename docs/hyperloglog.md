@@ -40,8 +40,8 @@ payloads — and replies `+OK` (or a named `ERR HyperLogLog self-test failed:
 - `PFDEBUG GETREG <key>` returns the 16,384 register values as an integer array.
   An exact value is projected into a zeroed array without mutating the stored
   value or its WATCH version; a dense value returns its stored registers. A
-  missing key reports the empty exact value (all-zero registers, `exact`) and is
-  recorded as a key miss without creating a key.
+  missing or expired key reports the empty exact value (all-zero registers,
+  `exact`). The diagnostic itself does not create or reap keys.
 
 Redis's `PFDEBUG DECODE`/`TODENSE` payload conversions return an explicit
 `ERR PFDEBUG supports only ENCODING and GETREG for this private representation`

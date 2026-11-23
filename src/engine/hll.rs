@@ -650,43 +650,38 @@ impl ShardExecutor {
             );
             return;
         }
-        let Ok(mut data) = self.data.try_borrow_mut() else {
-            internal_error(out);
-            return;
-        };
-        let now = self.now(&data);
-        match inspect_shape(&mut data, key, now) {
-            Shape::Missing => {
-                data.record_key_miss(key);
-                if subcommand.eq_ignore_ascii_case(b"ENCODING") {
-                    encode_bulk(Some(b"exact"), out);
-                } else {
-                    write_array_len(DENSE_REGISTERS, out);
-                    for _ in 0..DENSE_REGISTERS {
-                        integer(0, out);
-                    }
-                }
-            }
-            Shape::WrongType => wrong_type(out),
-            Shape::Invalid => out.extend_from_slice(INVALID_HLL),
-            Shape::Exact | Shape::Dense => {
-                let Some(entry) = data.entries.get(key) else {
-                    internal_error(out);
+        let hll = {
+            let Ok(data) = self.data.try_borrow() else {
+                internal_error(out);
+                return;
+            };
+            let now = self.now(&data);
+            if let Some(entry) = data.entries.get(key).filter(|entry| entry.alive(now)) {
+                if !entry.is_string() {
+                    wrong_type(out);
                     return;
-                };
+                }
                 let Some(hll) = Hll::parse(&entry.value) else {
                     out.extend_from_slice(INVALID_HLL);
                     return;
                 };
-                if subcommand.eq_ignore_ascii_case(b"ENCODING") {
-                    encode_bulk(Some(hll.encoding()), out);
-                } else {
-                    let registers = hll.registers();
-                    write_array_len(registers.len(), out);
-                    for register in registers {
-                        integer(i64::from(register), out);
-                    }
-                }
+                Some(hll)
+            } else {
+                None
+            }
+        };
+        if subcommand.eq_ignore_ascii_case(b"ENCODING") {
+            encode_bulk(Some(hll.as_ref().map_or(b"exact", Hll::encoding)), out);
+        } else if let Some(hll) = hll {
+            let registers = hll.registers();
+            write_array_len(registers.len(), out);
+            for register in registers {
+                integer(i64::from(register), out);
+            }
+        } else {
+            write_array_len(DENSE_REGISTERS, out);
+            for _ in 0..DENSE_REGISTERS {
+                integer(0, out);
             }
         }
     }
@@ -799,6 +794,35 @@ mod tests {
         assert!(run(&store, &[b"PFDEBUG", b"ENCODING", b"plain"]).starts_with(b"-WRONGTYPE"));
         run(&store, &[b"SET", b"broken", b"not-an-hll"]);
         assert!(run(&store, &[b"PFDEBUG", b"GETREG", b"broken"]).starts_with(b"-WRONGTYPE"));
+    }
+
+    #[test]
+    fn debug_treats_expired_hll_as_missing_without_reaping_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        #[derive(Default)]
+        struct TestClock(AtomicI64);
+        impl super::super::Clock for TestClock {
+            fn now_ms(&self) -> i64 {
+                self.0.load(Ordering::Relaxed)
+            }
+        }
+
+        let clock = Arc::new(TestClock::default());
+        let store = ShardExecutor::with_clock(1 << 20, clock.clone());
+        assert_eq!(run(&store, &[b"PFADD", b"hll", b"a"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"PEXPIRE", b"hll", b"100"]), b":1\r\n");
+        clock.0.store(101, Ordering::Relaxed);
+
+        let mut out = Vec::new();
+        // Run the diagnostic directly, without command dispatch maintenance.
+        store.pfdebug(&[b"PFDEBUG", b"GETREG", b"hll"], &mut out);
+        assert!(out.starts_with(b"*16384\r\n"));
+        assert!(register_values(&out).iter().all(|&value| value == 0));
+        let data = store.data.try_borrow().unwrap();
+        assert!(data.entries.contains_key(b"hll".as_slice()));
+        assert_eq!(data.expired_keys, 0);
     }
 
     #[test]

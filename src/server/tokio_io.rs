@@ -74,10 +74,20 @@ struct Context {
     stopping: Arc<AtomicBool>,
     controls: Controls,
     cold: ColdExecutor,
-    task_limit: usize,
+    task_limit: Option<usize>,
 }
 
 impl Context {
+    fn tasks_at_capacity(&self, active: usize) -> bool {
+        if let Some(limit) = self.task_limit {
+            return active >= limit;
+        }
+        // Registration includes queued clients. Honor increases and let
+        // already-admitted work start after a decrease. The accept loop
+        // still rejects new sockets at the lower limit.
+        active >= self.store.max_clients() && active >= self.store.connected_clients()
+    }
+
     fn failure_guard(&self) -> FailureStop {
         FailureStop {
             stopping: Arc::clone(&self.stopping),
@@ -255,10 +265,7 @@ pub(super) fn serve(
     stopping: Arc<AtomicBool>,
     workers: usize,
 ) -> io::Result<()> {
-    // max_clients bounds active task sets as well as registered/queued clients.
-    // Channel capacity alone would not bound an eagerly drained JoinSet.
-    let task_limit = config.max_clients;
-    serve_with_task_limit(listener, config, store, stopping, workers, task_limit)
+    serve_with_task_limit(listener, config, store, stopping, workers, None)
 }
 
 fn serve_with_task_limit(
@@ -267,7 +274,7 @@ fn serve_with_task_limit(
     store: Arc<Store>,
     stopping: Arc<AtomicBool>,
     workers: usize,
-    task_limit: usize,
+    task_limit: Option<usize>,
 ) -> io::Result<()> {
     let cores = core_affinity::get_core_ids().unwrap_or_default();
     let workers = workers.clamp(1, 64);
@@ -299,7 +306,7 @@ fn serve_with_task_limit(
             sender,
             permit: Arc::new(Semaphore::new(1)),
         },
-        task_limit: task_limit.max(1),
+        task_limit: task_limit.map(|limit| limit.max(1)),
     });
     // Runtime zero accepts AND serves clients. Exactly N network runtime
     // threads, plus one separately accounted cold-service thread; no N+1
@@ -508,7 +515,7 @@ async fn accept_loop(
                 for offset in 0..count {
                     let index = (next_lane + offset) % count;
                     if index == 0 {
-                        if tasks.len() >= context.task_limit {
+                        if context.tasks_at_capacity(tasks.len()) {
                             continue;
                         }
                         context.spawn(
@@ -605,7 +612,7 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
             if context.stopped() {
                 return Ok(());
             }
-            if tasks.len() >= context.task_limit {
+            if context.tasks_at_capacity(tasks.len()) {
                 // Capacity includes active tasks, not just the routing mailbox.
                 // Poll stop even if every active client is idle/backpressured.
                 tokio::time::sleep(POLL_TICK).await;

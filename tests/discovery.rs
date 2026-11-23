@@ -592,6 +592,13 @@ fn info_payload_headroom_tracks_admission_and_deletion() {
             b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
         );
         assert_eq!(
+            request(&mut client, &[
+                b"CONFIG", b"SET", b"maxmemory", b"16", b"appendonly", b"yes",
+            ]),
+            b"-ERR appendonly and appendfilename are startup-only; restart with the desired options\r\n"
+        );
+        check(&mut client, b"memory", 0, 8);
+        assert_eq!(
             request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"16"]),
             b"+OK\r\n"
         );

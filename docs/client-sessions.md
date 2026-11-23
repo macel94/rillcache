@@ -114,7 +114,10 @@ push frames and `MONITOR` feeds are separate from command replies.
 `CLIENT NO-EVICT ON|OFF` is accepted and replies `+OK`. Established clients are
 never evicted—`max_clients` rejects new connections—so both modes have the same
 enforced behavior. The flag is not separately reported because no eviction path
-exists to suppress.
+exists to suppress. `CONFIG SET maxclients` also applies to the opt-in Tokio
+transport: raising it lets newly admitted connections start without waiting
+for a startup cap; lowering it refuses new excess connections without closing
+or withholding service from connections already admitted.
 
 Client-side caching is not implemented, so its introspection reports the disabled
 state: `CLIENT GETREDIR` returns `-1`, `CLIENT TRACKINGINFO` reports flags

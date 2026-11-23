@@ -121,7 +121,8 @@ n covers `2^(n-1)..=2^n-1` up to a saturating last bucket. Commands without
 recorded calls are omitted, the disabled state returns an empty section,
 `CONFIG RESETSTAT` clears the histograms, and enabling commandstats starts fresh.
 No timer, histogram update or latency distribution exists while the collector is
-disabled.
+disabled. `LATENCY HISTOGRAM` exposes the same buckets through the `LATENCY`
+command.
 
 `INFO server`, `memory` and `keyspace` remain available. Payload fields
 (`rillcache_payload_*`, `total.allocated`, `dataset.bytes`) are logical key/value
@@ -187,6 +188,21 @@ only from measured series, and `LATENCY HELP` lists the supported subcommands.
 Unknown history events return an empty array and resetting unknown events returns
 zero.
 
+`LATENCY HISTOGRAM [command ...]` returns the bounded per-command latency
+histogram collected by `commandstats-enabled`, as an array of
+`[command, [calls, <count>, histogram_usec, [bucket_usec, <count>, ...]]]`
+entries in registry order. Bucket keys are inclusive upper bounds in
+microseconds for the same 32 logarithmic buckets as [INFO
+latencystats](#info-latencystats); bucket 0 (zero microseconds) has upper bound
+0, and bucket `n` covers `2^(n-1)..=2^n-1`. Only non-empty buckets are listed,
+in increasing order. If no command names are given, every command with recorded
+dispatches is returned; otherwise only the named ones (case-insensitive) that
+have recorded data, so unknown names simply match nothing. The reply is empty
+while `commandstats-enabled` is `no` or after `CONFIG RESETSTAT`. Bin counts are
+relaxed-atomic observations, not exact per-request timings, and the reply is a
+RESP2 array shape for both protocols (this server does not emit RESP3 map
+frames).
+
 Samples are recorded only when `latency-monitor-threshold` milliseconds is
 non-zero and a measured event reaches that threshold. The default is `0`
 (disabled); `CONFIG GET/SET latency-monitor-threshold` exposes and updates it at
@@ -198,9 +214,10 @@ two event classes:
 - `expire-cycle`: bounded expiry reclamation in the maintenance loop.
 
 Fork, AOF write/fsync, eviction-cycle, active-defrag and replication latency are
-not measured and are never fabricated. `LATENCY GRAPH` and `LATENCY HISTOGRAM`
-return explicit unsupported errors rather than partial data. Data is
-process-local, in-memory and reset on restart or benchmark/manual reset.
+not measured and are never fabricated. `LATENCY GRAPH` returns an explicit
+unsupported error rather than partial data. Event samples and command
+histograms are process-local, in-memory and reset on restart or
+benchmark/manual reset.
 
 ## Scope and reset
 

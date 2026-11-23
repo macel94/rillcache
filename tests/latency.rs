@@ -160,9 +160,11 @@ fn latency_configuration_shapes_and_errors_work_in_all_modes() {
             call(&mut stream, &[b"LATENCY", b"GRAPH", b"command"]),
             Value::Error(b"ERR LATENCY GRAPH is unsupported; use LATENCY HISTORY".to_vec())
         );
+        // The per-command histogram is fed by commandstats-enabled, which is
+        // off here, so the documented empty array is returned.
         assert_eq!(
             call(&mut stream, &[b"LATENCY", b"HISTOGRAM"]),
-            Value::Error(b"ERR LATENCY HISTOGRAM is unsupported; use LATENCY HISTORY".to_vec())
+            Value::Array(Some(Vec::new()))
         );
         assert!(matches!(
             call(&mut stream, &[b"LATENCY", b"BOGUS"]),
