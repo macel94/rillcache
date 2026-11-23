@@ -37,6 +37,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   loader shall read at most 4 MiB plus one byte to detect overflow, independent
   of reported file size. An oversized file shall be rejected without publishing
   a replacement map. A valid file exactly at the limit shall still load.
+- **R505 (unwanted behavior):** When `--secure-secret-files` is enabled on
+  Unix, reject an opened ACL file that is non-regular or has group or other
+  permission bits, at startup and on `ACL LOAD`. On reload failure, retain the
+  active ACL and return a diagnostic without file paths or credentials.
 - **R114 (state-driven):** While a connection is authenticated as a user, the
   server shall evaluate ordered command/category rules and declared key positions
   before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall

@@ -244,6 +244,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   with its header, `verify` and `restore` shall reject it before creating a
   staging file. Matching length does not waive streamed length and CRC checks,
   trailing-data detection, or journal replay validation.
+- **R503 (unwanted behavior):** If the sync required to change `appendfsync`
+  fails, mark journal write health as failed, retain the current policy, and do
+  not publish any other settings or evict keys for a budget in that `CONFIG SET`.
 - **R499 (unwanted behavior):** If `create` targets an existing archive, refuse
   without changing the archive or source journal or leaving staging or lock
   files. A retry to a new filename shall capture the newer journal while the

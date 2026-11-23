@@ -239,8 +239,12 @@ user; exceeding a bound is a visible error, not truncation.
 Startup and `ACL LOAD` read at most 4 MiB plus one byte to detect overflow,
 regardless of the size reported by file metadata. This caps bytes read, not
 I/O time or total memory use. `ACL LOAD` parses a replacement map before
-publishing it; a rejected file leaves the previous rules active. `ACL SAVE/LOAD`
-require a configured ACL file. The `default` user cannot be deleted.
+publishing it; a rejected file leaves the previous rules active. With
+`--secure-secret-files`, startup and `ACL LOAD` also check that the opened ACL
+file is regular and has no group or other permission bits before reading it.
+Apply restrictive permissions to a replacement before publishing it. This is
+not an owner-identity check or an I/O deadline. `ACL SAVE/LOAD` require a
+configured ACL file. The `default` user cannot be deleted.
 
 Authorization is evaluated before command dispatch and store access for known
 commands with declared keys. `EXEC` re-checks every queued command against the
