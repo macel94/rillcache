@@ -342,7 +342,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   for the failed write or echo datagram contents.
 - **R508 (unwanted behavior):** If the audit producer or collector cannot
   rename the active file over the previous generation, keep the previous
-  generation unchanged. A successful rename may replace it as before.
+  generation unchanged. A successful rename may replace it as before. If the
+  server cannot then reopen its active file, later writes shall retry that open
+  without rotating or appending to the archive; failed records are not replayed.
 - **R483 (unwanted behavior):** If the newline-normalized record exceeds
   `--max-bytes`, count and drop the datagram before writing or rotating, even
   if its raw size fits `--max-datagram`. A record exactly at the file bound

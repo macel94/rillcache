@@ -167,7 +167,9 @@ bounds, so the file never contains plaintext passwords or key values. The file i
 flushed per denial and reserves one generation for rotation at
 `--audit-log-max-bytes` (1 KiB..=1 GiB, default 8 MiB), renaming the previous file
 over `PATH.1` without first removing the older generation. A failed rename
-leaves the older generation in place. `ACL LOG RESET` clears only the in-memory
+leaves the older generation in place. If rotation succeeds but reopening the
+active path fails, the next local audit write retries the open without rotating
+or appending to `PATH.1`. Failed records are not replayed. `ACL LOG RESET` clears only the in-memory
 aggregation; the file is append-only and appends across restart. Runtime write failures leave the command
 reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
 a local audit aid, not fsync-per-line durability, full-chain signing/key
