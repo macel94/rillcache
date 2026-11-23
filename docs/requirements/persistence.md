@@ -341,6 +341,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   no-expiry clock shortcut, tombstone-claim semantics and the absence of history
   for deleted/renamed consumers.
 
+## Bounded offline string import
+
+- **R509 (event-driven):** Given an offline RESP stream consisting of an
+  optional initial `SELECT 0` and string `SET` records with optional positive
+  absolute `PXAT` expirations, emit a legacy Rillcache journal containing the
+  exact binary keys, values and expiry commands. Reject malformed, unsupported
+  or oversized input before publication. Never modify the source or replace
+  an existing destination. This does not establish native AOF interchange.
+
 ## Offline backup verification staging (S126)
 
 - **R448 (event-driven):** When `rillcache-backup verify --temp-dir DIR` runs,
