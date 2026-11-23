@@ -166,8 +166,11 @@ empty and newline-containing subjects are hex-encoded and truncated to fixed
 bounds, so the file never contains plaintext passwords or key values. The file is
 flushed per denial and reserves one generation for rotation at
 `--audit-log-max-bytes` (1 KiB..=1 GiB, default 8 MiB), renaming the previous file
-to `PATH.1`. `ACL LOG RESET` clears only the in-memory aggregation; the file is
-append-only and appends across restart. Runtime write failures leave the command
+over `PATH.1` without first removing the older generation. A failed rename
+leaves the older generation in place. If rotation succeeds but reopening the
+active path fails, the next local audit write retries the open without rotating
+or appending to `PATH.1`. Failed records are not replayed. `ACL LOG RESET` clears only the in-memory
+aggregation; the file is append-only and appends across restart. Runtime write failures leave the command
 reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
 a local audit aid, not fsync-per-line durability, full-chain signing/key
 rotation, authenticated/centralized shipping or a substitute for rate limiting
@@ -207,7 +210,9 @@ operationally (defaults are loopback and `audit.log`); each nonempty datagram up
 to `--max-datagram` is appended as one newline-terminated line, flushed, and
 rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty and oversized
 records are dropped and counted; a line must also fit `--max-bytes`, including
-any added newline. An oversized record does not rotate the output. An existing
+any added newline. An oversized record does not rotate the output. A failed
+rotation rename retains the previous `PATH.1`; this does not guarantee recovery
+from a later reopen failure or a crash. An existing
 oversized file is not rewritten on startup. `--max-datagrams N` exits after N accepted datagrams for
 bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
 16..=1024-byte key and retains only lines with a valid per-line HMAC, while
