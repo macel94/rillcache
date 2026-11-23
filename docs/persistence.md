@@ -62,8 +62,10 @@ CONFIG SET appendfsync no
 The update applies to the open journal immediately and affects subsequent
 appends. Switching away from `no` first syncs records that were previously only
 written to the operating system, so the stronger policy covers acknowledged
-writes already in the file; a sync failure leaves the journal failed and returns
-an error. `appendonly` and `appendfilename` are startup-only and reject
+writes already in the file. If that sync fails, the journal is marked failed,
+but retains the old policy and does not apply any other settings in the same
+`CONFIG SET` command or evict keys under a proposed smaller memory budget.
+`appendonly` and `appendfilename` are startup-only and reject
 `CONFIG SET` with a visible error. There is no `redis.conf` reload and no
 runtime `appendonly yes`/`no` toggle: restart with the desired flags to open,
 close or rename the journal. When append-only persistence is disabled the
