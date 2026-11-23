@@ -96,9 +96,11 @@ not approve a release profile or establish full hash compatibility.
 
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
-This selects only the verified MSETEX short-pair error wording: pinned Redis
-expects `ERR wrong number of key-value pairs`, while pinned Valkey expects
-`ERR syntax error` for the same invalid counted block. The default application
+For `MSETEX` short pairs, pinned Redis expects `ERR wrong number of key-value
+pairs`, while pinned Valkey expects `ERR syntax error`. The setting also
+selects `HGETDEL` wording for an incorrect `FIELDS` token, a malformed count,
+or a nonpositive or mismatched count. It does not change validation order,
+data handling, or other command behavior. The default application
 setting remains Valkey. The runner records the dialect in result JSON, the
 summary and `server.json` alongside the exact argv; no test name, command input,
 assertion or exclusion controls this choice. The original Tcl is unchanged.

@@ -60,6 +60,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
     "collections": (
         "src/engine/collections.rs",
         "src/engine/collection_commands.rs",
+        "src/engine/error_dialect.rs",
         "src/engine/collection_config.rs",
         "src/engine/sort.rs",
         "src/engine/geo.rs",
@@ -74,6 +75,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/geospatial.md",
         "docs/sort.md",
         "tests/collections*.rs",
+        "tests/hash_random.rs",
         "tests/geo*.rs",
         "tests/sort*.rs",
         "tests/bitfield*.rs",

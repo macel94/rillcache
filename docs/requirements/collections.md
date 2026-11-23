@@ -359,6 +359,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   require the FIELDS token, a positive numfields exactly matching the supplied
   fields, and return one value-or-null per field while atomically deleting
   present fields.
+- **R510 (unwanted behavior):** HGETDEL shall reject malformed FIELDS/count
+  arguments before mutation. The startup error dialect selects the pinned
+  Redis or Valkey wording for these errors without changing valid replies or
+  promising matching error precedence across vendors.
 - **R259 (event-driven):** HGETDEL shall preserve remaining TTL and payload
   accounting, delete an emptied hash key, leave missing keys null-filled, and
   touch the key for WATCH/journal capture. Successful deletions shall publish
