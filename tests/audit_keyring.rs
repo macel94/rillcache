@@ -111,7 +111,14 @@ fn collector_accepts_any_active_keyring_key() {
     // The matching signing key is deliberately second: verify real rotation,
     // not merely the same first-key behavior as the server.
     std::fs::write(&keyring, format!("{OLD_HEX}\n{NEW_HEX}\n")).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&keyring, std::fs::Permissions::from_mode(0o400)).unwrap();
+        command.arg("--secure-secret-files");
+    }
+    let mut child = command
         .args([
             "--bind",
             "127.0.0.1:0",

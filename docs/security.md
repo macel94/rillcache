@@ -166,8 +166,11 @@ empty and newline-containing subjects are hex-encoded and truncated to fixed
 bounds, so the file never contains plaintext passwords or key values. The file is
 flushed per denial and reserves one generation for rotation at
 `--audit-log-max-bytes` (1 KiB..=1 GiB, default 8 MiB), renaming the previous file
-to `PATH.1`. `ACL LOG RESET` clears only the in-memory aggregation; the file is
-append-only and appends across restart. Runtime write failures leave the command
+over `PATH.1` without first removing the older generation. A failed rename
+leaves the older generation in place. If rotation succeeds but reopening the
+active path fails, the next local audit write retries the open without rotating
+or appending to `PATH.1`. Failed records are not replayed. `ACL LOG RESET` clears only the in-memory
+aggregation; the file is append-only and appends across restart. Runtime write failures leave the command
 reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
 a local audit aid, not fsync-per-line durability, full-chain signing/key
 rotation, authenticated/centralized shipping or a substitute for rate limiting
@@ -183,7 +186,9 @@ guarantee. Runtime send failures do not change the reply but increment
 remains the durable evidence path.
 
 `--audit-hmac-key-file PATH` authenticates each denial line with a local
-16..=1024-byte key loaded before accept; one trailing newline is stripped. The
+16..=1024-byte key loaded before accept. The server and collector strip one
+trailing LF or CRLF from a raw key file and read at most 1027 bytes to detect
+oversized input. This bounds bytes read, not the time spent on file I/O. The
 server appends one space and a 64-character lowercase hex HMAC-SHA256 over the
 exact line body, using the dependency-free SHA-256 implementation. The same
 signed line is written to the file and UDP sink. Without a key, the five-field
@@ -203,25 +208,45 @@ duties.
 off-host aggregation. `--bind ADDRESS` and `--output PATH` are required
 operationally (defaults are loopback and `audit.log`); each nonempty datagram up
 to `--max-datagram` is appended as one newline-terminated line, flushed, and
-rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
-are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
+rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty and oversized
+records are dropped and counted; a line must also fit `--max-bytes`, including
+any added newline. An oversized record does not rotate the output. A failed
+rotation rename retains the previous `PATH.1`; this does not guarantee recovery
+from a later reopen failure or a crash. An existing
+oversized file is not rewritten on startup. `--max-datagrams N` exits after N accepted datagrams for
 bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
 16..=1024-byte key and retains only lines with a valid per-line HMAC, while
 `--hmac-keyring-file PATH` verifies against any listed rotation key; malformed,
 tampered and wrong-key datagrams are dropped and counted, and a collector without
-a key stores lines unverified. Verification does not authenticate sender
+a key stores lines unverified. On Unix, pass `--secure-secret-files` with either
+key option to require a regular file with no group or other permission bits
+(for example, mode `0400` or `0600`). The collector checks the opened file before
+reading and rejects invalid settings before binding. Use a trusted directory;
+this checks mode bits, not owner identity or managed secret custody.
+Verification does not authenticate sender
 identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
 multiple collectors; UDP loss and spoofing remain possible. The output is created
 mode-`0600` on Unix, but directory permissions and key/log custody are operator
-duties; the key is never written to the output or diagnostics.
+duties; the key is never written to the output or diagnostics. An output
+append, flush, or rotation failure exits nonzero and prints the prior counts
+with `output_failures 1`, without echoing the failed datagram. A failed write
+is not counted as accepted and may have left partial output; the summary is
+not an fsync or delivery guarantee.
 
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
 10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
 user; exceeding a bound is a visible error, not truncation.
-`ACL LOAD` parses a replacement map before publishing it. `ACL SAVE/LOAD` require
-a configured ACL file. The `default` user cannot be deleted.
+Startup and `ACL LOAD` read at most 4 MiB plus one byte to detect overflow,
+regardless of the size reported by file metadata. This caps bytes read, not
+I/O time or total memory use. `ACL LOAD` parses a replacement map before
+publishing it; a rejected file leaves the previous rules active. With
+`--secure-secret-files`, startup and `ACL LOAD` also check that the opened ACL
+file is regular and has no group or other permission bits before reading it.
+Apply restrictive permissions to a replacement before publishing it. This is
+not an owner-identity check or an I/O deadline. `ACL SAVE/LOAD` require a
+configured ACL file. The `default` user cannot be deleted.
 
 Authorization is evaluated before command dispatch and store access for known
 commands with declared keys. `EXEC` re-checks every queued command against the

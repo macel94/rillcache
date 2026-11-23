@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "rust": "1.99.1",
+  "rust": "1.100.0",
   "candidate_build": ["cargo", "build", "--release", "--locked", "--offline", "--bin", "rillcache"],
   "native_make_args": ["MALLOC=libc", "BUILD_TLS=no", "OPTIMIZATION=-O3"],
   "upstreams": {

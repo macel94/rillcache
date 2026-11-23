@@ -33,6 +33,14 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   users/rules before accepting clients, require an enabled `default` user, reject
   malformed or missing files at startup, reject combining `--aclfile` with
   `--requirepass`, and preserve the single-password `--requirepass` mode otherwise.
+- **R487 (unwanted behavior):** At startup and during `ACL LOAD`, the ACL file
+  loader shall read at most 4 MiB plus one byte to detect overflow, independent
+  of reported file size. An oversized file shall be rejected without publishing
+  a replacement map. A valid file exactly at the limit shall still load.
+- **R505 (unwanted behavior):** When `--secure-secret-files` is enabled on
+  Unix, reject an opened ACL file that is non-regular or has group or other
+  permission bits, at startup and on `ACL LOAD`. On reload failure, retain the
+  active ACL and return a diagnostic without file paths or credentials.
 - **R114 (state-driven):** While a connection is authenticated as a user, the
   server shall evaluate ordered command/category rules and declared key positions
   before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall
@@ -291,6 +299,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   trailing newline. A missing, unreadable, empty, too-short or oversized key shall
   fail startup. The key shall never appear in `Debug`, logs, errors, replies or
   the audit line.
+- **R476 (unwanted behavior):** When the server or collector reads a raw audit
+  HMAC key file, read at most 1027 bytes, allowing one LF or CRLF and one
+  overflow sentinel. Reject oversized data rather than accepting a prefix.
+  The byte bound does not impose a filesystem I/O deadline or change keyrings.
 - **R400 (state-driven):** While a key is configured, every denial line written
   to the local file or the UDP sink shall append one space and a 64-character
   lowercase hex HMAC-SHA256 over the exact line body (all preceding fields,
@@ -324,6 +336,24 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   failure, option bounds and one-generation rotation. Documentation shall retain
   the absence of sender authentication, HMAC verification, TLS, delivery
   guarantees, multi-host federation, backpressure and chain/key management.
+- **R479 (unwanted behavior):** If collector output append, flush or rotation
+  fails, emit counts for previously accepted and rejected datagrams and
+  `output_failures 1`, then exit nonzero. Do not increment the accepted count
+  for the failed write or echo datagram contents.
+- **R508 (unwanted behavior):** If the audit producer or collector cannot
+  rename the active file over the previous generation, keep the previous
+  generation unchanged. A successful rename may replace it as before. If the
+  server cannot then reopen its active file, later writes shall retry that open
+  without rotating or appending to the archive; failed records are not replayed.
+- **R483 (unwanted behavior):** If the newline-normalized record exceeds
+  `--max-bytes`, count and drop the datagram before writing or rotating, even
+  if its raw size fits `--max-datagram`. A record exactly at the file bound
+  shall fit and subsequent accepted records shall rotate normally.
+
+- **R489 (unwanted behavior):** When the collector uses `--secure-secret-files`,
+  it shall require one HMAC key or keyring file on Unix, check that the opened
+  file is regular and has no group or other permission bits, and refuse invalid
+  settings before binding or opening its output. Do not echo key contents.
 
 ## Authenticated UDP collector lines (S111)
 
@@ -430,6 +460,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   unmapped certificates and reset identity retention, and invalid configuration.
   Documentation shall retain the absence of server-certificate OCSP validation,
   replication TLS and any durability/HA claim.
+- **R454 (event-driven):** When valid binary RESP requests are fragmented over
+  native TLS and followed by an incomplete request, the server shall return
+  exactly one ordered reply per complete command without waiting for the
+  incomplete suffix. When the suffix completes, it shall execute that request
+  once and continue serving the connection. Test all three worker modes.
 
 ## Fail-closed mTLS client-certificate CRLs (S118)
 
@@ -495,6 +530,14 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   clients must independently validate status and may ignore missing/invalid
   staples, and preserve the limits around server-certificate CRLs, external
   terminators and security review.
+- **R475 (unwanted behavior):** If an SNI key fails to load, a reload shall not
+  partially publish either that identity or the default identity. No-SNI and
+  named handshakes shall still receive their previous stapled bytes; fixing the
+  key and publishing a fresh token shall activate both staged responses.
+- **R494 (unwanted behavior):** If a replacement client CRL cannot be parsed,
+  retain the previous TLS verification policy. A valid client CRL published
+  with a fresh token shall apply to new handshakes without disconnecting
+  established sessions. Exercise rejection and recovery using local fixtures.
 
 ## Keyspace-wide ACL isolation (S120)
 

@@ -66,6 +66,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   rejection, lazy expiration and all execution modes. Documentation shall retain
   the missing hit/miss, byte, latency, slowlog, client-list, RSS and metrics gaps.
 
+- **R502 (unwanted behavior):** If a channel, pattern or shard-channel fan-out
+  encounters a full subscriber queue, increment `pubsub_queue_full_drops` once
+  for that failed enqueue and continue fan-out. Exclude disconnected queues and
+  expose the process-lifetime counter in `INFO stats`; it does not report socket
+  delivery or replay.
+
 ## Nonrecursive INFO snapshots (S-INFOLOCK)
 
 - **R-INFO1 (state-driven):** While INFO builds a reply, it shall capture required
@@ -469,6 +475,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Payload memory reporting (S98)
 
+- **R477 (event-driven):** When `INFO memory` or `INFO all` reports logical
+  payload use, `rillcache_payload_headroom_bytes` shall be the displayed
+  payload limit minus the displayed used bytes, clamped at zero. It shall not
+  imply RSS or cgroup headroom. A rejected write shall not consume headroom.
 - **R365 (event-driven):** `MEMORY STATS` shall return a flat RESP2 map containing
   `peak.allocated`, `total.allocated`, `keys.count`, `dataset.bytes`,
   `dataset.percentage`, `rillcache.payload.limit_bytes` and

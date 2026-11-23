@@ -26,7 +26,7 @@ type SniFiles = (
 );
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-global-limit N   Failed AUTH attempts process-wide before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source/global failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC, TLS key, reload-trigger and client-certificate mapping files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-client-cert-users-file PATH  Bounded SHA256=ACL-user mapping file, atomically reloaded with TLS generation\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-aof-write-probe DIR  With require-aof: test one-byte write/sync/remove in this directory\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --check-config           First argument only: validate startup options without binding\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files[=yes|no]  Opt in to owner-only secret file permissions (Unix); bare flag means yes\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; selected MSETEX/HGETDEL errors)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-client-cert-users-file PATH  Bounded SHA256=ACL-user mapping file, atomically reloaded with TLS generation\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-min-payload-headroom BYTES  After --healthcheck: require logical payload headroom\n  --healthcheck-aof-write-probe DIR  With require-aof: test one-byte write/sync/remove in this directory\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --check-config           First argument only: validate startup options without binding\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -39,6 +39,7 @@ enum Options {
         password: Option<Vec<u8>>,
         require_aof: bool,
         aof_write_probe_directory: Option<std::path::PathBuf>,
+        min_payload_headroom: Option<u64>,
         tls: Option<healthcheck::TlsSettings>,
     },
 }
@@ -73,10 +74,11 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
     let mut sni_files: BTreeMap<String, SniFiles> = BTreeMap::new();
     let mut tls_client_cert_users = BTreeMap::new();
     let mut arguments: VecDeque<String> = arguments.into_iter().collect();
+    let mut remaining_config_bytes = config_file::MAX_TOTAL_CONFIG_BYTES;
     while let Some(option) = arguments.pop_front() {
         if option == "--config" || option == "-c" {
             let path = arguments.pop_front().ok_or("missing value for --config")?;
-            let file_arguments = config_file::load(&path)?;
+            let file_arguments = config_file::load(&path, &mut remaining_config_bytes)?;
             for argument in file_arguments.into_iter().rev() {
                 arguments.push_front(argument);
             }
@@ -97,6 +99,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 let mut username = None;
                 let mut require_aof = false;
                 let mut aof_write_probe_directory = None;
+                let mut min_payload_headroom = None;
                 let mut ca_file = None;
                 let mut server_name = None;
                 while let Some(flag) = arguments.pop_front() {
@@ -116,6 +119,13 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             );
                         }
                         "--healthcheck-require-aof" if !require_aof => require_aof = true,
+                        "--healthcheck-min-payload-headroom" if min_payload_headroom.is_none() => {
+                            let value = arguments
+                                .pop_front()
+                                .ok_or("missing value for --healthcheck-min-payload-headroom")?;
+                            let minimum = value.parse::<u64>().ok().filter(|_| value.bytes().all(|byte| byte.is_ascii_digit())).ok_or("--healthcheck-min-payload-headroom requires an unsigned byte count")?;
+                            min_payload_headroom = Some(minimum);
+                        }
                         "--healthcheck-aof-write-probe" if aof_write_probe_directory.is_none() => {
                             let path = arguments
                                 .pop_front()
@@ -177,11 +187,15 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     password,
                     require_aof,
                     aof_write_probe_directory,
+                    min_payload_headroom,
                     tls,
                 });
             }
             "--aof-hmac-migrate" => config.aof_hmac_migrate = true,
-            "--secure-secret-files" => config.secure_secret_files = true,
+            "--secure-secret-files" | "--secure-secret-files=yes" => {
+                config.secure_secret_files = true;
+            }
+            "--secure-secret-files=no" => config.secure_secret_files = false,
             "--bind"
             | "--max-clients"
             | "--auth-failure-limit"
@@ -415,9 +429,6 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         let address = value
                             .parse::<SocketAddr>()
                             .map_err(|_| "--tls-bind requires a numeric IP:port address")?;
-                        if address == config.bind_addr {
-                            return Err("--tls-bind must differ from --bind".into());
-                        }
                         config.tls_bind_addr = Some(address);
                     }
                     "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
@@ -464,6 +475,14 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             }
             _ => return Err(format!("unknown option: {option}")),
         }
+    }
+    // Validate the final listener pair, after applying positional overrides.
+    // Equal port-zero requests are two independent kernel binds.
+    if config
+        .tls_bind_addr
+        .is_some_and(|address| address == config.bind_addr && address.port() != 0)
+    {
+        return Err("--tls-bind must differ from --bind".into());
     }
     config.tls_client_cert_users = tls_client_cert_users;
     for (server_name, (cert_file, key_file, ocsp_file)) in sni_files {
@@ -783,14 +802,19 @@ fn main() -> ExitCode {
             password,
             require_aof,
             aof_write_probe_directory,
+            min_payload_headroom,
             tls,
         }) => {
-            match healthcheck::check_with_aof_write_probe(
+            let status = healthcheck::StatusChecks {
+                require_aof,
+                aof_write_probe_directory: aof_write_probe_directory.as_deref(),
+                min_payload_headroom,
+            };
+            match healthcheck::check_with_status(
                 address,
                 username.as_deref(),
                 password.as_deref(),
-                require_aof,
-                aof_write_probe_directory.as_deref(),
+                status,
                 tls,
             ) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -960,6 +984,29 @@ mod tests {
     }
 
     #[test]
+    fn tls_and_plain_cli_listeners_can_both_request_ephemeral_ports() {
+        let Options::Run(config) = options(
+            [
+                "--bind",
+                "127.0.0.1:0",
+                "--tls-bind",
+                "127.0.0.1:0",
+                "--tls-cert-file",
+                "server.pem",
+                "--tls-key-file",
+                "server.key",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected ephemeral listener config");
+        };
+        assert_eq!(config.bind_addr.port(), 0);
+        assert_eq!(config.tls_bind_addr, Some(config.bind_addr));
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn standalone_defaults_and_appended_container_options_are_distinct() {
         let Options::Run(defaults) = options(Vec::new()).unwrap() else {
             panic!("expected defaults");
@@ -1124,6 +1171,7 @@ mod tests {
             password,
             require_aof,
             aof_write_probe_directory,
+            min_payload_headroom,
             tls,
         } = options(["--bind", "0.0.0.0:6379", "--healthcheck", "[::1]:6379"].map(str::to_owned))
             .unwrap()
@@ -1135,6 +1183,7 @@ mod tests {
         assert!(username.is_none());
         assert!(!require_aof);
         assert!(aof_write_probe_directory.is_none());
+        assert!(min_payload_headroom.is_none());
         assert!(tls.is_none());
     }
 

@@ -5,7 +5,7 @@
 //!
 //! Unlike the in-process persistence tests, these spawn the real binary so the
 //! process can be killed without unwinding, running destructors or flushing
-//! buffers. The two contracts asserted here are deliberately narrow and testable:
+//! buffers. These contracts are deliberately narrow and testable:
 //!
 //! 1. With `appendfsync always`, every write the client saw acknowledged is
 //!    present after `SIGKILL` and restart: the reply must not precede the durable
@@ -13,6 +13,8 @@
 //! 2. With `appendfsync everysec`, the recovered keys form a contiguous prefix of
 //!    the write order. A crash may drop un-fsynced writes, but it must never
 //!    recover a hole or a later write without the earlier ones.
+//! 3. After a local `WAITAOF` acknowledgement, writes made with `no` or
+//!    `everysec` are present after `SIGKILL` and restart on the same host.
 //!
 //! ENOSPC, fsync failure and permission loss are not injectable without either
 //! privileges or unsafe syscalls, so they remain open in the readiness checklist.
@@ -44,7 +46,12 @@ struct Server {
 
 impl Server {
     fn start(dir: &Path, fsync: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        Self::start_with_auth(dir, fsync, None)
+    }
+
+    fn start_with_auth(dir: &Path, fsync: &str, key_file: Option<&Path>) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        command
             .args([
                 "--bind",
                 "127.0.0.1:0",
@@ -56,9 +63,11 @@ impl Server {
             ])
             .arg(dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        if let Some(path) = key_file {
+            command.arg("--aof-hmac-key-file").arg(path);
+        }
+        let mut child = command.spawn().unwrap();
         let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let mut line = String::new();
         stderr.read_line(&mut line).unwrap();
@@ -211,6 +220,106 @@ fn fsync_always_keeps_every_acknowledged_write_across_sigkill() {
     send(&mut stream, &[b"SET", b"after:crash", b"ok"], b"+OK\r\n");
     restarted.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn waitaof_acknowledged_values_replay_after_sigkill_with_no_or_everysec() {
+    for policy in ["no", "everysec"] {
+        let directory = temp_dir(&format!("waitaof-{policy}"));
+        let server = Server::start(&directory, policy);
+        let mut writer = server.connect();
+        let reported = format!(
+            "*2\r\n$11\r\nappendfsync\r\n${}\r\n{policy}\r\n",
+            policy.len()
+        );
+        send(
+            &mut writer,
+            &[b"CONFIG", b"GET", b"appendfsync"],
+            reported.as_bytes(),
+        );
+        let values = [("first", b"one\0"), ("second", b"two\xff")];
+        for (key, value) in values {
+            send(&mut writer, &[b"SET", key.as_bytes(), value], b"+OK\r\n");
+        }
+        send(
+            &mut writer,
+            &[b"WAITAOF", b"1", b"0", b"0"],
+            b"*2\r\n:1\r\n:0\r\n",
+        );
+        // Keep the writer connected until after the kill; no graceful flush.
+        server.kill();
+        drop(writer);
+
+        let restarted = Server::start(&directory, policy);
+        let mut reader = restarted.connect();
+        send(&mut reader, &[b"DBSIZE"], b":2\r\n");
+        for (key, value) in values {
+            assert_eq!(
+                get(&mut reader, key).as_deref(),
+                Some(value.as_slice()),
+                "{policy}: {key}"
+            );
+        }
+        restarted.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn torn_final_transaction_recovers_verified_prefix_and_allows_durable_appends() {
+    for authenticated in [false, true] {
+        let dir = temp_dir(if authenticated {
+            "torn-hmac"
+        } else {
+            "torn-crc"
+        });
+        let journal = dir.join("appendonly.aof");
+        let key_file = authenticated.then(|| {
+            let path = dir.join("test.key");
+            std::fs::write(&path, b"0123456789abcdef\n").unwrap();
+            path
+        });
+        let start = || Server::start_with_auth(&dir, "always", key_file.as_deref());
+        let server = start();
+        let mut stream = server.connect();
+        send(&mut stream, &[b"SET", b"kept", b"original"], b"+OK\r\n");
+        let verified = std::fs::read(&journal).unwrap();
+        assert!(!verified.is_empty());
+        // One MSET emits a single integrity group for both keys. MULTI/EXEC
+        // currently journals its queued commands as separate groups.
+        send(
+            &mut stream,
+            &[b"MSET", b"kept", b"updated", b"torn", b"extra"],
+            b"+OK\r\n",
+        );
+        drop(stream);
+        server.kill();
+
+        // Model a torn final integrity marker, not a loss caused by SIGKILL:
+        // deliberately damage a disposable journal after its writer has exited.
+        let complete = std::fs::read(&journal).unwrap();
+        assert!(complete.starts_with(&verified));
+        assert!(complete.len() > verified.len() + 1);
+        std::fs::write(&journal, &complete[..complete.len() - 1]).unwrap();
+
+        let recovered = start();
+        assert_eq!(std::fs::read(&journal).unwrap(), verified);
+        let mut stream = recovered.connect();
+        send(&mut stream, &[b"GET", b"kept"], b"$8\r\noriginal\r\n");
+        send(&mut stream, &[b"EXISTS", b"torn"], b":0\r\n");
+        send(&mut stream, &[b"SET", b"after", b"durable"], b"+OK\r\n");
+        drop(stream);
+        recovered.shutdown();
+
+        let restarted = start();
+        let mut stream = restarted.connect();
+        send(&mut stream, &[b"GET", b"kept"], b"$8\r\noriginal\r\n");
+        send(&mut stream, &[b"EXISTS", b"torn"], b":0\r\n");
+        send(&mut stream, &[b"GET", b"after"], b"$7\r\ndurable\r\n");
+        drop(stream);
+        restarted.shutdown();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[test]

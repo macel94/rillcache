@@ -6,9 +6,11 @@
 //! Unknown or multi-value Redis directives fail closed so an operator cannot
 //! believe a setting was applied when it was ignored.
 
-const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+use std::io::{self, Read};
 
-const BOOLEAN_DIRECTIVES: &[&str] = &["aof-hmac-migrate"];
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_TOTAL_CONFIG_BYTES: usize = 4 * MAX_CONFIG_BYTES;
+const CONFIG_VERSION: &str = "1";
 
 const ALIASES: &[(&str, &str)] = &[
     ("maxmemory", "max-data-bytes"),
@@ -33,6 +35,7 @@ const SUPPORTED: &[&str] = &[
     "frame-assembly-timeout-ms",
     "requirepass",
     "requirepass-file",
+    "secure-secret-files",
     "aclfile",
     "audit-log",
     "audit-log-max-bytes",
@@ -64,13 +67,20 @@ const SUPPORTED: &[&str] = &[
 ];
 
 /// Read and translate a startup file into command-line arguments.
-pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
+pub(crate) fn load(path: &str, remaining: &mut usize) -> Result<Vec<String>, String> {
     if path.is_empty() {
         return Err("--config requires a nonempty path".into());
     }
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("--config could not read {path}: {error}"))?;
-    if bytes.len() > MAX_CONFIG_BYTES {
+    let limit = MAX_CONFIG_BYTES.min(*remaining);
+    let bytes = std::fs::File::open(path)
+        .and_then(|file| read_capped(file, limit))
+        .map_err(|error| format!("--config could not read {path}: {error}"))?;
+    if bytes.len() > limit {
+        if limit < MAX_CONFIG_BYTES {
+            return Err(format!(
+                "--config files exceed the {MAX_TOTAL_CONFIG_BYTES} byte total limit"
+            ));
+        }
         return Err(format!(
             "--config file exceeds the {} byte limit",
             MAX_CONFIG_BYTES
@@ -82,11 +92,20 @@ pub(crate) fn load(path: &str) -> Result<Vec<String>, String> {
     if arguments.is_empty() {
         return Err("--config file must contain at least one directive".into());
     }
+    *remaining -= bytes.len();
     Ok(arguments)
+}
+
+fn read_capped(reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
+    // Read one extra byte so an oversized file cannot pass as a valid prefix.
+    let mut bytes = Vec::new();
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn parse_text(text: &str) -> Result<Vec<String>, String> {
     let mut arguments = Vec::new();
+    let mut first_directive = true;
     for (index, raw) in text.lines().enumerate() {
         let line = strip_comment(raw);
         let line = line.trim();
@@ -98,6 +117,20 @@ fn parse_text(text: &str) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("line {line_number}: expected a directive and a value"))?;
         let directive = normalize_directive(directive)
             .ok_or_else(|| format!("line {line_number}: empty configuration directive"))?;
+        let is_first = std::mem::take(&mut first_directive);
+        if directive == "config-version" {
+            if !is_first {
+                return Err(format!(
+                    "line {line_number}: config-version must appear once, as the first directive"
+                ));
+            }
+            if parse_value(rest, line_number)? != CONFIG_VERSION {
+                return Err(format!(
+                    "line {line_number}: unsupported configuration version (expected {CONFIG_VERSION})"
+                ));
+            }
+            continue;
+        }
         if matches!(
             directive.as_str(),
             "config" | "help" | "version" | "healthcheck"
@@ -115,22 +148,23 @@ fn parse_text(text: &str) -> Result<Vec<String>, String> {
                 "line {line_number}: unsupported configuration directive '{directive}'"
             ));
         }
-        if BOOLEAN_DIRECTIVES.contains(&directive) {
-            let value = parse_value(rest, line_number)?;
-            match value.as_str() {
-                "yes" => arguments.push(format!("--{directive}")),
-                "no" => {}
-                _ => {
-                    return Err(format!(
-                        "line {line_number}: '{directive}' requires yes or no"
-                    ));
-                }
-            }
-            continue;
-        }
         let value = parse_value(rest, line_number)?;
-        arguments.push(format!("--{directive}"));
-        arguments.push(value);
+        match (directive, value.as_str()) {
+            ("secure-secret-files", "yes" | "no") => {
+                arguments.push(format!("--{directive}={value}"));
+            }
+            ("aof-hmac-migrate", "yes") => arguments.push(format!("--{directive}")),
+            ("aof-hmac-migrate", "no") => {}
+            ("secure-secret-files" | "aof-hmac-migrate", _) => {
+                return Err(format!(
+                    "line {line_number}: '{directive}' requires yes or no"
+                ));
+            }
+            _ => {
+                arguments.push(format!("--{directive}"));
+                arguments.push(value);
+            }
+        }
     }
     Ok(arguments)
 }
@@ -240,6 +274,52 @@ fn parse_single_quoted(body: &str, line_number: usize) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_read_does_not_consume_past_the_oversize_sentinel() {
+        let data = vec![b' '; MAX_CONFIG_BYTES + 32];
+        let mut reader = io::Cursor::new(data);
+        assert_eq!(
+            read_capped(&mut reader, MAX_CONFIG_BYTES).unwrap().len(),
+            MAX_CONFIG_BYTES + 1
+        );
+        assert_eq!(reader.position() as usize, MAX_CONFIG_BYTES + 1);
+        let mut reader = std::io::Cursor::new(b"12345");
+        assert_eq!(read_capped(&mut reader, 2).unwrap().as_slice(), b"123");
+        assert_eq!(reader.position(), 3);
+    }
+
+    #[test]
+    fn version_marker_is_file_metadata_and_unversioned_files_are_unchanged() {
+        let legacy = parse_text("maxclients=12\n").unwrap();
+        assert_eq!(legacy, vec!["--max-clients", "12"]);
+        assert_eq!(
+            parse_text("# before header\n\nconfig-version 1 # v1\nmaxclients=12\n").unwrap(),
+            legacy
+        );
+        for (text, expected) in [
+            ("config-version 2\nmaxclients 12", "line 1: unsupported"),
+            ("maxclients 12\nconfig-version 1", "line 2: config-version"),
+            (
+                "config-version 1\nconfig-version 1\nmaxclients 12",
+                "line 2: config-version",
+            ),
+            ("config-version 1 unexpected", "exactly one value"),
+        ] {
+            let error = parse_text(text).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn documented_startup_file_parses_with_the_current_explicit_version() {
+        let docs = include_str!("../docs/configuration.md");
+        let (_, example) = docs.split_once("```conf\n").unwrap();
+        let (example, _) = example.split_once("\n```").unwrap();
+        let header = format!("config-version {CONFIG_VERSION}");
+        assert!(example.lines().any(|line| line == header));
+        assert!(!parse_text(example).unwrap().is_empty());
+    }
 
     #[test]
     fn parses_comments_aliases_and_quoted_values() {
@@ -356,6 +436,11 @@ aof-hmac-migrate no
             vec!["--aof-hmac-migrate"]
         );
         assert!(parse_text("aof-hmac-migrate true\n").is_err());
+        assert_eq!(
+            parse_text("secure-secret-files yes\nsecure-secret-files=no\n").unwrap(),
+            ["--secure-secret-files=yes", "--secure-secret-files=no"]
+        );
+        assert!(parse_text("secure-secret-files true\n").is_err());
     }
 
     #[test]

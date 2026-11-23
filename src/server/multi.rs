@@ -508,9 +508,11 @@ impl Reactor {
             };
             let slow = run.slow.get_mut(run.next).and_then(Option::take);
             run.next += 1;
-            let start = client
-                .session
-                .append_deferred_reply(&mut client.output, &reply.bytes);
+            let start = client.session.append_deferred_reply(
+                &mut client.output,
+                &reply.bytes,
+                slow.as_ref().map(|(_, arguments)| arguments.as_slice()),
+            );
             if client.output[start..].starts_with(b"-") {
                 router.record_error(&client.output[start..]);
             }

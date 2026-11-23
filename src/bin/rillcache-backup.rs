@@ -322,13 +322,11 @@ fn create_backup(options: &Options) -> io::Result<()> {
             "backup output cannot be the live journal or its ownership lock path",
         ));
     }
-    // Acquiring the normal journal lock rejects a live server and validates the
-    // entire AOF before any archive is published.
-    let store = Store::with_auth_and_journal(
+    // Validate under the normal ownership lock, without startup's tail repair.
+    // Keep the source locked through the forced sync, copy and publication.
+    let store = Store::open_backup_source(
         options.max_data_bytes,
-        Auth::default(),
         &journal,
-        FsyncPolicy::Always,
         options.limits,
         journal_auth(options)?,
     )?;
@@ -393,6 +391,26 @@ fn validate_archive(
             io::ErrorKind::InvalidData,
             "backup length outside supported bounds",
         ));
+    }
+    // Fail before creating scratch space when a regular archive already has
+    // the wrong length. Keep the stream checks below: the same file may change
+    // after this snapshot of its metadata.
+    let metadata = archive.metadata()?;
+    if metadata.is_file() {
+        let header_length = (MAGIC.len() + u64_bytes.len() + u32_bytes.len()) as u64;
+        let expected_file_length = header_length + expected_length;
+        if metadata.len() < expected_file_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "backup length or CRC32 does not match",
+            ));
+        }
+        if metadata.len() > expected_file_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing bytes after backup payload",
+            ));
+        }
     }
     let stage_destination = if let Some(output) = output_journal {
         output.to_path_buf()

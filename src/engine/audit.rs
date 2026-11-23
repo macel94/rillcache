@@ -16,6 +16,7 @@ pub const MIN_MAX_BYTES: u64 = 1024;
 pub const MAX_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 const MAX_KEYRING_BYTES: usize = 64 * 1024;
+const MAX_HMAC_KEY_BYTES: usize = 1024;
 const MAX_TOKEN_BYTES: usize = 32;
 const MAX_USERNAME_BYTES: usize = 128;
 const MAX_OBJECT_BYTES: usize = 256;
@@ -26,6 +27,7 @@ pub struct AuditLog {
     rotated: PathBuf,
     max_bytes: u64,
     written: u64,
+    reopen_pending: bool,
 }
 
 impl AuditLog {
@@ -52,6 +54,7 @@ impl AuditLog {
             rotated: PathBuf::from(rotated),
             max_bytes,
             written,
+            reopen_pending: false,
         })
     }
 
@@ -71,8 +74,12 @@ impl AuditLog {
     }
 
     pub fn record_line(&mut self, line: &str) -> io::Result<()> {
+        if self.reopen_pending {
+            self.reopen_active()?;
+        }
         if self.written > 0 && self.written.saturating_add(line.len() as u64) > self.max_bytes {
-            self.rotate()?;
+            self.publish_rotation()?;
+            self.reopen_active()?;
         }
         self.file.write_all(line.as_bytes())?;
         self.file.flush()?;
@@ -80,16 +87,21 @@ impl AuditLog {
         Ok(())
     }
 
-    fn rotate(&mut self) -> io::Result<()> {
+    fn publish_rotation(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        match fs::remove_file(&self.rotated) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        // Replace the previous generation only if the rename succeeds.
         fs::rename(&self.path, &self.rotated)?;
-        self.file = open_append(&self.path)?;
-        self.written = 0;
+        self.reopen_pending = true;
+        Ok(())
+    }
+
+    fn reopen_active(&mut self) -> io::Result<()> {
+        // Until this succeeds, self.file refers to the archive. Never append
+        // through it or rename the active path again during retry.
+        let file = open_append(&self.path)?;
+        self.written = file.metadata()?.len();
+        self.file = file;
+        self.reopen_pending = false;
         Ok(())
     }
 }
@@ -129,17 +141,37 @@ pub(super) fn format_line(
     }
 }
 
-/// Parse a hex-encoded audit keyring. Blank lines and `#` comments are ignored;
-/// at most eight unique 16..=1024-byte keys are accepted. The first key is the
-/// signing key for this process, while a collector may verify against all.
-pub(super) fn read_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+/// Read a bounded single audit HMAC key.
+pub(super) fn read_hmac_key(reader: impl Read) -> io::Result<Vec<u8>> {
+    // Allow exactly one CRLF and read one additional byte to detect overflow.
+    let mut key = Vec::new();
+    reader
+        .take((MAX_HMAC_KEY_BYTES + 3) as u64)
+        .read_to_end(&mut key)?;
+    if key.ends_with(b"\n") {
+        key.pop();
+        if key.ends_with(b"\r") {
+            key.pop();
+        }
+    }
+    if !(16..=MAX_HMAC_KEY_BYTES).contains(&key.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit HMAC key must be 16..=1024 bytes",
+        ));
+    }
+    Ok(key)
+}
+
+pub(super) fn read_keyring(reader: impl Read) -> io::Result<Vec<Vec<u8>>> {
     let mut text = String::new();
-    File::open(path)?
+    reader
         .take((MAX_KEYRING_BYTES + 1) as u64)
         .read_to_string(&mut text)?;
     parse_keyring(&text).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
+/// Parse a hex keyring of up to eight unique keys. The first signs; all verify.
 pub(super) fn parse_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
     if text.len() > MAX_KEYRING_BYTES {
         return Err("audit keyring text exceeds 64 KiB".into());
@@ -268,6 +300,56 @@ mod tests {
     }
 
     #[test]
+    fn failed_audit_rotation_keeps_the_previous_generation() {
+        let path = temp_path("rotate-failure");
+        let parked = path.with_extension("parked");
+        let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
+        let active = "x".repeat(MIN_MAX_BYTES as usize - 1) + "\n";
+        log.record_line(&active).unwrap();
+        fs::write(&log.rotated, b"previous generation\n").unwrap();
+        fs::rename(&path, &parked).unwrap();
+        assert_eq!(
+            log.record_line("next\n").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&log.rotated).unwrap(), b"previous generation\n");
+        assert_eq!(fs::read(&parked).unwrap(), active.as_bytes());
+        fs::rename(&parked, &path).unwrap();
+        log.record_line("next\n").unwrap();
+        assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        assert_eq!(fs::read(&path).unwrap(), b"next\n");
+        let rotated = log.rotated.clone();
+        drop(log);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn audit_retries_reopen_without_rotating_or_appending_to_archive() {
+        let path = temp_path("reopen-failure");
+        let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
+        let active = "x".repeat(MIN_MAX_BYTES as usize - 1) + "\n";
+        log.record_line(&active).unwrap();
+        log.publish_rotation().unwrap();
+        fs::create_dir(&path).unwrap();
+
+        for _ in 0..2 {
+            assert!(log.record_line("discarded\n").is_err());
+            assert!(path.is_dir());
+            assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        }
+
+        fs::remove_dir(&path).unwrap();
+        log.record_line("resumed\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"resumed\n");
+        assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        let rotated = log.rotated.clone();
+        drop(log);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn binary_and_long_values_are_hex_and_truncated() {
         let path = temp_path("hex");
         let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
@@ -342,6 +424,24 @@ mod tests {
     }
 
     #[test]
+    fn raw_audit_key_read_stops_after_the_size_sentinel() {
+        let mut maximum = vec![0xff; MAX_HMAC_KEY_BYTES];
+        let mut framed = maximum.clone();
+        framed.extend_from_slice(b"\r\n");
+        assert_eq!(read_hmac_key(framed.as_slice()).unwrap(), maximum);
+        framed.push(b'x');
+        assert_eq!(
+            read_hmac_key(framed.as_slice()).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let cap = MAX_HMAC_KEY_BYTES + 3;
+        maximum.resize(cap * 2, b'x');
+        let mut cursor = io::Cursor::new(maximum);
+        assert!(read_hmac_key(&mut cursor).is_err());
+        assert_eq!(cursor.position(), cap as u64);
+    }
+
+    #[test]
     fn eight_unique_keys_still_accept_duplicates_and_file_reads_are_bounded() {
         let eight = (1..=8)
             .map(|index| format!("{index:032x}"))
@@ -354,10 +454,10 @@ mod tests {
         let mut text = format!("{eight}\n#");
         text.push_str(&"x".repeat(MAX_KEYRING_BYTES - text.len()));
         fs::write(&path, &text).unwrap();
-        assert_eq!(read_keyring(&path).unwrap().len(), 8);
+        assert_eq!(read_keyring(File::open(&path).unwrap()).unwrap().len(), 8);
         text.push('x');
         fs::write(&path, &text).unwrap();
-        assert!(read_keyring(&path).is_err());
+        assert!(read_keyring(File::open(&path).unwrap()).is_err());
         assert!(parse_keyring(&text).is_err());
         fs::remove_file(path).unwrap();
     }

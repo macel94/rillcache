@@ -24,7 +24,8 @@
 - When `COPY source destination [DB 0] [REPLACE]` is received, the server shall
   make an independent deep copy of any supported value and its expiry metadata,
   respect replacement and payload-budget rules atomically, and reject unsupported
-  databases.
+  databases. A budget rejection leaves both live values and expiry deadlines
+  intact. A successful replacement takes the source's absolute deadline.
 - When `KEYS pattern` is received, the server shall match binary key bytes using
   Redis-style `*`, `?`, escapes and character classes, while bounding pathological
   wildcard work.

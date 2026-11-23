@@ -305,6 +305,66 @@ fn named_healthcheck_accepts_only_an_enabled_user_with_ping_permission() {
 }
 
 #[test]
+fn payload_headroom_healthcheck_tracks_logical_budget_without_changing_ping() {
+    use std::io::{Read as _, Write as _};
+    use std::time::Duration;
+
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    let server = rillcache::Server::bind(rillcache::Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        max_data_bytes: 64,
+        worker_threads: std::env::var("RILLCACHE_TEST_THREADS")
+            .ok()
+            .map(|value| value.parse().unwrap())
+            .filter(|&workers| workers != 0),
+        ..rillcache::Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let address = server.local_addr().to_string();
+    let probe = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let flag = "--healthcheck-min-payload-headroom";
+    let empty = probe(&[flag, "64"]);
+    assert!(
+        empty.status.success() && empty.stdout.is_empty() && empty.stderr.is_empty(),
+        "{empty:?}"
+    );
+    let mut writer = TcpStream::connect(server.local_addr()).unwrap();
+    writer
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writer
+        .write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$4\r\ndata\r\n")
+        .unwrap();
+    let mut reply = [0; 5];
+    writer.read_exact(&mut reply).unwrap();
+    assert_eq!(&reply, b"+OK\r\n");
+    let at_limit = probe(&[flag, "59"]);
+    assert!(at_limit.status.success(), "{at_limit:?}");
+    let below = probe(&[flag, "60"]);
+    assert_eq!(below.status.code(), Some(1));
+    assert!(below.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&below.stderr)
+            .contains("logical payload headroom is below the configured minimum"),
+        "{below:?}"
+    );
+    assert!(probe(&[]).status.success());
+    for invalid in [vec![flag], vec![flag, "-1"], vec![flag, "1", flag, "2"]] {
+        assert_eq!(probe(&invalid).status.code(), Some(2));
+    }
+    drop(writer);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};
@@ -320,7 +380,16 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
     std::fs::create_dir(&directory).unwrap();
     let acl = directory.join("users.acl");
     let password = directory.join("password");
-    std::fs::write(&acl, b"user default on nopass ~* &* +@all\nuser probe on >test-only-journal-secret -@all +ping +info\nuser pingonly on >test-only-journal-secret -@all +ping\n").unwrap();
+    std::fs::write(
+        &acl,
+        b"user default on nopass ~* &* +@all\n\
+user probe on >test-only-journal-secret -@all +ping +info\n\
+user pingonly on >test-only-journal-secret -@all +ping\n\
+user memoryonly on >test-only-journal-secret -@all +ping +info|memory\n\
+user aofonly on >test-only-journal-secret -@all +ping +info|persistence\n\
+user sections on >test-only-journal-secret -@all +ping +info|memory +info|persistence\n",
+    )
+    .unwrap();
     std::fs::write(&password, b"test-only-journal-secret\n").unwrap();
     let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
     for enabled in [false, true] {
@@ -362,15 +431,64 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
                     "aof={enabled}, user={user}, require={require_aof}"
                 );
                 assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8_lossy(&output.stderr);
                 if healthy {
-                    assert!(output.stderr.is_empty());
+                    assert!(stderr.is_empty());
+                } else if !enabled && user == "probe" {
+                    assert!(stderr.contains("AOF is disabled"), "{stderr}");
+                } else {
+                    assert!(!stderr.contains("AOF is disabled"), "{stderr}");
                 }
-                assert!(
-                    !String::from_utf8_lossy(&output.stderr).contains("test-only-journal-secret")
-                );
+                assert!(!stderr.contains("test-only-journal-secret"));
             }
         }
         if enabled {
+            // The same named probe can require both sections without granting
+            // the full INFO command. A single section grant must not suffice.
+            let aof = "--healthcheck-require-aof";
+            let headroom = "--healthcheck-min-payload-headroom";
+            for (user, checks, error) in [
+                ("memoryonly", &[headroom, "1"][..], ""),
+                ("aofonly", &[aof][..], ""),
+                ("sections", &[aof, headroom, "1"][..], ""),
+                (
+                    "memoryonly",
+                    &[aof, headroom, "1"][..],
+                    "invalid or unhealthy journal status",
+                ),
+                (
+                    "aofonly",
+                    &[aof, headroom, "1"][..],
+                    "invalid logical payload headroom",
+                ),
+            ] {
+                let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                    .args([
+                        "--healthcheck",
+                        &address,
+                        "--healthcheck-user",
+                        user,
+                        "--healthcheck-password-file",
+                    ])
+                    .arg(&password)
+                    .args(checks)
+                    .output()
+                    .unwrap();
+                assert!(output.stdout.is_empty(), "{user}: {output:?}");
+                if error.is_empty() {
+                    assert!(
+                        output.status.success() && output.stderr.is_empty(),
+                        "{user}: {output:?}"
+                    );
+                } else {
+                    assert_eq!(output.status.code(), Some(1), "{user}: {output:?}");
+                    assert_eq!(
+                        output.stderr,
+                        format!("rillcache: health check failed: {error}\n").into_bytes(),
+                        "{user}"
+                    );
+                }
+            }
             let writable = Command::new(env!("CARGO_BIN_EXE_rillcache"))
                 .args([
                     "--healthcheck",
@@ -668,7 +786,11 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
     ));
     std::fs::create_dir(&directory).unwrap();
     let config = directory.join("startup.conf");
-    std::fs::write(&config, "max-frame-bytes 4096\nmax-bulk-bytes 8192\n").unwrap();
+    std::fs::write(
+        &config,
+        "config-version 1\nmax-frame-bytes 4096\nmax-bulk-bytes 8192\n",
+    )
+    .unwrap();
     let probe = |override_bulk: bool| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rillcache"));
         cmd.args(["--check-config", "--config"])
@@ -693,6 +815,16 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
     let valid = probe(true);
     assert!(valid.status.success(), "{valid:?}");
     assert!(valid.stderr.is_empty());
+    for text in [
+        "config-version 1\n",
+        "config-version private-version\nmax-frame-bytes 4096\n",
+    ] {
+        std::fs::write(&config, text).unwrap();
+        let invalid = probe(true);
+        assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+        assert!(invalid.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&invalid.stderr).contains("private-version"));
+    }
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
     std::fs::remove_dir_all(directory).unwrap();
 
@@ -703,6 +835,137 @@ fn config_preflight_validates_overrides_without_binding_or_creating_files() {
     assert_eq!(invalid_option.status.code(), Some(2));
     assert!(invalid_option.stdout.is_empty());
     assert!(!String::from_utf8_lossy(&invalid_option.stderr).contains("private-unknown-argument"));
+}
+
+#[test]
+fn config_preflight_checks_the_final_tls_and_plaintext_listener_pair() {
+    let path = std::env::temp_dir().join(format!(
+        "rillcache-config-listeners-{}-{:?}.conf",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &path,
+        "config-version 1\nbind 127.0.0.1:6379\ntls-bind 127.0.0.1:6379\ntls-cert-file fixture.crt\ntls-key-file fixture.key\n",
+    )
+    .unwrap();
+    let preflight = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .arg("--check-config")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let file = path.to_str().unwrap();
+    for option in ["--bind", "--tls-bind"] {
+        let valid = preflight(&["--config", file, option, "127.0.0.1:6380"]);
+        assert!(valid.status.success(), "{valid:?}");
+        assert!(valid.stderr.is_empty());
+    }
+    let later_file = preflight(&["--bind", "127.0.0.1:6380", "--config", file]);
+    let later_cli = preflight(&[
+        "--config",
+        file,
+        "--tls-bind",
+        "127.0.0.1:6380",
+        "--bind",
+        "127.0.0.1:6380",
+    ]);
+    for rejected in [later_file, later_cli] {
+        assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+        assert!(rejected.stdout.is_empty());
+        let error = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            !error.contains("127.0.0.1") && !error.contains(file),
+            "{error}"
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn config_preflight_accepts_the_size_limit_and_rejects_one_more_byte() {
+    const LIMIT: usize = 1024 * 1024;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-size-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--check-config", "--config"])
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+    let mut input = b"config-version 1\nmax-clients 12\n#".to_vec();
+    input.resize(LIMIT, b' ');
+    std::fs::write(&config, &input).unwrap();
+    let valid = check();
+    input.push(b' ');
+    std::fs::write(&config, &input).unwrap();
+    let invalid = check();
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(valid.status.success(), "{valid:?}");
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+    assert!(invalid.stdout.is_empty());
+}
+
+#[test]
+fn config_preflight_enforces_the_combined_file_budget() {
+    const FILE_LIMIT: usize = 1024 * 1024;
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-total-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    let extra = directory.join("extra.conf");
+    let mut input = b"config-version 1\nmax-clients 12\n#".to_vec();
+    input.resize(FILE_LIMIT, b' ');
+    std::fs::write(&config, input).unwrap();
+    std::fs::write(&extra, b"max-clients 24\n").unwrap();
+    let run = |preflight: bool, include_extra: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        if preflight {
+            command.arg("--check-config");
+        }
+        for flag in ["--config", "-c", "--config", "-c"] {
+            command.arg(flag).arg(&config);
+        }
+        if include_extra {
+            command.arg("--config").arg(&extra);
+        }
+        // Keep ordinary startup from binding even if the limit regresses.
+        command
+            .args(["--max-clients", if preflight { "36" } else { "0" }])
+            .output()
+            .unwrap()
+    };
+    let exact = run(true, false);
+    assert!(exact.status.success(), "{exact:?}");
+    let redacted = run(true, true);
+    assert_eq!(redacted.status.code(), Some(2), "{redacted:?}");
+    assert!(redacted.stdout.is_empty());
+    assert_eq!(
+        redacted.stderr.as_slice(),
+        b"rillcache: configuration check requires valid startup options\n"
+    );
+    let oversized = run(false, true);
+    assert_eq!(oversized.status.code(), Some(2), "{oversized:?}");
+    assert!(oversized.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&oversized.stderr)
+            .contains("--config files exceed the 4194304 byte total limit"),
+        "{oversized:?}"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -721,26 +984,45 @@ fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_valu
     std::fs::create_dir(&directory).unwrap();
     let secret = directory.join("private-path-marker");
     std::fs::write(&secret, b"private-value-marker\n").unwrap();
-    let check = || {
+    let config = directory.join("startup.conf");
+    std::fs::write(&config, "config-version 1\nsecure-secret-files yes\n").unwrap();
+    let configured = ["--config", config.to_str().unwrap()];
+    let check = |mode: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_rillcache"))
-            .args([
-                "--check-config",
-                "--secure-secret-files",
-                "--requirepass-file",
-            ])
+            .arg("--check-config")
+            .args(mode)
+            .arg("--requirepass-file")
             .arg(&secret)
             .output()
             .unwrap()
     };
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let rejected = check();
-    assert_eq!(rejected.status.code(), Some(2));
-    assert!(rejected.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&rejected.stderr);
-    assert!(stderr.contains("PermissionDenied"));
-    assert!(!stderr.contains("private-"));
+    for mode in [
+        &["--secure-secret-files"][..],
+        &configured,
+        &["--secure-secret-files=no", configured[0], configured[1]],
+    ] {
+        let rejected = check(mode);
+        assert_eq!(rejected.status.code(), Some(2));
+        assert!(rejected.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&rejected.stderr);
+        assert!(stderr.contains("PermissionDenied"));
+        assert!(!stderr.contains("private-"));
+    }
+    assert!(
+        check(&[configured[0], configured[1], "--secure-secret-files=no"])
+            .status
+            .success()
+    );
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(check().status.success());
+    assert!(check(&configured).status.success());
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&config, "config-version 1\nsecure-secret-files no\n").unwrap();
+    assert!(
+        check(&["--secure-secret-files", configured[0], configured[1]])
+            .status
+            .success()
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 

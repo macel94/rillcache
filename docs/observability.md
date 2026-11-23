@@ -29,6 +29,7 @@ errors are not command replies and are not counted.
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Number of distinct active subscription patterns |
+| `pubsub_queue_full_drops` | Process-lifetime failed Pub/Sub enqueue attempts due to a full subscriber queue. Excludes disconnected queues and does not reset on `CONFIG RESETSTAT`. |
 
 `INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
 milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
@@ -39,6 +40,11 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 `cluster_connections:0` and `maxclients` (the live connection limit, changeable
 through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
+
+`INFO memory` and `INFO all` report `rillcache_payload_headroom_bytes`: the
+logical key/value limit minus the accounted payload, with a minimum of zero.
+This is not RSS, cgroup or allocator headroom, nor a promise that any particular
+write will fit.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`,
 plus `used_memory_rss`/`used_memory_rss_human` from Linux `/proc/self/status`
@@ -246,6 +252,7 @@ aof_rewrite_keys_done:0
 aof_rewrite_keys_total:0
 aof_last_bgrewrite_status:ok
 aof_last_write_status:ok
+aof_rewrite_bytes_written:0
 aof_current_size:1234
 ```
 
@@ -255,7 +262,19 @@ With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
 cooperative rewrite change, `aof_rewrite_in_progress` reports whether a rewrite is
 currently running, `aof_rewrite_phase` reports the bounded phase, and
 `aof_rewrite_keys_done`/`aof_rewrite_keys_total` report stable snapshot progress.
-Reconciliation may revisit keys, so progress never exceeds the snapshot total.
+Reconciliation may revisit keys, so key progress never exceeds the snapshot
+total. `aof_rewrite_bytes_written` counts bytes written to the temporary file,
+including headers, integrity records and reconciliation. It resets to zero
+after completion or abort, is omitted if journal status cannot be read, and
+is not a durability or percent-complete metric. `aof_current_size` still
+describes the live journal, not the temporary file.
+`aof_last_rewrite_start_usec` is absent before the first successful setup. It
+measures setup (snapshot key collection and staging writes), not the full
+rewrite or client-observed latency. `aof_last_rewrite_finish_usec` measures
+successful finalization under exclusive data access, including tail
+reconciliation and publication. It is absent before the first successful
+completion, and a failed rewrite does not replace it. Both timings are
+process-local and not persisted.
 RDB, backlog, bio and fork fields are omitted because they are not implemented or
 measured.
 

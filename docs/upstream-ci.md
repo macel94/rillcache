@@ -37,7 +37,7 @@ Redis/Valkey compatibility, production readiness, or a universal performance cla
 
 ## Pins, build and cache
 
-`ci/upstream/pins.json` records Rust **1.99.1**, Redis **8.10.2**, Valkey **9.1.2**,
+`ci/upstream/pins.json` records Rust **1.100.0**, Redis **8.10.2**, Valkey **9.1.2**,
 archive SHA-256s and tag commit identities. Version/checksum pins are checked
 against `benchmarks/targets.mk`; Rust must match `rust-toolchain.toml`. The build
 is the existing `rillcache` Cargo binary with default features:
@@ -85,11 +85,22 @@ the same connection without changing the original Tcl/support sources.
 A failed native control invalidates attribution, but candidate diagnostics still
 run; it is not silently retried or treated as candidate conformance evidence.
 
+For additional hash coverage, manually dispatch the existing `Upstream Tcl
+compatibility` workflow with `hash_diagnostic=true` on the revision under study.
+Two separate diagnostic jobs run the original `unit/type/hash` suite, one for
+each pinned reference, using the same native-first runner and exclusions. Retain
+the `upstream-tcl-hash-diagnostic-*` archives even when a control or candidate
+fails. These jobs do not run on PRs or replace any of the six required Tcl rows.
+A passing diagnostic applies only to its tested revision and selection; it does
+not approve a release profile or establish full hash compatibility.
+
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
-This selects only the verified MSETEX short-pair error wording: pinned Redis
-expects `ERR wrong number of key-value pairs`, while pinned Valkey expects
-`ERR syntax error` for the same invalid counted block. The default application
+For `MSETEX` short pairs, pinned Redis expects `ERR wrong number of key-value
+pairs`, while pinned Valkey expects `ERR syntax error`. The setting also
+selects `HGETDEL` wording for an incorrect `FIELDS` token, a malformed count,
+or a nonpositive or mismatched count. It does not change validation order,
+data handling, or other command behavior. The default application
 setting remains Valkey. The runner records the dialect in result JSON, the
 summary and `server.json` alongside the exact argv; no test name, command input,
 assertion or exclusion controls this choice. The original Tcl is unchanged.

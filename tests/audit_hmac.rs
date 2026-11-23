@@ -104,7 +104,7 @@ user reader on >reader-secret allkeys allchannels -@all +get\n",
 }
 
 #[test]
-fn short_or_missing_hmac_keys_fail_startup() {
+fn invalid_hmac_key_files_fail_startup() {
     let short = temp_name("short-key");
     std::fs::write(&short, b"too-short").unwrap();
     let short_config = Config {
@@ -113,6 +113,18 @@ fn short_or_missing_hmac_keys_fail_startup() {
     };
     assert!(Server::bind(short_config).is_err());
     let _ = std::fs::remove_file(&short);
+
+    let oversized = temp_name("oversized-key");
+    std::fs::write(&oversized, vec![b'x'; 1027]).unwrap();
+    let result = Server::bind(Config {
+        audit_hmac_key_file: Some(oversized.clone()),
+        ..Config::default()
+    });
+    let Err(error) = result else {
+        panic!("server accepted an oversized audit key");
+    };
+    assert_eq!(error.to_string(), "audit HMAC key must be 16..=1024 bytes");
+    std::fs::remove_file(oversized).unwrap();
 
     let missing = Config {
         audit_hmac_key_file: Some(temp_name("missing-key")),

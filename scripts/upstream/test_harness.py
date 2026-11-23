@@ -46,6 +46,10 @@ class ScopeTests(unittest.TestCase):
         for suite in common.SCOPE["compatibility"]["suites"]:
             self.assertIn(f"path: {suite}}}", text)
         self.assertGreaterEqual(perf.CONFIG["repetitions"], 5)
+        self.assertEqual(common.SCOPE["compatibility"]["diagnostic_suites"], ["unit/type/hash"])
+        self.assertNotIn("path: unit/type/hash}", text)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hash_diagnostic", text)
+        self.assertIn("--suite unit/type/hash --diagnostic", text)
         request_limits = common.SCOPE["compatibility"]["request_limits"]
         self.assertEqual(8 * 1024 * 1024, request_limits["candidate_max_bulk_bytes"])
         self.assertEqual(16 * 1024 * 1024, request_limits["candidate_max_frame_bytes"])
@@ -170,6 +174,12 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual("passed_selected_scope", compat.classify(self.item()))
         for log in ("All tests passed without errors!", "[ignore]: Not supported on external server"):
             self.assertEqual("zero_tests_or_harness_error", compat.classify(self.item(log)))
+
+    def test_diagnostic_requires_a_candidate_pass_for_each_native_pass(self):
+        native = {"ok": ["same", "same", "skipped", "missing"]}
+        candidate = {"ok": ["same", "extra"], "skip": ["skipped"]}
+        self.assertEqual(["same", "skipped", "missing"], compat.missing_native_passes(native, candidate))
+        self.assertEqual([], compat.missing_native_passes(native, native))
 
     def test_setup_failure_separate_from_test_failure(self):
         result = self.item('[exception]: ERR unknown command flushall\n', exit_code=1,

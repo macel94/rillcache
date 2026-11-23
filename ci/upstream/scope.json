@@ -3,6 +3,7 @@
   "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
   "compatibility": {
     "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace"],
+    "diagnostic_suites": ["unit/type/hash"],
     "options": ["--clients", "1", "--singledb", "--ignore-encoding", "--ignore-digest", "--durable", "--timeout", "120", "--dont-clean"],
     "denied_tags": {
       "needs:debug": "Implementation-specific DEBUG/refcount assertions are not a portable wire contract.",
