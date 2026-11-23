@@ -307,6 +307,7 @@ impl User {
 pub struct Auth {
     users: BTreeMap<Vec<u8>, User>,
     aclfile: Option<PathBuf>,
+    secure_secret_files: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,6 +357,7 @@ pub enum AclError {
     NoAclFile,
     MissingDefault,
     TooLarge,
+    InsecureFile,
     Io(String),
 }
 
@@ -459,6 +461,7 @@ impl Auth {
         Self {
             users,
             aclfile: None,
+            secure_secret_files: false,
         }
     }
 
@@ -479,9 +482,17 @@ impl Auth {
     }
 
     pub fn from_acl_file(path: &Path) -> Result<Self, AclError> {
+        Self::from_acl_file_with_secret_policy(path, false)
+    }
+
+    pub(crate) fn from_acl_file_with_secret_policy(
+        path: &Path,
+        secure_secret_files: bool,
+    ) -> Result<Self, AclError> {
         let mut auth = Self {
             users: BTreeMap::new(),
             aclfile: Some(path.to_path_buf()),
+            secure_secret_files,
         };
         auth.load_file(path)?;
         Ok(auth)
@@ -787,6 +798,17 @@ impl Auth {
         let metadata = file
             .metadata()
             .map_err(|error| AclError::Io(error.to_string()))?;
+        if self.secure_secret_files {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(AclError::InsecureFile);
+                }
+            }
+            #[cfg(not(unix))]
+            return Err(AclError::InsecureFile);
+        }
         if metadata.len() > MAX_ACL_FILE_BYTES {
             return Err(AclError::TooLarge);
         }
