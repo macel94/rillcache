@@ -947,7 +947,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "georadiusbymember_ro"
         | "geosearch"
         | "geosearchstore" => "geo",
-        "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
+        "pfadd" | "pfcount" | "pfdebug" | "pfmerge" | "pfselftest" => "hyperloglog",
         "blmove" | "blmpop" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen"
         | "lmove" | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim"
         | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
