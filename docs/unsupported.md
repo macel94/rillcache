@@ -35,7 +35,7 @@ These replies are explicit capability boundaries, not silent no-ops. Enabling
 cluster routing, replication or module loading requires separate implementation,
 configuration and validation work and is not implied by this surface.
 
-## Serialization, migration, HLL diagnostics and admin exclusions
+## Serialization, migration and admin exclusions
 
 The following surfaces return a named capability error instead of pretending to
 work or falling through to an unqualified unknown-command reply:
@@ -43,8 +43,6 @@ work or falling through to an unqualified unknown-command reply:
 - `DUMP`, `RESTORE` and `MIGRATE` report that the private append-only journal and
   the offline `rillcache-backup` tool are the supported durability path; there is
   no RDB payload or migration stream.
-- `PFDEBUG` and `PFSELFTEST` report that HyperLogLog uses this project's private
-  bounded representation and does not expose Redis diagnostic payloads.
 - `COMMAND DOCS` points at `COMMAND INFO`/`COMMAND LIST`; the full documentation
   payload is not implemented.
 - `CONFIG REWRITE` reports that startup configuration is read-only; there is no

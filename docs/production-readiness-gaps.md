@@ -119,13 +119,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   per-database observability, or explicitly excludes clients that require them.
 
 - [ ] **C5. The command and subcommand surface is incomplete.** [P0]
-  The registry contains 243 commands, but common surfaces are absent or bounded:
+  The registry contains 245 commands, but common surfaces are absent or bounded:
   `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
-  `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH`;
+  `CLIENT TRACKING|NO-TOUCH`;
   `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
   **Partial (2026-11-14): named exclusions for common surfaces.**
-  `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
+  `DUMP`/`RESTORE`/`MIGRATE`, `COMMAND DOCS`,
   `CONFIG REWRITE` now returns a specific
   capability error with normal arity validation, documented in
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
@@ -241,8 +241,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   The private payload uses an exact hash set then a 2^14-register sketch, not
-  Redis's sparse/dense encoding. `PFDEBUG`, `PFSELFTEST` and sparse-threshold
-  configuration are absent.
+  Redis's sparse/dense encoding. `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` now
+  report this private representation; Redis payload conversion and
+  sparse-threshold configuration remain absent.
   **Closes when:** the profile either implements Redis/Valkey-compatible HLL
   payloads and diagnostics, or explicitly excludes HLL persistence/interchange
   and documents the accuracy/representation differences.

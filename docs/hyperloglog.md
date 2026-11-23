@@ -25,6 +25,30 @@ private HLL header return Redis's
 `WRONGTYPE Key is not a valid HyperLogLog string value.` error; non-string keys
 use the ordinary `WRONGTYPE` error.
 
+## Diagnostics
+
+`PFSELFTEST` runs a deterministic self-test of the private representation — the
+register rank bound, the zero-occupancy estimator, monotonicity after adds,
+exact/dense payload round-trips and rejection of truncated or corrupted
+payloads — and replies `+OK` (or a named `ERR HyperLogLog self-test failed:
+<step>`). It reads no stored key and says nothing about Redis-format payloads.
+
+`PFDEBUG` supports two read-only subcommands over a key:
+
+- `PFDEBUG ENCODING <key>` returns `exact` or `dense`, this project's private
+  encoding names, not Redis's `sparse`/`dense` payloads.
+- `PFDEBUG GETREG <key>` returns the 16,384 register values as an integer array.
+  An exact value is projected into a zeroed array without mutating the stored
+  value or its WATCH version; a dense value returns its stored registers. A
+  missing key reports the empty exact value (all-zero registers, `exact`) and is
+  recorded as a key miss without creating a key.
+
+Redis's `PFDEBUG DECODE`/`TODENSE` payload conversions return an explicit
+`ERR PFDEBUG supports only ENCODING and GETREG for this private representation`
+error because there is no Redis sparse encoding to convert. Both diagnostics are
+`@admin`, `@dangerous` and `@read` commands, so they need the normal ACL grants
+for those categories or an all-key/admin user.
+
 ## Representation and limits
 
 The private, versioned payload is deliberately **not** Redis's sparse/dense HLL
@@ -45,7 +69,7 @@ byte encoding:
   membership or durable counts.
 
 This increment does not claim interoperability with Redis/Valkey HLL payloads,
-`PFDEBUG` encodings, `PFSELFTEST`, sparse-encoding thresholds, or `CONFIG SET
+Redis's `PFDEBUG` payload encodings, sparse-encoding thresholds, or `CONFIG SET
 hll-sparse-max-bytes`. It also does not add replication, cluster/key-slot or
 cross-version persistence guarantees. The append-only journal reconstructs the
 stored string payload directly.
@@ -53,7 +77,8 @@ stored string payload directly.
 ## Verification
 
 Unit tests cover exact creation, duplicate adds, empty elements, exact and dense
-promotion, malformed payload rejection, wrong types, destination merging, TTL
-preservation and payload bounds. `tests/hyperloglog.rs` exercises the commands,
-errors, dense cardinality tolerance and transaction queueing through RESP in
-managed per-client, one-worker and four-worker modes.
+promotion, malformed payload rejection, wrong types, destination merging, TTL,
+the deterministic self-test, the exact-to-register projection, the missing-key
+diagnostic, TTL preservation and payload bounds. `tests/hyperloglog.rs` exercises
+the commands, diagnostics, errors, dense cardinality tolerance and transaction
+queueing through RESP in managed per-client, one-worker and four-worker modes.
