@@ -489,6 +489,14 @@ impl ShardExecutor {
                 return;
             }
         }
+        // A stronger journal policy can require filesystem I/O. Fail before
+        // publishing other settings or enforcing a budget that could evict keys.
+        if let Some(policy) = appendfsync
+            && self.set_aof_policy(policy).is_err()
+        {
+            out.extend_from_slice(b"-ERR appendfsync update failed\r\n");
+            return;
+        }
         *config = candidate;
         if let Some(password) = password
             && !self.set_requirepass(password.as_deref())
@@ -522,12 +530,6 @@ impl ShardExecutor {
         }
         if let Some(value) = auto_aof_min_size {
             self.set_auto_aof_rewrite_min_size(value);
-        }
-        if let Some(policy) = appendfsync
-            && self.set_aof_policy(policy).is_err()
-        {
-            out.extend_from_slice(b"-ERR appendfsync update failed\r\n");
-            return;
         }
         if let Some(value) = maxclients {
             self.set_max_clients(value);
