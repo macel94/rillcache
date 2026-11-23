@@ -98,7 +98,7 @@ impl TestServer {
                 client_store,
                 client_stop,
                 workers,
-                task_limit,
+                Some(task_limit),
             );
             sender.send(result).unwrap();
         });
@@ -261,7 +261,7 @@ fn maintenance_context() -> (Context, mpsc::Receiver<ColdJob>) {
                 sender,
                 permit: Arc::new(Semaphore::new(1)),
             },
-            task_limit: 128,
+            task_limit: Some(128),
         },
         receiver,
     )
@@ -348,7 +348,7 @@ fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
             sender,
             permit: Arc::clone(&permit),
         },
-        task_limit: 128,
+        task_limit: Some(128),
     });
     let (done_sender, done) = sync_channel(1);
     let network = thread::spawn(move || {
