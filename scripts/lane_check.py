@@ -25,6 +25,10 @@ SHARED_SURFACES: tuple[str, ...] = (
     "src/engine/shard.rs",
     "src/engine/bridge.rs",
     "src/session.rs",
+    "src/session/dispatch.rs",
+    "src/session/observability_tests.rs",
+    "src/session/reply.rs",
+    "src/session/transaction.rs",
     "src/engine/discovery.rs",
     "src/engine/discovery/mod.rs",
     "docs/requirements.md",
@@ -50,6 +54,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "src/engine/discovery/streams.rs",
         "docs/streams.md",
         "tests/streams*.rs",
+        "tests/stream_trim.rs",
         "tests/blocking_stream*.rs",
     ),
     "collections": (
@@ -152,6 +157,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
     "io-server": (
         "src/server.rs",
         "src/server/pool.rs",
+        "src/server/multi.rs",
         "src/protocol.rs",
         "src/bin/*.rs",
         "src/bin/**",

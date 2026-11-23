@@ -29,6 +29,7 @@ errors are not command replies and are not counted.
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Number of distinct active subscription patterns |
+| `pubsub_queue_full_drops` | Process-lifetime failed Pub/Sub enqueue attempts due to a full subscriber queue. Excludes disconnected queues and does not reset on `CONFIG RESETSTAT`. |
 
 `INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
 milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
