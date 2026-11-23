@@ -904,6 +904,7 @@ fn restored_legacy_archive_accepts_crc_appends_without_mutating_the_checkpoint()
     let archive = root.join("legacy.rcb");
     let mut legacy = Vec::new();
     encode_request(&[b"SET", b"legacy\0", b"old\xff"], &mut legacy);
+    encode_request(&[b"PEXPIREAT", b"legacy\0", b"4102444800000"], &mut legacy);
     std::fs::write(&source_journal, &legacy).unwrap();
     let created = create(&source, &archive);
     assert!(created.status.success(), "{created:?}");
@@ -926,6 +927,10 @@ fn restored_legacy_archive_accepts_crc_appends_without_mutating_the_checkpoint()
         assert_eq!(
             call(&mut client, &[b"GET", b"legacy\0"]),
             b"$4\r\nold\xff\r\n"
+        );
+        assert_eq!(
+            call(&mut client, &[b"PEXPIRETIME", b"legacy\0"]),
+            b":4102444800000\r\n"
         );
         assert_eq!(std::fs::read(&restored_journal).unwrap(), legacy);
         assert_eq!(
@@ -953,6 +958,10 @@ fn restored_legacy_archive_accepts_crc_appends_without_mutating_the_checkpoint()
             b"$4\r\nold\xff\r\n"
         );
         assert_eq!(call(&mut client, &[b"GET", b"current"]), b"$4\r\nnew\0\r\n");
+        assert_eq!(
+            call(&mut client, &[b"PEXPIRETIME", b"legacy\0"]),
+            b":4102444800000\r\n"
+        );
         server.shutdown().unwrap();
     }
     assert_eq!(std::fs::read(&restored_journal).unwrap(), upgraded);

@@ -75,6 +75,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover exact and dense promotion, cardinality tolerance, binary/empty
   elements, TTL, merge, malformed payloads, wrong types, ACL category metadata and
   transaction queueing in all execution modes.
+- **R506 (event-driven):** After a CRC or authenticated journal rewrite and
+  same-binary restart, replay the exact private HLL string payloads for a
+  small exact set and a promoted dense sketch, with unchanged cardinality
+  and absolute expiry.
 
 ## Geospatial sorted sets (S45)
 
@@ -344,13 +348,21 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R257 (event-driven):** `HRANDFIELD key [count [WITHVALUES]]` shall return one
   random field without count, distinct fields for positive counts, up to
-  `abs(count)` duplicate-capable fields for negative counts, and flat field/value
+  `abs(count)` duplicate-capable fields for negative counts, and field/value
   pairs with WITHVALUES. Missing keys and zero counts shall return empty/null
   shapes as documented; wrong types and malformed counts/options shall fail.
+- **R500 (unwanted behavior):** If a parsed `HRANDFIELD` count has a magnitude
+  above `i64::MAX` (above `i64::MAX / 2` with `WITHVALUES`), return `ERR value is
+  out of range` before looking up the hash or sampling any fields. This bounds
+  arithmetic for invalid arguments, not the cost of valid requests.
 - **R258 (event-driven):** `HGETDEL key FIELDS numfields field [field ...]` shall
   require the FIELDS token, a positive numfields exactly matching the supplied
   fields, and return one value-or-null per field while atomically deleting
   present fields.
+- **R510 (unwanted behavior):** HGETDEL shall reject malformed FIELDS/count
+  arguments before mutation. The startup error dialect selects the pinned
+  Redis or Valkey wording for these errors without changing valid replies or
+  promising matching error precedence across vendors.
 - **R259 (event-driven):** HGETDEL shall preserve remaining TTL and payload
   accounting, delete an emptied hash key, leave missing keys null-filled, and
   touch the key for WATCH/journal capture. Successful deletions shall publish
@@ -360,6 +372,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   bounded errors without partial mutation. Tests shall cover random single/count/
   negative/WITHVALUES shapes, missing keys, TTL/empty deletion, WATCH/MULTI,
   notifications and all worker modes. Hash-field expiration remains unsupported.
+- **R501 (event-driven):** When a client has negotiated RESP3 and successfully
+  executes `HRANDFIELD key count WITHVALUES`, return one two-element array per
+  sampled pair, also for deferred replies and inside `EXEC`. Keep errors and
+  empty arrays unchanged; RESP2 and the store API keep a flat field/value list.
 
 ## List element moves (S68)
 

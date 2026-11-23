@@ -1484,15 +1484,25 @@ impl ShardExecutor {
 
     fn hash_random_field(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let with_values = args.len() == 4 && args[3].eq_ignore_ascii_case(b"WITHVALUES");
-        if args.len() == 4 && !with_values {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        }
         let count = if args.len() >= 3 {
             let Some(value) = parse_i64(args[2]) else {
                 out.extend_from_slice(NOT_INTEGER);
                 return;
             };
+            if value == i64::MIN {
+                out.extend_from_slice(b"-ERR value is out of range\r\n");
+                return;
+            }
+            if args.len() == 4 && !with_values {
+                out.extend_from_slice(SYNTAX);
+                return;
+            }
+            // The pinned references require the magnitude, and twice that
+            // magnitude for field/value pairs, to fit a signed 64-bit integer.
+            if with_values && !(-i64::MAX / 2..=i64::MAX / 2).contains(&value) {
+                out.extend_from_slice(b"-ERR value is out of range\r\n");
+                return;
+            }
             Some(value)
         } else {
             None
@@ -1568,26 +1578,18 @@ impl ShardExecutor {
     }
 
     fn hash_getdel(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let dialect = || *self.error_dialect.read().expect("error dialect lock");
         if !args[2].eq_ignore_ascii_case(b"FIELDS") {
-            out.extend_from_slice(
-                b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
-            );
+            out.extend_from_slice(dialect().hgetdel_missing_fields());
             return;
         }
-        let Some(numfields) = parse_i64(args[3]).filter(|value| *value > 0) else {
-            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+        let Some(count) = parse_i64(args[3]) else {
+            out.extend_from_slice(dialect().hgetdel_invalid_count());
             return;
         };
-        let Ok(numfields) = usize::try_from(numfields) else {
-            out.extend_from_slice(
-                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
-            );
-            return;
-        };
-        if numfields != args.len() - 4 {
-            out.extend_from_slice(
-                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
-            );
+        let numfields = args.len() - 4;
+        if usize::try_from(count).ok() != Some(numfields) {
+            out.extend_from_slice(dialect().hgetdel_wrong_count(count <= 0));
             return;
         }
         let key = args[1];

@@ -1624,6 +1624,80 @@ fn transaction_batch_and_concurrent_writers_replay_to_the_final_state() {
 }
 
 #[test]
+fn hll_exact_and_dense_payloads_survive_integrity_rewrite_and_replay() {
+    for authenticated in [false, true] {
+        let path = aof_path("rewrite-hll");
+        let open_fixture = || {
+            if authenticated {
+                open_with_auth(&path, AUTH_KEY, false).unwrap()
+            } else {
+                open(&path, FsyncPolicy::Always)
+            }
+        };
+        let store = open_fixture();
+        assert_eq!(
+            run(&store, &[b"PFADD", b"exact", b"", b"f\0", b"\xff", b"f\0"]),
+            b":1\r\n"
+        );
+        for start in (0u32..5000).step_by(500) {
+            let values: Vec<_> = (start..start + 500).map(u32::to_be_bytes).collect();
+            let mut args: Vec<&[u8]> = vec![b"PFADD", b"dense"];
+            args.extend(values.iter().map(|value| value.as_slice()));
+            assert_eq!(run(&store, &args), b":1\r\n");
+        }
+        assert_eq!(
+            run(&store, &[b"PEXPIREAT", b"dense", b"4102444800000"]),
+            b":1\r\n"
+        );
+        // Use the union path with a missing key so PFCOUNT does not populate
+        // the read-only optimization cache in the stored payload.
+        let dense_count = run(&store, &[b"PFCOUNT", b"dense", b"missing"]);
+        let estimate: u64 = std::str::from_utf8(&dense_count)
+            .unwrap()
+            .strip_prefix(':')
+            .unwrap()
+            .trim_end()
+            .parse()
+            .unwrap();
+        assert!((4500..=5500).contains(&estimate));
+        let dense_bytes = run(&store, &[b"GET", b"dense"]);
+        assert!(dense_bytes.starts_with(b"$16400\r\nHYLL\x01\x01"));
+        let exact_bytes = run(&store, &[b"GET", b"exact"]);
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            run(&store, &[b"BGREWRITEAOF"]),
+            b"+Background append only file rewriting started\r\n"
+        );
+        for _ in 0..10_000 {
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "rewrite did not finish");
+        assert!(std::fs::metadata(&path).unwrap().len() < before);
+        drop(store);
+
+        let reopened = open_fixture();
+        assert_eq!(run(&reopened, &[b"GET", b"exact"]), exact_bytes);
+        assert_eq!(run(&reopened, &[b"GET", b"dense"]), dense_bytes);
+        assert_eq!(run(&reopened, &[b"PFCOUNT", b"exact"]), b":3\r\n");
+        assert_eq!(
+            run(&reopened, &[b"PFCOUNT", b"dense", b"missing"]),
+            dense_count
+        );
+        assert_eq!(
+            run(&reopened, &[b"PEXPIRETIME", b"dense"]),
+            b":4102444800000\r\n"
+        );
+        assert_eq!(run(&reopened, &[b"TYPE", b"dense"]), b"+string\r\n");
+        assert_eq!(run(&reopened, &[b"DBSIZE"]), b":2\r\n");
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn rewrite_compacts_history_and_still_replays_the_final_state() {
     let path = aof_path("rewrite");
     {
@@ -1851,6 +1925,62 @@ fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
     let store = open(&path, FsyncPolicy::EverySec);
     assert_eq!(run(&store, &[b"GET", b"k"]), b"$2\r\nv2\r\n");
     let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_appendfsync_sync_preserves_config_and_data() {
+    let path = aof_path("config-fsync-failure");
+    let store = open(&path, FsyncPolicy::No);
+    assert_eq!(
+        run(
+            &store,
+            &[b"CONFIG", b"SET", b"maxmemory-policy", b"allkeys-lru"]
+        ),
+        b"+OK\r\n"
+    );
+    assert_eq!(run(&store, &[b"SET", b"retained", b"v\0x"]), b"+OK\r\n");
+    let fields: &[&[u8]] = &[
+        b"CONFIG",
+        b"GET",
+        b"appendfsync",
+        b"maxmemory",
+        b"hash-max-listpack-entries",
+    ];
+    let before = run(&store, fields);
+    let journal_bytes = std::fs::read(&path).unwrap();
+    assert!(store.call(|executor| {
+        let mut journal = executor.journal.as_ref().unwrap().lock().unwrap();
+        // Linux /dev/null accepts writes but rejects sync_all. Swap only the
+        // isolated test store's open descriptor, never the journal on disk.
+        journal.file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        true
+    }));
+    assert_eq!(
+        run(
+            &store,
+            &[
+                b"CONFIG",
+                b"SET",
+                b"maxmemory",
+                b"1",
+                b"hash-max-listpack-entries",
+                b"64",
+                b"appendfsync",
+                b"always",
+            ]
+        ),
+        b"-ERR appendfsync update failed\r\n"
+    );
+    assert_eq!(store.journal_policy(), Some(FsyncPolicy::No));
+    assert_eq!(run(&store, fields), before);
+    assert_eq!(run(&store, &[b"GET", b"retained"]), b"$3\r\nv\0x\r\n");
+    assert_eq!(std::fs::read(&path).unwrap(), journal_bytes);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

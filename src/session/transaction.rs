@@ -5,8 +5,9 @@ use std::io::Write;
 
 use crate::engine::{Access, Action, Store, TransactionOutcome, WatchState};
 
-use super::Session;
 use super::command::{arity, command_name, is_session_command};
+use super::reply::convert_exec_reply;
+use super::{Protocol, Session};
 
 const MAX_QUEUED_COMMANDS: usize = 10_000;
 
@@ -96,9 +97,20 @@ impl Session {
                 }
             }
         }
+        let start = output.len();
         match store.execute_transaction(&multi.queue, &watched, output) {
-            TransactionOutcome::Completed(action) => action,
-            TransactionOutcome::Aborted | TransactionOutcome::InternalError => Action::Continue,
+            TransactionOutcome::Completed(action) => {
+                if self.protocol == Protocol::Resp3 {
+                    let converted = convert_exec_reply(&output[start..], &multi.queue);
+                    output.truncate(start);
+                    output.extend_from_slice(&converted);
+                }
+                action
+            }
+            TransactionOutcome::Aborted | TransactionOutcome::InternalError => {
+                self.convert_reply(start, output);
+                Action::Continue
+            }
         }
     }
 

@@ -308,6 +308,26 @@ manifest must contain exactly amd64 and arm64. A digest—not a mutable tag—is
 content-immutable deployment identity. OCI labels link the real source revision.
 No image signature, SBOM or SLSA attestation is claimed by this workflow.
 
+### Check the published index against release evidence
+
+Save the exact registry response body for the digest-pinned index as
+`index.json`. Do not pretty-print or reserialize it. Obtain the expected index
+and per-platform manifest digests independently from trusted release evidence,
+not from the downloaded index itself. Then run this read-only check:
+
+```sh
+python3 scripts/verify_container_index.py index.json \
+  --digest "$index_digest" --amd64 "$amd64_digest" --arm64 "$arm64_digest"
+```
+
+The checker hashes the raw bytes and requires exactly one `linux/amd64` and
+one `linux/arm64` image manifest descriptor with the expected digests. It
+accepts OCI indexes and Docker v2 manifest lists up to 256 KiB. A match does
+not authenticate the expected digests, fetch or validate the child manifests
+or layers, verify signatures or attestations, or establish native platform
+support. Retain the exact index bytes and result alongside the separate native
+platform and release-verification evidence.
+
 ### One-time GitHub public visibility
 
 GitHub creates new GHCR packages **private**, even for public source repositories.
