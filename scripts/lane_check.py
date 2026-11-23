@@ -54,6 +54,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "src/engine/discovery/streams.rs",
         "docs/streams.md",
         "tests/streams*.rs",
+        "tests/stream_trim.rs",
         "tests/blocking_stream*.rs",
     ),
     "collections": (

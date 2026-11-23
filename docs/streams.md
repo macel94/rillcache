@@ -73,7 +73,9 @@ pending count, `idle` and `inactive`.
 - `XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]` removes oldest entries
   until the retained length/ID threshold is met and returns the removed count.
   Exact mode ignores no entries; approximate (`~`) mode caps work at `LIMIT`
-  (default 10,000; `LIMIT 0` means unbounded). Pending IDs whose messages are
+  (default 10,000; `LIMIT 0` means unbounded). Payload accounting examines only
+  removed entries, without rescanning survivors. This does not bound journal
+  serialization or the cost of an exact trim. Pending IDs whose messages are
   trimmed remain in the PEL, as with XDEL, until XACK/XCLAIM/XAUTOCLAIM prunes
   them.
 - `XPENDING key group` summary and
