@@ -56,4 +56,7 @@ Unit tests cover exact creation, duplicate adds, empty elements, exact and dense
 promotion, malformed payload rejection, wrong types, destination merging, TTL
 preservation and payload bounds. `tests/hyperloglog.rs` exercises the commands,
 errors, dense cardinality tolerance and transaction queueing through RESP in
-managed per-client, one-worker and four-worker modes.
+managed per-client, one-worker and four-worker modes. The same-binary journal
+regression verifies exact and dense payload bytes, cardinality and absolute
+expiry after compaction and restart with both CRC and authenticated journals.
+It does not test upstream byte interchange or compatibility across releases.
