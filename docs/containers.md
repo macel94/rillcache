@@ -256,9 +256,11 @@ probes to authenticate using the same file as the server. The Secret volume uses
 mode `0440` and Pod `fsGroup: 65532` so the non-root process can read it. Do not
 combine this mount with `--secure-secret-files`, which requires
 owner-only permissions. No password value is stored in the manifests or passed
-as a server or probe argument. Restart the Deployment after replacing the Secret:
-the server loads its password at startup, so updating the mounted file alone
-can make the probes fail until the rollout completes. For a custom multi-user
+as a server or probe argument. The single-file `subPath` mount does not receive
+live Secret updates, so the running server and its probes keep using the same
+credential. After replacing the Secret, run `kubectl rollout restart
+deployment/rillcache` and wait for the rollout before switching clients to the
+new password. This is a restart, not online rotation. For a custom multi-user
 ACL deployment, configure the server ACL file and authenticate both probes with
 an allowed probe user; the password overlay is not an ACL deployment.
 
