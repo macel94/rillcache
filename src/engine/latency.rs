@@ -193,17 +193,7 @@ impl super::ServerServices {
             output.extend_from_slice(b"-ERR LATENCY GRAPH is unsupported; use LATENCY HISTORY\r\n");
         } else if subcommand.eq_ignore_ascii_case(b"HISTOGRAM") {
             // Optional command filters; unknown names simply match nothing.
-            let filters = &arguments[2..];
-            let histograms: Vec<super::CommandHistogramValues> = self
-                .latency_histograms()
-                .into_iter()
-                .filter(|histogram| {
-                    filters.is_empty()
-                        || filters
-                            .iter()
-                            .any(|filter| histogram.name.as_bytes().eq_ignore_ascii_case(filter))
-                })
-                .collect();
+            let histograms = self.latency_histograms(&arguments[2..]);
             write_array_len(histograms.len().saturating_mul(2), output);
             for histogram in &histograms {
                 encode_bulk(Some(histogram.name.as_bytes()), output);

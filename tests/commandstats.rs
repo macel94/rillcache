@@ -352,6 +352,11 @@ fn latency_histogram_reports_bounded_buckets_in_all_modes() {
         );
         assert!(contains(&ping, b"$14\r\nhistogram_usec"), "{ping:?}");
 
+        let mut filters: Vec<&[u8]> = vec![b"LATENCY", b"HISTOGRAM"];
+        filters.extend(std::iter::repeat_n(b"nosuch".as_slice(), 256));
+        filters.extend([b"pInG".as_slice(), b"PING", b"\xff"]);
+        assert_eq!(reply(&mut stream, &filters), ping);
+
         // Buckets are strictly increasing microsecond upper bounds whose
         // counts add up to the series call count.
         let buckets = histogram_buckets(&ping);

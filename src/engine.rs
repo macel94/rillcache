@@ -862,11 +862,25 @@ impl ServerServices {
     /// logarithmic buckets as `INFO latencystats`. Only commands with recorded
     /// calls and only non-empty buckets are returned, in increasing
     /// upper-bound order. The upper bound of bucket 0 is zero microseconds.
-    pub(super) fn latency_histograms(&self) -> Vec<CommandHistogramValues> {
+    pub(super) fn latency_histograms(&self, filters: &[&[u8]]) -> Vec<CommandHistogramValues> {
+        // The selection is bounded by the registry, not the number of filters.
+        let selected = (!filters.is_empty()).then(|| {
+            let mut selected = vec![false; self.command_stats.len()];
+            for index in filters
+                .iter()
+                .filter_map(|name| discovery::command_index(name))
+            {
+                selected[index] = true;
+            }
+            selected
+        });
         self.command_stats
             .iter()
             .enumerate()
             .filter_map(|(index, stat)| {
+                if selected.as_ref().is_some_and(|mask| !mask[index]) {
+                    return None;
+                }
                 let calls = stat.calls.load(Ordering::Relaxed);
                 if calls == 0 {
                     return None;
