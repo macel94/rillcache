@@ -1492,16 +1492,19 @@ impl ShardExecutor {
     }
 
     pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
-        if let Some(journal) = self.journal.as_ref() {
-            let mut journal = journal
-                .lock()
-                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
-            journal.set_policy(policy)?;
-        }
+        let mut journal = self
+            .journal
+            .as_ref()
+            .map(std::sync::Mutex::lock)
+            .transpose()
+            .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
         let mut config = self
             .aof_config
             .write()
             .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        if let Some(journal) = journal.as_mut() {
+            journal.set_policy(policy)?;
+        }
         config.policy = policy;
         Ok(())
     }
