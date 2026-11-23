@@ -4,7 +4,7 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ErrorDialect {
     Redis,
-    /// Preserve Rillcache's existing MSETEX short-pair error by default.
+    /// Use the pinned Valkey wording for the selected command errors by default.
     #[default]
     Valkey,
 }
@@ -29,6 +29,30 @@ impl ErrorDialect {
         match self {
             Self::Redis => b"-ERR wrong number of key-value pairs\r\n",
             Self::Valkey => super::options::SYNTAX,
+        }
+    }
+
+    pub(super) fn hgetdel_missing_fields(self) -> &'static [u8] {
+        match self {
+            Self::Redis => {
+                b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n"
+            }
+            Self::Valkey => super::options::SYNTAX,
+        }
+    }
+
+    pub(super) fn hgetdel_invalid_count(self) -> &'static [u8] {
+        match self {
+            Self::Redis => b"-ERR Number of fields must be a positive integer\r\n",
+            Self::Valkey => super::options::NOT_INTEGER,
+        }
+    }
+
+    pub(super) fn hgetdel_wrong_count(self, nonpositive: bool) -> &'static [u8] {
+        match self {
+            Self::Redis if nonpositive => self.hgetdel_invalid_count(),
+            Self::Redis => b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            Self::Valkey => b"-ERR numfields should be greater than 0 and match the provided number of fields\r\n",
         }
     }
 }
