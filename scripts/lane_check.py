@@ -70,6 +70,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "src/engine/discovery/sets.rs",
         "src/engine/discovery/zsets.rs",
         "docs/collections.md",
+        "docs/hyperloglog.md",
         "docs/geospatial.md",
         "docs/sort.md",
         "tests/collections*.rs",
