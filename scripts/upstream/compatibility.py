@@ -99,7 +99,7 @@ def run(reference, suite, name, directory):
     argv = ["tclsh", "tests/test_helper.tcl", "--single", suite, *config["options"],
             "--tags", " ".join("-" + tag for tag in config["denied_tags"]), "--host", "127.0.0.1"]
     # Public startup selection, constant for the entire original suite: the
-    # pinned vendors disagree on MSETEX short-pair error wording. No test probing,
+    # pinned vendors disagree on selected MSETEX and HGETDEL error wording. No test probing,
     # assertion rewriting or suite-specific server behavior is involved.
     error_dialect = reference if name == "rillcache" else None
     with server(name, directory / "instance", compatibility=True, error_dialect=error_dialect) as (proc, port):
@@ -189,7 +189,7 @@ def main():
         text += "Skip/ignore events are not an exact skipped-assertion count; conditional un-emitted tests remain unknown. "
         text += "Single DB; encoding/digest checks disabled; DEBUG/replication/slow tags excluded identically. "
         text += "See scope, complete unit inventory, revisions, prerequisites and raw native/candidate logs in artifacts.\n\n"
-        text += f"Candidate startup error dialect: `{args.reference}` (MSETEX short-pair wording only; not a full vendor compatibility mode).\n\n"
+        text += f"Candidate startup error dialect: `{args.reference}` (selected MSETEX and HGETDEL error wording; not a full vendor compatibility mode).\n\n"
         if args.diagnostic:
             missing = result.get("native_passes_missing_from_candidate")
             if missing is not None:

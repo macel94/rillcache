@@ -14,6 +14,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   artifacts, without automatically deploying an unauthenticated experimental
   server. The separate S15 container workflow may publish tested images to GHCR;
   publishing an image is not deployment or a production-readiness claim.
+- **R511 (event-driven):** Given a published index response body and independent
+  expected digests, check the exact index SHA-256 and require the expected
+  Linux amd64 and arm64 manifest descriptors. Refuse mismatched or ambiguous
+  records without fetching or writing anything. This does not verify the
+  child content, signatures, attestations or platform behavior.
 
 ## Performance evidence
 
