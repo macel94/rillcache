@@ -43,6 +43,7 @@ class FakeAPI:
         self.update_error = None
         self.update_errors = {}
         self.dispatch_error = None
+        self.approve_error = None
         # (workflow, ref) -> blob sha override; default means branch matches main.
         self.workflow_blobs = {}
 
@@ -96,6 +97,10 @@ class FakeAPI:
         if "/actions/workflows/" in path and path.endswith("/dispatches"):
             if self.dispatch_error:
                 raise self.dispatch_error
+            return None
+        if "/actions/runs/" in path and path.endswith("/approve"):
+            if self.approve_error:
+                raise self.approve_error
             return None
         if "/check-runs?per_page=100" in path:
             sha = path.split("/commits/", 1)[1].split("/check-runs", 1)[0]
@@ -311,21 +316,58 @@ class UpdaterTests(unittest.TestCase):
                         else: item["conclusion"] = change
                         self.assertFalse(self.updater.check_identity(run, workflow)[0])
 
-    def test_github_token_approval_held_pr_runs_do_not_block_explicit_dispatch(self):
+    def held_runs(self, verdicts):
+        """One approval-held pull_request run per required workflow on head C."""
+        for index, workflow in enumerate(mod.REQUIRED):
+            self.api.workflows[workflow].append({
+                "id": 70 + index, "path": f".github/workflows/{workflow}@refs/pull/1/merge",
+                "event": "pull_request", "head_sha": C, "head_branch": "feature/1",
+                "status": "completed", "conclusion": "action_required",
+                "actor": {"login": "github-actions[bot]"},
+                "pull_requests": [{"number": 1, "head": {"sha": C}, "base": {"sha": A}}],
+            })
+
+    def test_github_token_approval_held_pr_runs_are_approved_not_dispatched(self):
+        # A bot-pushed branch refresh leaves the required pull_request runs
+        # action_required. GitHub's merge box never accepts workflow_dispatch
+        # evidence for them, so the updater approves the held runs instead.
         p = pull(base=A, head=C)
         self.api.prs[1] = p
         self.api.current.add((A, C))
-        for workflow in mod.REQUIRED:
-            self.api.workflows[workflow].append({
-                "id": 70, "path": f".github/workflows/{workflow}@refs/pull/1/merge",
-                "event": "pull_request", "head_sha": C, "head_branch": "feature/1", "status": "completed",
-                "conclusion": "action_required", "actor": {"login": "github-actions[bot]"},
-                "pull_requests": [{"number": 1, "head": {"sha": C}, "base": {"sha": A}}],
-            })
+        self.held_runs(None)
         result = self.updater.process(p)
-        self.assertEqual(result["status"], "checks_dispatched")
-        dispatches = [call for call in self.api.calls if call[0] == "POST"]
-        self.assertEqual(len(dispatches), 6)
+        self.assertEqual(result["status"], "checks_approved")
+        posts = [call for call in self.api.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 6)
+        self.assertTrue(all(call[1].endswith("/approve") for call in posts))
+        self.assertEqual([int(call[1].split("/")[-2]) for call in posts],
+                         [70 + index for index in range(6)])
+
+    def test_approval_is_refused_when_branch_workflow_differs_from_main(self):
+        p = pull(base=A, head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.held_runs(None)
+        self.api.workflow_blobs[("ci.yml", "feature/1")] = "f" * 40
+        result = self.updater.process(p)
+        self.assertEqual(result["status"], "untrusted_workflow")
+        self.assertFalse([call for call in self.api.calls if call[0] == "POST"])
+
+    def test_one_approval_per_workflow_is_requested_per_pass(self):
+        p = pull(base=A, head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.held_runs(None)
+        for workflow in mod.REQUIRED:
+            duplicate = dict(self.api.workflows[workflow][0])
+            duplicate["id"] = 700
+            duplicate["created_at"] = "2026-10-26T00:01:00Z"
+            self.api.workflows[workflow].append(duplicate)
+        result = self.updater.process(p)
+        self.assertEqual(result["status"], "checks_approved")
+        posts = [call for call in self.api.calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 6)
+        self.assertNotIn(700, [int(call[1].split("/")[-2]) for call in posts])
 
     def source_run(self, head=C, associated=C, *, run_id=1, status="completed", conclusion="success"):
         return {"id": run_id, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
