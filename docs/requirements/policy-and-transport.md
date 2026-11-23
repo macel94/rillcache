@@ -453,6 +453,10 @@ platforms retain timeout-based fallback admission.
   new sockets shall receive `ERR max number of clients reached` and increment
   `rejected_connections` until capacity is available. Raising the limit shall
   admit new connections without a restart.
+- **R507 (event-driven):** On the opt-in Tokio transport, raising the live
+  `maxclients` limit shall also let newly admitted clients start tasks rather
+  than wait on the startup limit. Lowering the limit shall reject new excess
+  clients but allow already admitted sessions, including queued ones, to run.
 - **R364 (ubiquitous):** Tests shall cover the default and wildcard reporting,
   live admission in every worker mode, lowering and raising, invalid values,
   existing-client survival and `INFO clients` reflecting the live value.
