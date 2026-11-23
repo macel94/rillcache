@@ -62,8 +62,10 @@ CONFIG SET appendfsync no
 The update applies to the open journal immediately and affects subsequent
 appends. Switching away from `no` first syncs records that were previously only
 written to the operating system, so the stronger policy covers acknowledged
-writes already in the file; a sync failure leaves the journal failed and returns
-an error. `appendonly` and `appendfilename` are startup-only and reject
+writes already in the file. If that sync fails, the journal is marked failed,
+but retains the old policy and does not apply any other settings in the same
+`CONFIG SET` command or evict keys under a proposed smaller memory budget.
+`appendonly` and `appendfilename` are startup-only and reject
 `CONFIG SET` with a visible error. There is no `redis.conf` reload and no
 runtime `appendonly yes`/`no` toggle: restart with the desired flags to open,
 close or rename the journal. When append-only persistence is disabled the
@@ -162,8 +164,9 @@ segment on their first new append; rewriting compacts the legacy prefix into one
 checksummed snapshot.
 
 At startup, Rillcache verifies each complete checksum group before replaying any
-command. Valid-RESP byte corruption fails closed with a checksum mismatch. A torn
-final transaction/checksum is truncated to the previous verified boundary, so
+command. Valid-RESP byte corruption in a complete group, including the last
+one, fails startup with a checksum mismatch and leaves the journal unchanged.
+A torn final transaction/checksum is truncated to the previous verified boundary, so
 commands from an incomplete group are never replayed. The `ECHO` markers have no
 database effect if the RESP journal is inspected or replayed by another
 Redis-compatible server.
@@ -174,8 +177,10 @@ gap D3; optional record authentication is described next.
 
 ## Journal authentication
 
-Set `--aof-hmac-key-file PATH` (16..=1024 bytes, one trailing newline stripped) to
-authenticate journal transactions with HMAC-SHA256. The in-repo SHA-256 and HMAC
+Set `--aof-hmac-key-file PATH` (16..=1024 bytes after stripping one final LF or
+CRLF) to authenticate journal transactions with HMAC-SHA256. The server and
+backup utility read at most 1027 bytes and reject oversize files rather than
+accepting a prefix. The byte limit is not an I/O deadline. The in-repo SHA-256 and HMAC
 construction is the same dependency-free code used for audit-line authentication;
 the key is loaded once at startup and is not exposed in `CONFIG GET`, `INFO` or
 process arguments.
@@ -245,6 +250,32 @@ is unsupported and is explicitly excluded by the
 [standalone production profile](production-profile.md). Keep journals on local
 storage or guarantee single-process access externally.
 
+## Import a bounded offline string journal
+
+For a deliberately exported DB 0 string dataset, `scripts/import_string_journal.py`
+converts RESP arrays of bulk strings to a legacy Rillcache journal. Supply one
+`SET key value` or `SET key value PXAT unix-ms` record per exported value; an
+initial `SELECT 0` is optional. Use binary bulk strings for keys and values and
+absolute (not relative) expirations. This tool does not extract a snapshot from
+a running server or read a native multipart AOF, RDB preamble, other database,
+transaction, or non-string records. Do not point it at a live source or target.
+
+```sh
+python3 scripts/import_string_journal.py snapshot.resp /isolated/appendonly.aof
+rillcache-backup create --dir /isolated --output /checkpoints/import.rcb
+rillcache-backup verify --input /checkpoints/import.rcb
+```
+
+Use a stopped, empty, trusted staging directory and a local filesystem that
+supports hard links. The tool accepts at most 16 MiB total, 2 MiB per frame and
+1 MiB per bulk argument. It stages the complete output beside the target and
+never overwrites an existing journal. A `PXAT` record becomes `SET` followed by
+`PEXPIREAT`; records replay in order. Keep the source and verified checkpoint,
+compare exact strings, expirations and counts with the source, and test
+recovery before allowing traffic. The destination must not be started until
+validation succeeds. Full native AOF interchange, power-loss durability of
+publication, and live cutover are not established by this conversion.
+
 ## Offline backup and restore
 
 The `rillcache-backup` binary supports a versioned, bounded-memory archive of a
@@ -253,7 +284,9 @@ the normal exclusive ownership lock, replays it, and forces a journal sync befor
 copying. A running writer therefore causes backup to fail without publishing an
 archive. The archive stores the AOF bytes with their length and CRC32, streams in
 1 MiB chunks, and is limited to 16 GiB. The temporary archive is mode 0600 on Unix,
-synced, then hard-linked into place without replacing an existing output. Pass
+synced, then hard-linked into place without replacing an existing output. If
+reusing a filename is refused, choose a new one so the previous checkpoint
+remains available for rollback. Pass
 `--aof-hmac-key-file` for an authenticated journal; see the authentication section
 above. The archive and destination must be on a local filesystem that supports same-directory
 hard links and directory fsync; shared/network filesystems are unsupported.
@@ -264,14 +297,29 @@ rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb --temp-dir /ve
 rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restore
 ```
 
-`--filename` selects a non-default AOF basename. If the source uses non-default
-`max-data-bytes`, protocol frame/bulk or argument limits, pass matching
+`--filename` selects the source AOF basename for `create` and the destination
+basename for `restore`. They need not match. Set the recovering server's
+`appendfilename` to the restored name before starting it; otherwise it may open
+or create a different journal. If the source uses non-default `max-data-bytes`,
+protocol frame/bulk or argument limits, pass matching
 `--max-data-bytes`, `--max-frame-bytes`, `--max-bulk-bytes`, and
-`--max-arguments` values to create/verify/restore. Destination directories must
-already exist and the restored AOF/lock must be absent. Restore verifies archive
+`--max-arguments` values to create/verify/restore. If replay exceeds the logical
+payload budget, verification and restore fail without publishing a partial
+journal. Retry with the source's configured budget if appropriate; this limit
+is not an RSS bound. Destination directories must
+already exist and the restored AOF and its ownership lock must both be absent.
+Restore refuses a lock even if the AOF is missing, without removing the lock.
+Use a separate empty directory rather than deleting a lock whose owner has not
+been verified. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. If validating the source would require
-truncating an incomplete tail, `create` fails without modifying the source or
+never overwrites an existing journal. A complete legacy RESP archive restores
+byte-for-byte; subsequent appends add CRC-framed records without changing its
+legacy prefix. That does not retroactively checksum the prefix or establish
+compatibility with older binaries. Use a dedicated offline directory per
+restore. If two restore commands target the same empty directory, only one can
+publish its journal; inspect the command results before starting a server and
+use a new empty directory to inspect the other archive. If source validation
+would require truncating an incomplete tail, `create` fails without modifying the source or
 publishing an archive. Preserve the original and investigate before choosing
 whether to recover a copy with server startup. Both `verify` and `restore` reject an
 archive if replay truncates the staged journal, even when the archive's outer
@@ -284,6 +332,9 @@ no staged journal or lock, then retries with the matching key in the same
 directory and reads back the restored value. The archive remains unchanged.
 This does not imply cleanup after interruption or filesystem failure.
 
+For regular files, `verify` and `restore` check that the archive file size
+matches the header and declared payload before creating a staging file. They
+still validate the streamed length, CRC, end of file and journal replay.
 Verification stages a temporary copy of the journal payload. Use `verify --temp-dir DIR`
 with an existing, trusted writable local directory to select a volume with space
 for the payload (up to 16 GiB). Without the option, verify uses the platform
@@ -342,7 +393,9 @@ rewrite change it is **not** a single blocking pass:
    1 MiB of encoded state). Between slices the server keeps serving commands.
    Every key changed since the previous round is re-encoded as a **whole value**
    (`DEL` plus rebuild), never as the original incremental command, so a key
-   visited twice cannot duplicate collection members.
+   visited twice cannot duplicate collection members. An expiry observed and
+   removed after a key's snapshot slice is reconciled as a deletion. This does
+   not provide a general persisted clock high-water mark.
 3. The snapshot is fsynced outside the exclusive gate. A final round re-encodes
    the keys written during that fsync, then a short gate appends the residual,
    fsyncs, renames the temporary file over the journal and reopens it at the
@@ -353,9 +406,28 @@ the current `aof_rewrite_phase` (`snapshot`, `reconcile`, `sync`, `commit`, or
 `none` when idle), and stable snapshot progress as
 `aof_rewrite_keys_done`/`aof_rewrite_keys_total`. Reconciliation keys may be
 visited more than once, so the done count deliberately stops at the snapshot
-total and does not invent duplicate progress. `aof_last_bgrewrite_status:ok|err`
-describes the last completed attempt. The final
-snapshot checksum is written and synced before the atomic rename. A crash before
+total and does not invent duplicate progress. `aof_rewrite_bytes_written` counts
+bytes written to the temporary file, including framing and reconciliation. It
+resets to zero when the rewrite finishes or aborts, and is omitted if AOF is
+disabled or journal status is unavailable. It does not represent durable bytes
+or a completion percentage. `aof_last_rewrite_start_usec` measures the latest
+successful rewrite setup in whole microseconds, from starting snapshot key
+collection through writing the staging header and initial record. It is omitted
+before the first successful setup and excludes later rewrite work and time spent
+waiting for the request to reach the owner. `aof_last_rewrite_finish_usec`
+measures the latest successful finalization under exclusive data access, from
+acquiring that access through encoding remaining changes, syncing and replacing
+the journal, and resetting rewrite bookkeeping. It excludes earlier work and
+client-observed delays, and is not a pause limit or a standalone fsync measure.
+It is omitted before the first success and retained across failed attempts.
+`aof_last_bgrewrite_status:ok|err` describes the last completed attempt,
+including failure to initialize the staging file. A staging setup failure does
+not latch the live append status. A failed final rename before replacement
+also leaves the existing journal writable and reports a rewrite error. The
+Unix regression tests this with a missing staging filename while its file
+handle is still open; it is not evidence of recovery from a storage-device
+fault or failure after rename. The final snapshot checksum is written and
+synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every
 acknowledged write (covered by `tests/durability_crash.rs`).

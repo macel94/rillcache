@@ -3,6 +3,11 @@ name: Upstream Tcl compatibility
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      hash_diagnostic:
+        description: Also run the original hash suite against each pinned reference and Rillcache
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -93,5 +98,42 @@ jobs:
         with:
           name: upstream-tcl-${{ matrix.reference }}-${{ matrix.suite.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/upstream/evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+  hash-diagnostic:
+    name: Tcl hash diagnostic
+    if: github.event_name != 'pull_request' && github.event_name == 'workflow_dispatch' && inputs.hash_diagnostic
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        reference: [redis, valkey]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tcl runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upstream-tcp-tools-${{ github.run_id }}
+          path: target/upstream/
+      - name: Unpack same-run tools
+        run: tar -xzf target/upstream/bundle.tar.gz -C target/upstream
+      - name: Run native hash control before candidate over TCP
+        env:
+          REFERENCE: ${{ matrix.reference }}
+        run: python3 scripts/upstream/compatibility.py --reference "$REFERENCE" --suite unit/type/hash --diagnostic
+      - name: Preserve manual hash diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-tcl-hash-diagnostic-${{ matrix.reference }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/compat-*-unit-type-hash/
           retention-days: 30
           if-no-files-found: warn

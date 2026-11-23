@@ -176,8 +176,9 @@ impl ShardExecutor {
                 glob_match(&folded_pattern, b"maxmemory")
             } else {
                 pattern.eq_ignore_ascii_case(b"maxmemory")
+                    || pattern.eq_ignore_ascii_case(b"max-data-bytes")
             };
-            if wants_maxmemory {
+            if wants_maxmemory && !matches.iter().any(|(name, _)| *name == b"maxmemory") {
                 matches.push((b"maxmemory", self.payload_limit().to_string()));
             }
             let wants_notify = if wildcard {
@@ -488,6 +489,14 @@ impl ShardExecutor {
                 return;
             }
         }
+        // A stronger journal policy can require filesystem I/O. Fail before
+        // publishing other settings or enforcing a budget that could evict keys.
+        if let Some(policy) = appendfsync
+            && self.set_aof_policy(policy).is_err()
+        {
+            out.extend_from_slice(b"-ERR appendfsync update failed\r\n");
+            return;
+        }
         *config = candidate;
         if let Some(password) = password
             && !self.set_requirepass(password.as_deref())
@@ -521,12 +530,6 @@ impl ShardExecutor {
         }
         if let Some(value) = auto_aof_min_size {
             self.set_auto_aof_rewrite_min_size(value);
-        }
-        if let Some(policy) = appendfsync
-            && self.set_aof_policy(policy).is_err()
-        {
-            out.extend_from_slice(b"-ERR appendfsync update failed\r\n");
-            return;
         }
         if let Some(value) = maxclients {
             self.set_max_clients(value);
@@ -687,6 +690,27 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
             b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
         );
+    }
+
+    #[test]
+    fn config_get_accepts_the_exact_startup_payload_budget_name() {
+        let store = ShardExecutor::new(100);
+        let reply = b"*2\r\n$9\r\nmaxmemory\r\n$3\r\n100\r\n";
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"MAX-DATA-BYTES"]), reply);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"GET",
+                    b"max-data-bytes",
+                    b"maxmemory",
+                    b"maxmem?ry"
+                ]
+            ),
+            reply
+        );
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"max-data-*"]), b"*0\r\n");
     }
 
     #[test]

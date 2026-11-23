@@ -81,7 +81,9 @@
           "Tcl valkey / keyspace"
         ]
       },
-      "non_pr_jobs": {}
+      "non_pr_jobs": {
+        "hash-diagnostic": "not-pull-request"
+      }
     },
     "pr-branch-updater.yml": {
       "events": [

@@ -92,7 +92,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|DEBUG|KILL`, `FUNCTION
   LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` and `FCALL`/`FCALL_RO` are absent.
   Only `SCRIPT FLUSH` and `FUNCTION FLUSH` return `+OK` for an empty registry.
-  The dependency policy does not permit a Lua runtime.
+  Native TCP verification covers those no-ops, execution command discovery,
+  and rejection of execution and representative registry subcommands. The
+  dependency policy does not permit a Lua runtime.
   **Closes when:** a reviewed runtime decision exists; scripts/functions execute
   atomically with bounded CPU/memory/instruction use, deterministic journal and
   replication behavior, exact error/result mapping and no filesystem/network
@@ -108,7 +110,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **C4. Multiple logical databases are missing.** [P0]
   Only database 0 exists. `SELECT` accepts 0, `MOVE`/`SWAPDB` return a multi-database
-  error, and `COPY ... DB n` rejects nonzero databases.
+  error, and `COPY ... DB n` rejects nonzero databases. A two-client TCP test
+  verifies that rejection leaves binary source and destination data and the
+  key count unchanged, and that DB-0 COPY and FLUSHDB affect both clients'
+  shared keyspace. This is native wire evidence, not a language-client matrix.
   **Closes when:** the profile either supports a validated number of databases
   with per-database keyspaces, `SELECT`/`MOVE`/`SWAPDB`/`FLUSHDB` semantics and
   per-database observability, or explicitly excludes clients that require them.
@@ -269,9 +274,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   bind; later CLI options override earlier file values. See
   [startup configuration](configuration.md). `--check-config` checks merged
   startup options without starting the server; it does not test resource opening.
-  **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
-  live reload/rollback and the complete runtime-mutable surface are absent, and
-  the upstream configuration language is not accepted.
+  `config-version 1` can explicitly declare the startup file format; unmarked
+  files retain version 1 behavior. A parser test checks the documented example.
+  Startup config reads stop at the 1 MiB limit plus one byte; this is a per-file
+  bound and does not set an I/O timeout or limit the number of files.
+  **Remaining:** a complete defaults inventory, `CONFIG REWRITE`, live
+  reload/rollback and the complete runtime-mutable surface are absent, and the
+  upstream configuration language is not accepted.
   **Closes when:** the supported configuration schema is versioned, validated
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
@@ -313,16 +322,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reports `aof_rewrite_phase` (`snapshot`, `reconcile`, `sync`, `commit`, `none`
   or `unavailable`) and stable snapshot progress as
   `aof_rewrite_keys_done`/`aof_rewrite_keys_total`. Reconciliation may revisit a
-  key, so progress stops at the snapshot total instead of counting duplicates;
-  byte progress is not reported.
+  key, so progress stops at the snapshot total instead of counting duplicates.
+  `aof_rewrite_bytes_written` reports actual bytes written to the temporary
+  file, including framing and reconciliation, without claiming durability.
+  `aof_last_rewrite_start_usec` reports the latest successful setup interval;
+  it is not a client latency measurement or an independent start-pause bound.
+  A staging setup failure reports a rewrite error without marking the live
+  journal unwritable; an isolated fixture verifies retry and replay.
   **Measured (host-local):** old synchronous pass 130 ms full stall and 129 ms
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
   the residual fsync. Completion time still scales with the dataset.
   **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
   enormous keyspaces still need a measured pause SLO; a sustained write storm
-  lengthens reconciliation rounds; there is no byte counter or percentage. RDB
-  and online backup remain separate items.
+  lengthens reconciliation rounds, so byte progress has no fixed total and
+  cannot report a percentage. RDB and online backup remain separate items.
   **Closes when:** the start pause is bounded independently of key count (or an
   accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 
@@ -344,7 +358,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `--aof-hmac-migrate` startup seal, which authenticates the already checksummed
   prefix as-is; later starts without an anchor fail closed. A torn final
   unauthenticated group is discarded to the last verified marker. The offline
-  backup tool accepts the key for create/verify/restore. Tests cover restart,
+  backup tool accepts the key for create/verify/restore. Both key-file readers
+  enforce a byte limit during the read and reject oversized files. Tests cover restart,
   wrong key, modified tags, migration refusal and completion, authenticated
   rewrite plus post-rewrite appends, torn markers, partial next appends, and real
   server/backup paths.
@@ -368,8 +383,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
   write survives with `appendfsync always` (so the reply cannot precede the
   durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. The Linux torn-tail drill explicitly truncates a disposable journal
-  after process exit, then verifies that restart discards the final integrity
+  holes. A separate Linux drill kills the process after a local `WAITAOF`
+  acknowledgement with either `no` or `everysec` and checks binary values after
+  restart; it does not simulate device loss. The Linux torn-tail drill truncates
+  a disposable journal after process exit, then verifies that restart discards the final integrity
   group for a multi-key `MSET` and that new writes survive another restart.
   This models a torn integrity marker, not a real disk write failure. `EXEC`
   currently commits queued writes as separate journal groups, so recovery from
@@ -399,7 +416,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   key count and logical payload bytes while preserving the newer journal.
   The same-binary authenticated restore test rejects a wrong key without
   publishing or leaving staging files, then restores into the same directory
-  with the matching key and verifies the archive is unchanged.
+  with the matching key and verifies the archive is unchanged. An insufficient
+  logical payload budget also rejects verify and restore without publication or
+  residue; retry at a sufficient budget restores both original binary values.
+  A two-process restore case checks that only one archive is published into a
+  shared offline destination, with both originals and the winning bytes intact.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
@@ -442,7 +463,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   unchanged AOF directory and verify an acknowledged write under `appendfsync
   always`. This does not cover unsynced writes or power loss. The 25-second
   deadline outcome is separately unit-tested, not timed end-to-end for each
-  transport.
+  transport. A separate plain-TCP test in Mio and Tokio leaves the reply unread
+  past a single SIGTERM, verifies successful exit within five seconds and a
+  properly truncated reply, then checks on Linux that the acknowledged
+  `appendfsync always` value is intact after restarting. This exercises the
+  bounded client drain on working storage. The matching native TLS subprocess
+  test leaves its reply unread through one SIGTERM and verifies successful
+  exit within five seconds with only a valid reply prefix left to read. Neither
+  test exhausts the separate 25-second supervisor deadline.
   Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
   blocked clients connected through successful exit, then verify after restart
   that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
@@ -487,7 +515,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
   Tests cover ordinary restart, truncated tails and mid-file corruption. The
   Linux same-binary torn-tail drill checks checksum and HMAC journals, including
-  exact retained bytes and replay after new appends. Kill -9 at each boundary,
+  exact retained bytes and replay after new appends. A separate Linux fixture
+  restores a complete legacy RESP archive and verifies replay with a newly
+  checksummed suffix; no old binary participates. Kill -9 at each boundary,
   power-loss simulation, filesystem matrices, mixed versions and long-running
   recovery remain unverified.
   **Closes when:** a repeatable recovery matrix covers those cases and retains
@@ -501,7 +531,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `PSYNC`, `SYNC`, `REPLCONF`, `REPLICAOF host port` and `SLAVEOF host port`
   return explicit replication-unsupported errors. `ROLE`/`INFO replication`
   truthfully report a standalone master; `WAIT` returns 0 and `WAITAOF` only
-  acknowledges the local journal.
+  acknowledges the local journal. A native TCP test pins the standalone role
+  and zero replication offset after a local write and rejected reconfiguration.
   **Closes when:** full and partial synchronization, a consistent snapshot,
   bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
   interop pass; acknowledged-write loss is documented.
@@ -517,7 +548,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **A3. Cluster mode is missing.** [P0]
   `CLUSTER` is disabled; there are no 16,384 slots, hash tags, `MOVED`/`ASK`
   redirects, migration/importing state, cluster bus or cross-slot rejection.
-  Sharded Pub/Sub has no cluster routing.
+  Sharded Pub/Sub has no cluster routing. A native TCP test verifies explicit
+  rejection of the `SHARDS`, `SLOTS`, and `NODES` topology probes without
+  changing local data or advertising a replica.
   **Closes when:** slot mapping, redirects, migration, cross-slot atomicity,
   topology discovery, partition/rejoin and mixed-version rolling upgrade pass a
   cluster corpus, or the profile explicitly excludes cluster clients.
@@ -562,7 +595,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   The UDP collector has no sender authentication, transport encryption,
   federation, retry/backpressure, aggregation or delivery guarantee. Per-line
   HMAC and manual keyring rotation exist, but full-chain signing/key-ID and hot
-  rotation do not.
+  rotation do not. Collector output failures emit a redacted count summary and
+  exit nonzero. This does not retry or guarantee delivery.
   **Closes when:** authenticated and encrypted transport, sender identity,
   key-ID/hot rotation, durable delivery/backpressure and aggregation are
   implemented and tested; or the audit path is explicitly best-effort with a
@@ -632,6 +666,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tests cover loose/strict modes, short/long passwords and CLI parsing.
   `--check-config --secure-secret-files` also checks Unix secret-file permissions
   before startup, with redacted diagnostics suitable for preflight logs.
+  A startup file can opt in with `secure-secret-files yes`; the effective
+  setting follows file/CLI precedence and does not change the default.
+  Raw audit HMAC key files now have a byte-read bound shared by the server
+  and collector; this does not set a file I/O deadline or change rotation.
   Secret-manager integration, enforced entropy/length for `--requirepass`, and
   automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and
@@ -656,7 +694,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reactors, fixed workers and Tokio. Partial suffixes retain their original
   deadline. It does not bound TLS records that produce no plaintext.
   The native TLS pipeline case in V4 checks reply progress with an incomplete
-  request, not slow-client limits or overload shedding.
+  request, not steady-state slow-client limits or overload shedding. D7 also
+  covers abandonment of an unread native TLS reply during shutdown; that is
+  not evidence of overload shedding during normal service.
   Slow-client length/rate thresholds, global/user budgets, CPU quotas
   and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
@@ -685,7 +725,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   instead of a fake value. `INFO memory` and `MEMORY STATS` also report cgroup
   v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
   and are not used for admission, eviction or OOM handling. Allocator
-  accounting, enforced cgroup/headroom contracts and OOM behavior remain absent.
+  accounting, enforced cgroup/headroom contracts and OS OOM behavior remain
+  absent. `INFO memory` reports remaining logical key/value capacity separately;
+  tests cover filling the payload budget, rejecting a write and freeing capacity.
   **Partial (2026-11-19):** persistent per-owner `WATCH` history now caps logical
   retained key bytes at 4 MiB (in addition to its entry-count cap), invalidating
   outstanding watches conservatively on overflow. This excludes hash-table
@@ -737,7 +779,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `--healthcheck-require-aof` adds a bounded INFO persistence check for
   loading=0, enabled journal and healthy last write/rewrite statuses;
   missing/duplicate fields, reported errors, denied INFO and malformed replies
-  fail closed. `--healthcheck-aof-write-probe DIR` additionally creates, writes,
+  fail closed. Fixed diagnostics distinguish reported loading, disabled AOF,
+  last-write failure and last-rewrite failure without logging reply values.
+  `--healthcheck-aof-write-probe DIR` additionally creates, writes,
   syncs and removes a unique one-byte temporary file in the operator-selected
   directory, after the status check. Unit fault-response and all-mode CLI tests
   cover both contracts, including TLS. The write probe is point-in-time and may
@@ -757,7 +801,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **O5. Configuration reload is missing.** [P0]
   Listener/worker changes are startup-only; there is no general reload, atomic
-  configuration generation, rollback or validation report. See also C13.
+  configuration generation, rollback or validation report. TLS is a scoped
+  exception: a native test checks that one invalid SNI key rejects the
+  whole generation and that a repaired generation updates both default and
+  SNI stapled bytes. See also C13 and S5.
   **Closes when:** mutable settings can be atomically reloaded, immutable changes
   are rejected cleanly, and failed reloads retain the last valid configuration.
 
@@ -772,7 +819,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.
-  Replica pause is not applicable until replication exists.
+  An injected-clock test exercises expiry maintenance during both pause modes:
+  it observes one expiry event before unpause and verifies a deferred `SET NX`
+  sees the newly absent key. A wire test also checks that unrelated eviction
+  increments `evicted_keys` without completing a `BLPOP` waiter; a later push
+  completes the wait and clears `blocked_clients`. Replica pause is not
+  applicable until replication exists.
   **Closes when:** background eviction and the supported interaction matrix are
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.

@@ -344,6 +344,9 @@ pub(super) fn acl_error(error: AclError, output: &mut Vec<u8>) {
         AclError::TooLarge => {
             output.extend_from_slice(b"-ERR ACL file or rule set exceeds configured bounds\r\n")
         }
+        AclError::InsecureFile => output.extend_from_slice(
+            b"-ERR ACL file must be regular with no group or other permissions\r\n",
+        ),
         AclError::Io(_) => output.extend_from_slice(b"-ERR ACL file I/O error\r\n"),
     }
 }

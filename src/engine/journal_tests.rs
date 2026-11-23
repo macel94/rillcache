@@ -47,6 +47,219 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
 }
 
 #[test]
+fn rewrite_setup_failure_is_visible_and_does_not_latch_live_writes() {
+    let path = aof_path("rewrite-setup-failure");
+    let staging = path.with_file_name(format!(
+        ".{}.rewrite-{}",
+        path.file_name().unwrap().to_str().unwrap(),
+        std::process::id()
+    ));
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"SET", b"first", b"old\0"]), b"+OK\r\n");
+    let original = std::fs::read(&path).unwrap();
+    // A directory cannot be opened as the rewrite scratch file. This only
+    // faults rewrite setup, without changing permissions or the live journal.
+    std::fs::create_dir(&staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"-ERR append-only journal is not enabled or cannot be rewritten\r\n"
+    );
+    let info = run(&store, &[b"INFO", b"persistence"]);
+    let text = std::str::from_utf8(&info).unwrap();
+    assert!(text.contains("aof_last_bgrewrite_status:err\r\n"), "{text}");
+    assert!(text.contains("aof_last_write_status:ok\r\n"), "{text}");
+    assert!(text.contains("aof_rewrite_in_progress:0\r\n"), "{text}");
+    assert!(!text.contains("aof_last_rewrite_start_usec:"), "{text}");
+    assert!(!text.contains("aof_last_rewrite_finish_usec:"), "{text}");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(run(&store, &[b"SET", b"second", b"new\xff"]), b"+OK\r\n");
+    std::fs::remove_dir(&staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n"
+    );
+    store
+        .call(|executor| {
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    return Ok(());
+                }
+            }
+            Err(std::io::Error::other("fixture rewrite did not finish"))
+        })
+        .unwrap();
+    let info = run(&store, &[b"INFO", b"persistence"]);
+    let text = std::str::from_utf8(&info).unwrap();
+    assert!(text.contains("aof_last_bgrewrite_status:ok\r\n"), "{text}");
+    let finish_usec = text
+        .lines()
+        .find_map(|line| line.strip_prefix("aof_last_rewrite_finish_usec:"))
+        .expect("successful finalization timing");
+    assert!(finish_usec.parse::<u64>().is_ok(), "{text}");
+    std::fs::create_dir(&staging).unwrap();
+    assert_eq!(
+        run(&store, &[b"BGREWRITEAOF"]),
+        b"-ERR append-only journal is not enabled or cannot be rewritten\r\n"
+    );
+    let failed_info = run(&store, &[b"INFO", b"persistence"]);
+    let failed_text = std::str::from_utf8(&failed_info).unwrap();
+    assert!(
+        failed_text.contains("aof_last_bgrewrite_status:err\r\n"),
+        "{failed_text}"
+    );
+    assert_eq!(
+        failed_text
+            .lines()
+            .find_map(|line| line.strip_prefix("aof_last_rewrite_finish_usec:")),
+        Some(finish_usec)
+    );
+    std::fs::remove_dir(staging).unwrap();
+    drop(store);
+    let reopened = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&reopened, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn rewrite_publish_failure_preserves_live_journal_and_allows_retry() {
+    let path = aof_path("rewrite-publish-failure");
+    let staging = path.with_file_name(format!(
+        ".{}.rewrite-{}",
+        path.file_name().unwrap().to_str().unwrap(),
+        std::process::id()
+    ));
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"SET", b"first", b"old\0"]), b"+OK\r\n");
+    let original = std::fs::read(&path).unwrap();
+    store
+        .call(move |executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            for _ in 0..8 {
+                if executor.persistence_status().rewrite_phase == "commit" {
+                    break;
+                }
+                executor.rewrite_step()?;
+            }
+            assert_eq!(executor.persistence_status().rewrite_phase, "commit");
+            // The opened staging file remains usable on Unix, but cannot be
+            // renamed into place. This injects a publication failure only.
+            std::fs::remove_file(staging)?;
+            executor.journal_sync()?;
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(status.rewrite_failed);
+            assert!(!status.write_failed);
+            assert_eq!(status.last_rewrite_finish_usec, None);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(run(&store, &[b"SET", b"second", b"new\xff"]), b"+OK\r\n");
+    drop(store);
+
+    let reopened = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&reopened, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    reopened
+        .call(|executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    break;
+                }
+            }
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(!status.rewrite_failed);
+            assert!(status.last_rewrite_finish_usec.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(reopened);
+    let rewritten = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&rewritten, &[b"GET", b"first"]), b"$4\r\nold\0\r\n");
+    assert_eq!(run(&rewritten, &[b"GET", b"second"]), b"$4\r\nnew\xff\r\n");
+    drop(rewritten);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rewrite_setup_timing_is_recorded_only_when_a_rewrite_starts() {
+    let path = aof_path("rewrite-setup-timing");
+    let store = open(&path, FsyncPolicy::Always);
+    store
+        .call(|executor| {
+            assert_eq!(executor.persistence_status().last_rewrite_start_usec, None);
+            executor.rewrite_journal().unwrap();
+            assert!(executor.rewrite_in_progress());
+            let measured = executor.persistence_status().last_rewrite_start_usec;
+            assert!(measured.is_some());
+            executor.rewrite_journal().unwrap();
+            assert_eq!(
+                executor.persistence_status().last_rewrite_start_usec,
+                measured
+            );
+            executor.journal_sync()
+        })
+        .unwrap();
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rewrite_byte_progress_matches_temporary_file_and_resets() {
+    for authenticate in [false, true] {
+        let path = aof_path("rewrite-byte-progress");
+        let auth = authenticate.then(|| JournalAuth::new(AUTH_KEY.to_vec(), false).unwrap());
+        let mut journal =
+            super::Journal::open(&path, FsyncPolicy::Always, Limits::default(), auth).unwrap();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+
+        journal.begin_rewrite().unwrap();
+        let header_bytes = journal.status().rewrite_bytes_written.unwrap();
+        assert!(header_bytes > 0);
+        journal.abort_rewrite();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+
+        journal.begin_rewrite().unwrap();
+        let header_bytes = journal.status().rewrite_bytes_written.unwrap();
+        let record = b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+        journal.write_rewrite(record).unwrap();
+        let written = journal.status().rewrite_bytes_written.unwrap();
+        let temp_len = journal
+            .rewrite
+            .as_ref()
+            .unwrap()
+            .file
+            .metadata()
+            .unwrap()
+            .len();
+        assert_eq!(written, temp_len);
+        if authenticate {
+            assert!(written > header_bytes + record.len() as u64);
+        } else {
+            assert_eq!(written, header_bytes + record.len() as u64);
+        }
+        journal.sync_rewrite().unwrap();
+        assert_eq!(journal.status().rewrite_bytes_written, Some(written));
+        let published = journal.commit_rewrite().unwrap();
+        assert!(
+            published > written,
+            "commit adds the final integrity trailer"
+        );
+        assert_eq!(journal.status().current_size, Some(published));
+        assert_eq!(journal.status().rewrite_bytes_written, Some(0));
+        drop(journal);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
     use crate::engine::Clock;
     use std::sync::Arc;
@@ -87,6 +300,70 @@ fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
     assert_eq!(run(&store, &[b"GET", b"ttl"]), b"$5\r\nvalue\r\n");
     drop(store);
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn rewrite_reconciles_an_expiry_observed_after_the_snapshot() {
+    use crate::engine::Clock;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    let path = aof_path("rewrite-observed-expiry");
+    let initial_time = 1_700_000_000_000_i64;
+    let clock = Arc::new(TestClock(AtomicI64::new(initial_time)));
+    let store = Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock.clone()).unwrap();
+    assert_eq!(
+        run(&store, &[b"SET", b"ttl\0", b"old\xff", b"PX", b"1000"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(run(&store, &[b"SET", b"live", b"before"]), b"+OK\r\n");
+    store
+        .call(|executor| -> std::io::Result<()> {
+            executor.rewrite_journal().unwrap();
+            executor.rewrite_step()?;
+            let status = executor.persistence_status();
+            assert!(status.rewrite_in_progress);
+            assert_eq!(status.rewrite_keys_done, 2);
+            Ok(())
+        })
+        .unwrap();
+
+    clock.0.store(initial_time + 2_000, Ordering::SeqCst);
+    assert_eq!(run(&store, &[b"GET", b"ttl\0"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"SET", b"live", b"after\xff"]), b"+OK\r\n");
+    store
+        .call(|executor| -> std::io::Result<()> {
+            for _ in 0..8 {
+                executor.rewrite_step()?;
+                if !executor.rewrite_in_progress() {
+                    break;
+                }
+            }
+            let status = executor.persistence_status();
+            assert!(!status.rewrite_in_progress);
+            assert!(!status.rewrite_failed);
+            assert!(status.last_rewrite_finish_usec.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+
+    // Open before the original deadline so it cannot mask a stale snapshot
+    // record. The observed expiry must have removed the earlier entry.
+    clock.0.store(initial_time + 500, Ordering::SeqCst);
+    let reopened = Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock).unwrap();
+    assert_eq!(run(&reopened, &[b"GET", b"ttl\0"]), b"$-1\r\n");
+    assert_eq!(run(&reopened, &[b"GET", b"live"]), b"$6\r\nafter\xff\r\n");
+    assert_eq!(run(&reopened, &[b"DBSIZE"]), b":1\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
 }
 
 const AUTH_KEY: &[u8] = b"0123456789abcdef";
@@ -1347,6 +1624,80 @@ fn transaction_batch_and_concurrent_writers_replay_to_the_final_state() {
 }
 
 #[test]
+fn hll_exact_and_dense_payloads_survive_integrity_rewrite_and_replay() {
+    for authenticated in [false, true] {
+        let path = aof_path("rewrite-hll");
+        let open_fixture = || {
+            if authenticated {
+                open_with_auth(&path, AUTH_KEY, false).unwrap()
+            } else {
+                open(&path, FsyncPolicy::Always)
+            }
+        };
+        let store = open_fixture();
+        assert_eq!(
+            run(&store, &[b"PFADD", b"exact", b"", b"f\0", b"\xff", b"f\0"]),
+            b":1\r\n"
+        );
+        for start in (0u32..5000).step_by(500) {
+            let values: Vec<_> = (start..start + 500).map(u32::to_be_bytes).collect();
+            let mut args: Vec<&[u8]> = vec![b"PFADD", b"dense"];
+            args.extend(values.iter().map(|value| value.as_slice()));
+            assert_eq!(run(&store, &args), b":1\r\n");
+        }
+        assert_eq!(
+            run(&store, &[b"PEXPIREAT", b"dense", b"4102444800000"]),
+            b":1\r\n"
+        );
+        // Use the union path with a missing key so PFCOUNT does not populate
+        // the read-only optimization cache in the stored payload.
+        let dense_count = run(&store, &[b"PFCOUNT", b"dense", b"missing"]);
+        let estimate: u64 = std::str::from_utf8(&dense_count)
+            .unwrap()
+            .strip_prefix(':')
+            .unwrap()
+            .trim_end()
+            .parse()
+            .unwrap();
+        assert!((4500..=5500).contains(&estimate));
+        let dense_bytes = run(&store, &[b"GET", b"dense"]);
+        assert!(dense_bytes.starts_with(b"$16400\r\nHYLL\x01\x01"));
+        let exact_bytes = run(&store, &[b"GET", b"exact"]);
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            run(&store, &[b"BGREWRITEAOF"]),
+            b"+Background append only file rewriting started\r\n"
+        );
+        for _ in 0..10_000 {
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "rewrite did not finish");
+        assert!(std::fs::metadata(&path).unwrap().len() < before);
+        drop(store);
+
+        let reopened = open_fixture();
+        assert_eq!(run(&reopened, &[b"GET", b"exact"]), exact_bytes);
+        assert_eq!(run(&reopened, &[b"GET", b"dense"]), dense_bytes);
+        assert_eq!(run(&reopened, &[b"PFCOUNT", b"exact"]), b":3\r\n");
+        assert_eq!(
+            run(&reopened, &[b"PFCOUNT", b"dense", b"missing"]),
+            dense_count
+        );
+        assert_eq!(
+            run(&reopened, &[b"PEXPIRETIME", b"dense"]),
+            b":4102444800000\r\n"
+        );
+        assert_eq!(run(&reopened, &[b"TYPE", b"dense"]), b"+string\r\n");
+        assert_eq!(run(&reopened, &[b"DBSIZE"]), b":2\r\n");
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn rewrite_compacts_history_and_still_replays_the_final_state() {
     let path = aof_path("rewrite");
     {
@@ -1487,6 +1838,63 @@ fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn checksum_failure_in_a_complete_record_refuses_startup_without_truncation() {
+    let path = aof_path("complete-record-checksum-failure");
+    let records: [(&[u8], &[u8]); 2] = [
+        (b"earlier", b"earlier-payload\0"),
+        (b"last", b"last-payload\xff"),
+    ];
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        for (key, value) in records {
+            assert_eq!(run(&store, &[b"SET", key, value]), b"+OK\r\n");
+        }
+    }
+    let original = std::fs::read(&path).unwrap();
+    for (_, value) in records {
+        let mut damaged = original.clone();
+        let offset = damaged
+            .windows(value.len())
+            .position(|part| part == value)
+            .unwrap();
+        // Model a single altered byte in a complete record, leaving the
+        // recorded length and checksum marker intact.
+        damaged[offset] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let error = Store::with_auth_and_journal(
+            1024,
+            Auth::default(),
+            &path,
+            FsyncPolicy::Always,
+            Limits::default(),
+            None,
+        )
+        .err()
+        .expect("a complete corrupted record must not be repaired as a torn tail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("AOF checksum mismatch"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    }
+    // A failed startup must release local ownership so an operator can
+    // restart from a verified copy without clearing a lock by hand.
+    std::fs::write(&path, &original).unwrap();
+    let reopened = open(&path, FsyncPolicy::Always);
+    for (key, value) in records {
+        let mut expected = format!("${}\r\n", value.len()).into_bytes();
+        expected.extend_from_slice(value);
+        expected.extend_from_slice(b"\r\n");
+        assert_eq!(run(&reopened, &[b"GET", key]), expected);
+    }
+    assert_eq!(run(&reopened, &[b"DBSIZE"]), b":2\r\n");
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
     let path = aof_path("runtime-fsync");
@@ -1517,6 +1925,62 @@ fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
     let store = open(&path, FsyncPolicy::EverySec);
     assert_eq!(run(&store, &[b"GET", b"k"]), b"$2\r\nv2\r\n");
     let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_appendfsync_sync_preserves_config_and_data() {
+    let path = aof_path("config-fsync-failure");
+    let store = open(&path, FsyncPolicy::No);
+    assert_eq!(
+        run(
+            &store,
+            &[b"CONFIG", b"SET", b"maxmemory-policy", b"allkeys-lru"]
+        ),
+        b"+OK\r\n"
+    );
+    assert_eq!(run(&store, &[b"SET", b"retained", b"v\0x"]), b"+OK\r\n");
+    let fields: &[&[u8]] = &[
+        b"CONFIG",
+        b"GET",
+        b"appendfsync",
+        b"maxmemory",
+        b"hash-max-listpack-entries",
+    ];
+    let before = run(&store, fields);
+    let journal_bytes = std::fs::read(&path).unwrap();
+    assert!(store.call(|executor| {
+        let mut journal = executor.journal.as_ref().unwrap().lock().unwrap();
+        // Linux /dev/null accepts writes but rejects sync_all. Swap only the
+        // isolated test store's open descriptor, never the journal on disk.
+        journal.file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        true
+    }));
+    assert_eq!(
+        run(
+            &store,
+            &[
+                b"CONFIG",
+                b"SET",
+                b"maxmemory",
+                b"1",
+                b"hash-max-listpack-entries",
+                b"64",
+                b"appendfsync",
+                b"always",
+            ]
+        ),
+        b"-ERR appendfsync update failed\r\n"
+    );
+    assert_eq!(store.journal_policy(), Some(FsyncPolicy::No));
+    assert_eq!(run(&store, fields), before);
+    assert_eq!(run(&store, &[b"GET", b"retained"]), b"$3\r\nv\0x\r\n");
+    assert_eq!(std::fs::read(&path).unwrap(), journal_bytes);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -1726,10 +2190,27 @@ fn journal_authentication_key_files_are_trimmed_and_bounded() {
     assert_eq!(super::read_auth_key_file(&path).unwrap(), AUTH_KEY);
     std::fs::write(&path, b"0123456789abcde\n").unwrap();
     assert!(super::read_auth_key_file(&path).is_err());
-    std::fs::write(&path, vec![b'x'; 1025]).unwrap();
+    let max_key = vec![b'x'; super::MAX_AUTH_KEY_BYTES];
+    let with_crlf = [max_key.as_slice(), b"\r\n"].concat();
+    std::fs::write(&path, &with_crlf).unwrap();
+    assert_eq!(super::read_auth_key_file(&path).unwrap(), max_key);
+    std::fs::write(&path, [with_crlf.as_slice(), b"x"].concat()).unwrap();
+    assert!(super::read_auth_key_file(&path).is_err());
+    std::fs::write(&path, vec![b'x'; super::MAX_AUTH_KEY_BYTES + 1]).unwrap();
     assert!(super::read_auth_key_file(&path).is_err());
     let _ = std::fs::remove_file(&path);
     assert!(super::read_auth_key_file(&path).is_err());
+}
+
+#[test]
+fn journal_key_reader_stops_at_the_oversize_sentinel() {
+    let cap = super::MAX_AUTH_KEY_BYTES + 3;
+    let mut source = std::io::Cursor::new(vec![b'x'; cap + 32]);
+    assert_eq!(
+        super::read_auth_key_file_bytes(&mut source).unwrap().len(),
+        cap
+    );
+    assert_eq!(source.position(), cap as u64);
 }
 
 #[test]

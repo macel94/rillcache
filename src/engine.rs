@@ -82,9 +82,25 @@ pub fn parse_audit_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
     audit::parse_keyring(text)
 }
 
+/// Read a single binary audit key with a 16..=1024-byte payload after stripping
+/// one trailing LF or CRLF. Reads at most 1027 bytes to detect an oversized file.
+pub fn read_audit_hmac_key(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    audit::read_hmac_key(std::fs::File::open(path)?)
+}
+
 /// Read a hex audit keyring with a 64 KiB text bound, including comments.
 pub fn read_audit_keyring(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> {
-    audit::read_keyring(path)
+    audit::read_keyring(std::fs::File::open(path)?)
+}
+
+/// Read one audit key from an already-opened source using the same key bound.
+pub fn read_audit_hmac_key_from(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    audit::read_hmac_key(reader)
+}
+
+/// Read a bounded audit keyring from an already-opened source.
+pub fn read_audit_keyring_from(reader: impl std::io::Read) -> std::io::Result<Vec<Vec<u8>>> {
+    audit::read_keyring(reader)
 }
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
@@ -208,6 +224,7 @@ pub struct Stats {
     pub evicted_keys: u64,
     pub pubsub_channels: usize,
     pub pubsub_patterns: usize,
+    pub pubsub_queue_full_drops: u64,
     pub audit_log_write_failures: u64,
     pub audit_syslog_write_failures: u64,
 }
@@ -827,9 +844,14 @@ impl ServerServices {
         &self,
         (expired_keys, expired_subkeys, evicted_keys): (u64, u64, u64),
     ) -> Stats {
-        let (pubsub_channels, pubsub_patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
-            (pubsub.channel_names(None).len(), pubsub.numpat())
-        });
+        let (pubsub_channels, pubsub_patterns, pubsub_queue_full_drops) =
+            self.pubsub.read().map_or((0, 0, 0), |pubsub| {
+                (
+                    pubsub.channel_names(None).len(),
+                    pubsub.numpat(),
+                    pubsub.queue_full_drops(),
+                )
+            });
         Stats {
             total_connections_received: self.connections_received.load(Ordering::Relaxed),
             total_commands_processed: self
@@ -843,6 +865,7 @@ impl ServerServices {
             evicted_keys,
             pubsub_channels,
             pubsub_patterns,
+            pubsub_queue_full_drops,
             audit_log_write_failures: self.audit_log_write_failures.load(Ordering::Relaxed),
             audit_syslog_write_failures: self.audit_syslog_write_failures.load(Ordering::Relaxed),
         }
@@ -1469,16 +1492,19 @@ impl ShardExecutor {
     }
 
     pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
-        if let Some(journal) = self.journal.as_ref() {
-            let mut journal = journal
-                .lock()
-                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
-            journal.set_policy(policy)?;
-        }
+        let mut journal = self
+            .journal
+            .as_ref()
+            .map(std::sync::Mutex::lock)
+            .transpose()
+            .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
         let mut config = self
             .aof_config
             .write()
             .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        if let Some(journal) = journal.as_mut() {
+            journal.set_policy(policy)?;
+        }
         config.policy = policy;
         Ok(())
     }

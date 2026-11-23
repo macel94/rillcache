@@ -274,6 +274,74 @@ fn offline_backup_restore_preserves_strings_ttl_and_stream_pel() {
 }
 
 #[test]
+fn offline_backup_restores_a_named_journal_under_a_new_basename() {
+    let root = temp_dir("named-journal");
+    let source = root.join("source");
+    let destination = root.join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let archive = root.join("checkpoint.rcb");
+    let source_name = "source-history.aof";
+    let destination_name = "recovered-history.aof";
+    let start_named = |dir: &Path, filename: &str| {
+        Server::bind(Config {
+            appendfilename: filename.into(),
+            ..config(dir)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap()
+    };
+    {
+        let server = start_named(&source, source_name);
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"SET", b"k\0", b"v\xff"]), b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let original = std::fs::read(source.join(source_name)).unwrap();
+    assert!(!source.join("appendonly.aof").exists());
+
+    let created = command(&[
+        "create",
+        "--dir",
+        source.to_str().unwrap(),
+        "--filename",
+        source_name,
+        "--output",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(created.status.success(), "{created:?}");
+    let checkpoint = std::fs::read(&archive).unwrap();
+    let verified = command(&["verify", "--input", archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+        "--filename",
+        destination_name,
+    ]);
+    assert!(restored.status.success(), "{restored:?}");
+    let restored_path = destination.join(destination_name);
+    assert_eq!(std::fs::read(&restored_path).unwrap(), original);
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    {
+        let server = start_named(&destination, destination_name);
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"DBSIZE"]), b":1\r\n");
+        assert_eq!(call(&mut stream, &[b"GET", b"k\0"]), b"$2\r\nv\xff\r\n");
+        server.shutdown().unwrap();
+    }
+    assert_eq!(std::fs::read(&restored_path).unwrap(), original);
+    assert!(!destination.join("appendonly.aof").exists());
+    assert_eq!(std::fs::read(source.join(source_name)).unwrap(), original);
+    assert_eq!(std::fs::read(&archive).unwrap(), checkpoint);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
     let source = temp_dir("rollback-source");
     let rollback = temp_dir("rollback-target");
@@ -309,6 +377,32 @@ fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
     );
     server.shutdown().unwrap();
     let newer_journal = std::fs::read(&source_journal).unwrap();
+
+    let refused = create(&source, &archive);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("backup output already exists; refusing to overwrite"),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    assert_eq!(std::fs::read(&source_journal).unwrap(), newer_journal);
+    assert_eq!(
+        std::fs::read_dir(&source).unwrap().count(),
+        2,
+        "refusal must not leave staging or lock files"
+    );
+
+    let newer_archive = source.join("newer.rcb");
+    let created = create(&source, &newer_archive);
+    assert!(created.status.success(), "{created:?}");
+    let newer_archive_bytes = std::fs::read(&newer_archive).unwrap();
+    assert_eq!(
+        &newer_archive_bytes[MAGIC.len() + 8 + 4..],
+        newer_journal.as_slice()
+    );
+    let verified = command(&["verify", "--input", newer_archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
 
     let restore = |target: &Path| {
         command(&[
@@ -346,8 +440,68 @@ fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
 
     assert_eq!(std::fs::read(&source_journal).unwrap(), newer_journal);
     assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    assert_eq!(std::fs::read(&newer_archive).unwrap(), newer_archive_bytes);
     std::fs::remove_dir_all(source).unwrap();
     std::fs::remove_dir_all(rollback).unwrap();
+}
+
+#[test]
+fn offline_restore_preserves_a_lock_only_destination_and_allows_retry() {
+    let source = temp_dir("locked-restore-source");
+    let target = temp_dir("locked-restore-target");
+    let archive = source.join("checkpoint.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(
+        call(&mut stream, &[b"SET", b"key\0", b"value\xff"]),
+        b"+OK\r\n"
+    );
+    server.shutdown().unwrap();
+    let source_bytes = std::fs::read(source.join("appendonly.aof")).unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let archive_bytes = std::fs::read(&archive).unwrap();
+
+    let lock = target.join("appendonly.aof.lock");
+    let journal = target.join("appendonly.aof");
+    let lock_contents = b"disposable ownership marker\n";
+    std::fs::write(&lock, lock_contents).unwrap();
+    let restore = || {
+        command(&[
+            "restore",
+            "--input",
+            archive.to_str().unwrap(),
+            "--dir",
+            target.to_str().unwrap(),
+        ])
+    };
+    let blocked = restore();
+    assert!(!blocked.status.success(), "{blocked:?}");
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("ownership lock already exists"),
+        "{blocked:?}"
+    );
+    assert_eq!(std::fs::read(&lock).unwrap().as_slice(), lock_contents);
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+
+    // Remove only the synthetic marker in the fixture; never clear a real
+    // ownership lock without checking the recovery runbook.
+    std::fs::remove_file(&lock).unwrap();
+    let restored = restore();
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(std::fs::read(&journal).unwrap(), source_bytes);
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+    let server = start(&target);
+    let mut stream = connect(&server);
+    assert_eq!(
+        call(&mut stream, &[b"GET", b"key\0"]),
+        b"$6\r\nvalue\xff\r\n"
+    );
+    server.shutdown().unwrap();
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(target).unwrap();
 }
 
 #[test]
@@ -444,6 +598,61 @@ fn verify_can_stage_on_an_explicit_volume_and_cleans_up() {
     assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     std::fs::remove_dir_all(source).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn malformed_regular_archive_lengths_are_rejected_before_staging() {
+    let source = temp_dir("archive-length-source");
+    let destination = temp_dir("archive-length-target");
+    let archive = source.join("snapshot.rcb");
+    let altered = source.join("altered.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", b"key", b"value"]), b"+OK\r\n");
+    server.shutdown().unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original = std::fs::read(&archive).unwrap();
+    let mut truncated = original.clone();
+    truncated.pop();
+    let mut trailing = original.clone();
+    trailing.push(b'\n');
+    for (bytes, error) in [
+        (truncated, "backup length or CRC32 does not match"),
+        (trailing, "trailing bytes after backup payload"),
+    ] {
+        std::fs::write(&altered, &bytes).unwrap();
+        // Default verifier scratch cannot be opened; the length error must
+        // win over a staging I/O error, not rely on cleanup afterward.
+        let verified = Command::new(env!("CARGO_BIN_EXE_rillcache-backup"))
+            .args(["verify", "--input"])
+            .arg(&altered)
+            .env("TMPDIR", destination.join("no-scratch"))
+            .output()
+            .unwrap();
+        assert!(!verified.status.success(), "{verified:?}");
+        assert!(
+            String::from_utf8_lossy(&verified.stderr).contains(error),
+            "{verified:?}"
+        );
+        let restored = command(&[
+            "restore",
+            "--input",
+            altered.to_str().unwrap(),
+            "--dir",
+            destination.to_str().unwrap(),
+        ]);
+        assert!(!restored.status.success(), "{restored:?}");
+        assert!(
+            String::from_utf8_lossy(&restored.stderr).contains(error),
+            "{restored:?}"
+        );
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(std::fs::read(&altered).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(destination).unwrap();
 }
 
 #[test]
@@ -684,6 +893,84 @@ fn backup_refuses_to_truncate_a_torn_source_journal() {
 }
 
 #[test]
+fn restored_legacy_archive_accepts_crc_appends_without_mutating_the_checkpoint() {
+    let root = temp_dir("legacy-archive-crc-upgrade");
+    let source = root.join("source");
+    let destination = root.join("destination");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    let source_journal = source.join("appendonly.aof");
+    let restored_journal = destination.join("appendonly.aof");
+    let archive = root.join("legacy.rcb");
+    let mut legacy = Vec::new();
+    encode_request(&[b"SET", b"legacy\0", b"old\xff"], &mut legacy);
+    encode_request(&[b"PEXPIREAT", b"legacy\0", b"4102444800000"], &mut legacy);
+    std::fs::write(&source_journal, &legacy).unwrap();
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original_archive = std::fs::read(&archive).unwrap();
+    assert_eq!(original_archive[MAGIC.len() + 8 + 4..], legacy);
+    let verified = command(&["verify", "--input", archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+    ]);
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(std::fs::read(&restored_journal).unwrap(), legacy);
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(
+            call(&mut client, &[b"GET", b"legacy\0"]),
+            b"$4\r\nold\xff\r\n"
+        );
+        assert_eq!(
+            call(&mut client, &[b"PEXPIRETIME", b"legacy\0"]),
+            b":4102444800000\r\n"
+        );
+        assert_eq!(std::fs::read(&restored_journal).unwrap(), legacy);
+        assert_eq!(
+            call(&mut client, &[b"SET", b"current", b"new\0"]),
+            b"+OK\r\n"
+        );
+        server.shutdown().unwrap();
+    }
+    let upgraded = std::fs::read(&restored_journal).unwrap();
+    let suffix = upgraded
+        .strip_prefix(legacy.as_slice())
+        .expect("legacy prefix preserved");
+    for marker in [
+        b"__RILLCACHE_AOF_CRC32_V1__:".as_slice(),
+        b"__RILLCACHE_RECORD_CRC32_V1__:",
+    ] {
+        assert!(suffix.windows(marker.len()).any(|window| window == marker));
+    }
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(call(&mut client, &[b"DBSIZE"]), b":2\r\n");
+        assert_eq!(
+            call(&mut client, &[b"GET", b"legacy\0"]),
+            b"$4\r\nold\xff\r\n"
+        );
+        assert_eq!(call(&mut client, &[b"GET", b"current"]), b"$4\r\nnew\0\r\n");
+        assert_eq!(
+            call(&mut client, &[b"PEXPIRETIME", b"legacy\0"]),
+            b":4102444800000\r\n"
+        );
+        server.shutdown().unwrap();
+    }
+    assert_eq!(std::fs::read(&restored_journal).unwrap(), upgraded);
+    assert_eq!(std::fs::read(&source_journal).unwrap(), legacy);
+    assert_eq!(std::fs::read(&archive).unwrap(), original_archive);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
     let source = temp_dir("torn-journal-source");
     let scratch = temp_dir("torn-journal-scratch");
@@ -729,6 +1016,169 @@ fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
     assert_eq!(std::fs::read(&archive).unwrap(), bytes);
     for directory in [source, scratch, destination] {
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn competing_restores_publish_exactly_one_complete_journal() {
+    let root = temp_dir("competing-restores");
+    let destination = root.join("destination");
+    std::fs::create_dir(&destination).unwrap();
+    let archives = [root.join("one.rcb"), root.join("two.rcb")];
+    let values = [b"one\0", b"two\xff"];
+    for (index, archive) in archives.iter().enumerate() {
+        let source = root.join(format!("source-{index}"));
+        std::fs::create_dir(&source).unwrap();
+        let server = start(&source);
+        let mut client = connect(&server);
+        assert_eq!(
+            call(&mut client, &[b"SET", b"key", values[index]]),
+            b"+OK\r\n"
+        );
+        server.shutdown().unwrap();
+        let created = create(&source, archive);
+        assert!(created.status.success(), "{created:?}");
+    }
+    let originals = archives
+        .each_ref()
+        .map(|archive| std::fs::read(archive).unwrap());
+
+    // Launch both utilities before waiting. Either operation may finish first;
+    // the assertion does not depend on a particular interleaving.
+    let children = archives.each_ref().map(|archive| {
+        Command::new(env!("CARGO_BIN_EXE_rillcache-backup"))
+            .arg("restore")
+            .arg("--input")
+            .arg(archive)
+            .arg("--dir")
+            .arg(&destination)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
+    let results = children.map(|child| child.wait_with_output().unwrap());
+    let successes = results.each_ref().map(|result| result.status.success());
+    assert_ne!(
+        successes[0], successes[1],
+        "expected exactly one success: {results:?}"
+    );
+    let winner = usize::from(successes[1]);
+    let loser_error = String::from_utf8_lossy(&results[1 - winner].stderr);
+    assert!(loser_error.contains("exists"), "{loser_error}");
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    let payload_start = MAGIC.len() + 8 + 4;
+    assert_eq!(
+        std::fs::read(destination.join("appendonly.aof")).unwrap(),
+        originals[winner][payload_start..]
+    );
+    {
+        let server = start(&destination);
+        let mut client = connect(&server);
+        assert_eq!(call(&mut client, &[b"DBSIZE"]), b":1\r\n");
+        assert_eq!(
+            call(&mut client, &[b"GET", b"key"]),
+            [&b"$4\r\n"[..], values[winner], b"\r\n"].concat()
+        );
+        server.shutdown().unwrap();
+    }
+    for (archive, original) in archives.iter().zip(originals) {
+        assert_eq!(std::fs::read(archive).unwrap(), original);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn insufficient_replay_payload_budget_rejects_archive_and_allows_retry() {
+    let source = temp_dir("payload-budget-source");
+    let scratch = temp_dir("payload-budget-scratch");
+    let destination = temp_dir("payload-budget-destination");
+    let archive = scratch.join("checkpoint.rcb");
+    let stage = scratch.join("verify");
+    std::fs::create_dir(&stage).unwrap();
+    let entries: [(&[u8], [u8; 512]); 2] = [(b"first", [0; 512]), (b"other", [0xff; 512])];
+    {
+        let server = start(&source);
+        let mut stream = connect(&server);
+        for &(key, ref value) in &entries {
+            assert_eq!(call(&mut stream, &[b"SET", key, value]), b"+OK\r\n");
+        }
+        server.shutdown().unwrap();
+    }
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let original = std::fs::read(&archive).unwrap();
+    let input = archive.to_str().unwrap();
+    let staging = stage.to_str().unwrap();
+    let target = destination.to_str().unwrap();
+
+    // Each write fits individually; cumulative logical payload exceeds 800 B.
+    // Fail after a verified prefix has already populated the staged store.
+    for (action, option, directory) in [
+        ("verify", "--temp-dir", staging),
+        ("restore", "--dir", target),
+    ] {
+        let rejected = command(&[
+            action,
+            "--input",
+            input,
+            option,
+            directory,
+            "--max-data-bytes",
+            "800",
+        ]);
+        assert!(
+            !rejected.status.success(),
+            "{action} accepted too small a budget"
+        );
+        let error = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            error.contains(
+                "backup journal failed replay validation: AOF command failed during replay"
+            ),
+            "{error}"
+        );
+        assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
+        assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
+        assert_eq!(std::fs::read(&archive).unwrap(), original);
+    }
+
+    for (action, option, directory) in [
+        ("verify", "--temp-dir", staging),
+        ("restore", "--dir", target),
+    ] {
+        let accepted = command(&[
+            action,
+            "--input",
+            input,
+            option,
+            directory,
+            "--max-data-bytes",
+            "2048",
+        ]);
+        assert!(accepted.status.success(), "{accepted:?}");
+    }
+    assert!(std::fs::read_dir(&stage).unwrap().next().is_none());
+    let server = Server::bind(Config {
+        max_data_bytes: 2048,
+        ..config(&destination)
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"DBSIZE"]), b":2\r\n");
+    for &(key, ref value) in &entries {
+        assert_eq!(
+            call(&mut stream, &[b"GET", key]),
+            [&b"$512\r\n"[..], value, b"\r\n"].concat()
+        );
+    }
+    server.shutdown().unwrap();
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
+
+    for path in [source, scratch, destination] {
+        std::fs::remove_dir_all(path).unwrap();
     }
 }
 

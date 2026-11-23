@@ -211,11 +211,20 @@ platforms retain timeout-based fallback admission.
 
 ## Runtime payload budget (S96)
 
+- **R498 (unwanted behavior):** If `COPY ... REPLACE` would exceed the logical
+  payload budget under `noeviction`, reject it without changing either live
+  value, its absolute expiry, or the live key count. A retry that fits exactly
+  shall copy the source value and deadline to the destination.
+
 - **R359 (event-driven):** `CONFIG GET maxmemory` (including pattern and
   wildcard matches) shall report the current positive payload byte budget, and
   `CONFIG SET maxmemory <positive integer>` shall update it atomically with other
   valid `CONFIG SET` pairs. Invalid, negative, non-numeric or zero values shall
   return an explicit error and leave both the budget and other pairs unchanged.
+- **R491 (event-driven):** When `CONFIG GET` names `max-data-bytes` exactly
+  (ignoring ASCII case), return the live payload budget under `maxmemory`.
+  Return that key once even if another argument matches it. This read alias
+  does not add a wildcard-visible setting or change `CONFIG SET`.
 - **R360 (state-driven):** Applying a lower budget shall evict keys down to it
   using the active policy, with `allkeys` and eligible `volatile` candidates only.
   When the policy cannot evict enough (`noeviction`, or volatile without TTL
@@ -256,6 +265,29 @@ platforms retain timeout-based fallback admission.
   Invalid startup options shall exit 2 with diagnostics that omit user-supplied
   values and paths. Success shall not claim that listener or storage resources
   can be opened or that ACL, TLS or HMAC files have valid contents.
+- **R458 (event-driven):** When a startup file has a `config-version` marker,
+  it shall be the first non-comment directive, shall appear only once per
+  file and shall name supported version `1`. Other versions and misplaced
+  markers shall reject the file before startup. Unmarked files retain v1
+  behavior and the marker does not alter file/CLI precedence. Exercise the
+  documented example in the parser tests.
+- **R459 (unwanted behavior):** If a startup file exceeds 1 MiB, the reader
+  shall stop after the first excess byte and reject the file before parsing
+  any directives. Test the read bound and both sides of the size boundary
+  without changing config preflight redaction.
+- **R492 (unwanted behavior):** Startup and config preflight shall read at most
+  4 MiB of combined configuration input plus one overflow byte. Count repeated
+  `--config`/`-c` paths each time, keep the 1 MiB per-file limit, and reject excess
+  bytes before parsing the over-budget file. Valid inputs keep positional precedence.
+- **R460 (event-driven):** When startup options include the file directive
+  `secure-secret-files yes|no` or its explicit CLI forms, the last choice shall
+  select the existing secret-file policy. The bare CLI flag shall still enable
+  it, and an invalid file value shall fail before startup. Test Unix permission
+  enforcement and redacted preflight output with both precedence directions.
+- **R480 (unwanted behavior):** If the final plaintext and TLS options have
+  the same fixed address, startup and preflight shall reject them after all
+  positional overrides. An intermediate collision resolved by a later value
+  shall not fail the option check. Port zero remains independently allocated.
 
 ## Standalone signal shutdown (S124)
 
@@ -287,6 +319,20 @@ platforms retain timeout-based fallback admission.
   restarting in the same journal directory without manual lock removal. Cover
   Mio and native TLS in the worker-mode matrix, and opt-in Tokio. This is
   process-exit evidence, not a power-loss test or a guarantee about unsynced writes.
+- **R465 (state-driven):** When an admitted plain-TCP reply cannot finish because
+  the peer is not reading, a single SIGTERM shall allow the bounded client drain
+  to expire, close the connection and let workers join and flush the journal.
+  Subprocess tests shall observe a proper reply prefix after process exit, stay
+  within a five-second test budget with working storage, and verify on Linux
+  that an `appendfsync always` acknowledged write survives restart from the same
+  journal directory. Cover Mio and opt-in Tokio. This is not the supervisor's
+  25-second forced-exit path.
+- **R468 (state-driven):** When a native TLS client leaves a dispatched reply
+  unread, a single SIGTERM shall bound the client drain and let the workers
+  join. In the worker-mode matrix, a subprocess test shall verify a successful
+  exit within a five-second budget and read only a proper reply prefix after
+  exit. This does not exercise the 25-second supervisor deadline or require a
+  TLS `close_notify` on an abandoned reply.
 
 ## Client registry and administrative kill (S38)
 
@@ -338,6 +384,11 @@ platforms retain timeout-based fallback admission.
   ordinary session dispatch. Nonzero-state deadline/mode semantics shall remain
   unchanged. Documentation shall retain the absence of replication,
   expiry/eviction pausing and replica-traffic pause semantics.
+- **R461 (state-driven):** While an `ALL` or `WRITE` pause defers a client
+  write, expiry maintenance shall still remove due keys and emit configured
+  expiry events. A deferred `SET NX` shall evaluate against the state at
+  execution after unpause. Test with an injected clock and an existing
+  subscriber, without timing sleeps.
 
 ## Configured connection limit visibility (S82)
 
@@ -402,6 +453,10 @@ platforms retain timeout-based fallback admission.
   new sockets shall receive `ERR max number of clients reached` and increment
   `rejected_connections` until capacity is available. Raising the limit shall
   admit new connections without a restart.
+- **R507 (event-driven):** On the opt-in Tokio transport, raising the live
+  `maxclients` limit shall also let newly admitted clients start tasks rather
+  than wait on the startup limit. Lowering the limit shall reject new excess
+  clients but allow already admitted sessions, including queued ones, to run.
 - **R364 (ubiquitous):** Tests shall cover the default and wildcard reporting,
   live admission in every worker mode, lowering and raising, invalid values,
   existing-client survival and `INFO clients` reflecting the live value.
@@ -421,6 +476,11 @@ platforms retain timeout-based fallback admission.
   clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
+- **R462 (state-driven):** While `BLPOP` waits on an absent list, write-triggered
+  eviction of an unrelated key shall increment `INFO stats`'s `evicted_keys`
+  without removing the waiter from `INFO clients`'s `blocked_clients`. A later
+  push to the watched list shall complete the wait once and clear its blocked
+  state. Test on the wire in all three worker modes.
 
 ## CLIENT UNBLOCK (S114)
 

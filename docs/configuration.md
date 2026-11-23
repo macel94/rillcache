@@ -13,25 +13,43 @@ allowed.
 
 ## Syntax
 
-- One directive and one value per line.
+- One directive and one value per line. To declare the startup file schema
+  explicitly, put `config-version 1` as the first directive after any blank
+  lines and comments. This is file metadata, not a CLI option. A later or
+  repeated marker or an unsupported version rejects the file. Files without
+  the marker retain the original version 1 syntax. A marker alone is not a
+  configuration file; include at least one startup setting.
 - Blank lines and lines whose first unquoted character is `#` are comments.
 - `directive value` and `directive=value` are both accepted.
 - Directive names are the long option names without `--`; `_` and `-` are
   equivalent. For example, `max-clients` and `max_clients` select the same
   setting.
 - `maxmemory` is an alias for `max-data-bytes`, and `maxclients` is an alias for
-  `max-clients`.
+  `max-clients`. At runtime, exact `CONFIG GET max-data-bytes` returns the
+  current logical payload budget under `maxmemory`. The startup name is not
+  listed by wildcard queries; use `CONFIG SET maxmemory` to change the budget.
 - `auth-failure-limit`, `auth-source-limit`, `auth-global-limit` and
   `auth-source-window-ms` configure the bounded authentication budgets described
   in [security](security.md); the global budget is process-local and disabled by
   default.
 - Values may be unquoted (one token), double-quoted with `\"`, `\\`, `\n`, `\r`
   and `\t` escapes, or single-quoted literally.
-- `aof-hmac-migrate` is the one boolean directive and accepts `yes` or `no`.
-- The file must be valid UTF-8 and at most 1 MiB. An empty file is an error.
+- `secure-secret-files yes` opts into owner-only secret-file checks on Unix;
+  `secure-secret-files no` disables that optional policy (the default). Both
+  values follow file/CLI precedence. On the CLI use `--secure-secret-files=yes`
+  or `--secure-secret-files=no`; the existing bare flag means `yes`.
+- `aof-hmac-migrate` accepts `yes` (request migration) or `no` (no request;
+  does not cancel an earlier request).
+- The file must be valid UTF-8 and at most 1 MiB. The reader stops after at
+  most 1 MiB plus one byte and rejects oversized input before parsing any
+  directives. All file arguments in one invocation share a 4 MiB total budget;
+  repeated paths count each time. Each read stops after at most the smaller of
+  the per-file limit and remaining total budget, plus one overflow byte. These
+  are byte limits, not I/O timeouts. An empty file is an error.
 
 ```conf
 # /etc/rillcache/rillcache.conf
+config-version 1
 bind 127.0.0.1:6379
 maxclients 1024
 max-data-bytes 268435456
@@ -51,10 +69,13 @@ rillcache --config /etc/rillcache/rillcache.conf --max-clients 2048
 Directives are processed at the position of the `--config` flag. Later CLI
 options therefore override earlier file directives, and a file listed after a
 CLI option overrides that option. Multiple `--config` files are applied in the
-order written. Duplicate directives follow the same last-value-wins rule.
+order written. Each file is checked for its own version marker, independently
+of the other files. Duplicate settings follow the same last-value-wins rule.
 
 All values pass through the normal startup validation and bind checks after the
-full argument list is assembled. A missing, unreadable, oversized, non-UTF-8,
+full argument list is assembled. For example, the effective `bind` and
+`tls-bind` must not both name the same fixed address, but a later override of
+either can resolve a conflict. A missing, unreadable, oversized, non-UTF-8,
 unknown or malformed file fails startup with a line-numbered error before the
 listener binds.
 
@@ -85,5 +106,9 @@ on the command line. Prefer `requirepass-file` with restrictive file
 permissions, or an ACL file. Configuration errors name the line and directive,
 not the supplied value.
 
-Startup configuration changes require a restart in this phase; atomic reload and
-rollback are tracked in [production readiness gaps](production-readiness-gaps.md).
+Startup configuration changes require a restart in this phase. For runtime
+`CONFIG SET`, startup-only journal options reject the entire command. A failed
+[`appendfsync` policy transition](persistence.md#runtime-configuration-visibility)
+also leaves the other settings in that command unchanged. This is not live
+configuration-file reload or a guarantee of atomic visibility to concurrent
+clients. Further work is tracked in the [production readiness gaps](production-readiness-gaps.md).

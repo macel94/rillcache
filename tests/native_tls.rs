@@ -614,6 +614,81 @@ fn tls_reload_replaces_configured_sni_identity_for_new_handshakes() {
 }
 
 #[test]
+fn invalid_sni_key_does_not_partially_publish_tls_staples() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-sni-atomic-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let trigger = directory.join("generation");
+    let default_ocsp = directory.join("default.der");
+    let sni_ocsp = directory.join("sni.der");
+    let sni_key = directory.join("sni.key");
+    // These are opaque test markers, not validated certificate status responses.
+    let first = [0x30, 0x03, 0x0a, 0x01, 0x00];
+    let second = [0x30, 0x03, 0x0a, 0x01, 0x01];
+    std::fs::write(&default_ocsp, first).unwrap();
+    std::fs::write(&sni_ocsp, second).unwrap();
+    std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
+    std::fs::write(&trigger, b"initial").unwrap();
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_ocsp_file: Some(default_ocsp.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        tls_sni_certificates: vec![rillcache::TlsSniCertificate {
+            server_name: "alt.test".into(),
+            cert_file: fixture("alternate.crt"),
+            key_file: sni_key.clone(),
+            ocsp_file: Some(sni_ocsp.clone()),
+        }],
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let observe = |name: Option<&str>, expected| {
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let mut stream = match name {
+            Some(name) => connect_capturing_ocsp(&server, name, Arc::clone(&responses)),
+            None => connect_without_sni_capturing_ocsp(&server, Arc::clone(&responses)),
+        };
+        ping(&mut stream);
+        assert_eq!(
+            responses.lock().unwrap().as_slice(),
+            &[expected],
+            "{name:?}"
+        );
+        stream
+    };
+    let mut established = observe(None, first);
+    observe(Some("alt.test"), second);
+
+    let publish = |token: &[u8]| {
+        let next = directory.join("generation.next");
+        std::fs::write(&next, token).unwrap();
+        std::fs::rename(next, &trigger).unwrap();
+    };
+    std::fs::write(&default_ocsp, second).unwrap();
+    std::fs::write(&sni_ocsp, first).unwrap();
+    std::fs::write(&sni_key, b"invalid SNI private key fixture").unwrap();
+    publish(b"invalid");
+    observe(None, first);
+    observe(Some("alt.test"), second);
+
+    std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
+    publish(b"repaired");
+    observe(None, second);
+    observe(Some("alt.test"), first);
+    ping(&mut established);
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn tls_plaintext_frame_assembly_deadline_closes_trickling_resp() {
     let server = Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -933,6 +1008,71 @@ fn client_crl_policy_allows_current_nonrevoked_and_rejects_revoked_or_expired() 
             server.shutdown().unwrap();
         }
     }
+}
+
+#[test]
+fn client_crl_reload_keeps_the_last_valid_policy_and_applies_revocation_to_new_handshakes() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-crl-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let crl = directory.join("client.crl");
+    let trigger = directory.join("generation");
+    let publish = |bytes: &[u8], generation: &[u8]| {
+        let staged_crl = directory.join("client.next");
+        let staged_trigger = directory.join("generation.next");
+        std::fs::write(&staged_crl, bytes).unwrap();
+        std::fs::rename(staged_crl, &crl).unwrap();
+        std::fs::write(&staged_trigger, generation).unwrap();
+        std::fs::rename(staged_trigger, &trigger).unwrap();
+    };
+    let good = std::fs::read(fixture("client-good.crl.der")).unwrap();
+    let revoked = std::fs::read(fixture("client-revoked.crl.der")).unwrap();
+    publish(&good, b"initial");
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_client_crl_file: Some(crl.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        idle_timeout: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut established = connect(&server, true);
+    ping(&mut established);
+
+    publish(b"invalid DER", b"invalid");
+    let mut retained = connect(&server, true);
+    ping(&mut retained);
+
+    publish(&revoked, b"revoked");
+    let mut client = connect(&server, true);
+    let mut reply = [0; 7];
+    let outcome = client
+        .write_all(b"*1\r\n$4\r\nPING\r\n")
+        .and_then(|()| client.read_exact(&mut reply));
+    let error = outcome.expect_err("revoked client reached the command loop");
+    assert!(
+        !matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+        "{error}"
+    );
+    ping(&mut established);
+    ping(&mut retained);
+
+    publish(&good, b"restored");
+    ping(&mut connect(&server, true));
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

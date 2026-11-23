@@ -646,12 +646,13 @@ impl Config {
     /// Load the immutable bind-time ACL before accepting clients.
     fn load_auth(&self) -> io::Result<Auth> {
         match &self.aclfile {
-            Some(path) => Auth::from_acl_file(path).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("cannot load ACL file {}: {error:?}", path.display()),
-                )
-            }),
+            Some(path) => Auth::from_acl_file_with_secret_policy(path, self.secure_secret_files)
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("cannot load ACL file {}: {error:?}", path.display()),
+                    )
+                }),
             None => Ok(Auth::from_password(self.requirepass.as_deref())),
         }
     }
@@ -676,28 +677,21 @@ impl Config {
         let Some(path) = &self.audit_hmac_key_file else {
             return Ok(None);
         };
-        let mut key = std::fs::read(path).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "cannot read audit HMAC key file {}: {error:?}",
-                    path.display()
-                ),
-            )
-        })?;
-        if key.ends_with(b"\n") {
-            key.pop();
-            if key.ends_with(b"\r") {
-                key.pop();
-            }
-        }
-        if !(16..=1024).contains(&key.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "audit HMAC key must be 16..=1024 bytes",
-            ));
-        }
-        Ok(Some(key))
+        crate::engine::read_audit_hmac_key(path)
+            .map(Some)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidInput {
+                    error
+                } else {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "cannot read audit HMAC key file {}: {error:?}",
+                            path.display()
+                        ),
+                    )
+                }
+            })
     }
 }
 

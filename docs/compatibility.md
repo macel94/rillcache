@@ -39,12 +39,26 @@ show what has actually been checked, including exclusions and failures.
 
 ## Important boundaries
 
-- **One logical database and standalone operation.** `SELECT 0` is supported;
-  replication, failover and Redis Cluster routing are not. Sharded-channel
-  pub/sub is a messaging namespace, not a distributed cluster.
+- **One logical database and standalone operation.** Connections start in DB 0;
+  `SELECT 0` and `COPY ... DB 0` use that same shared keyspace. Nonzero `SELECT`
+  and `COPY ... DB n` are rejected without changing data; `MOVE` and `SWAPDB`
+  are unsupported. `FLUSHDB` clears the only keyspace. Clients that require a
+  nonzero logical database or DB-based isolation are incompatible. Replication,
+  failover and Redis Cluster routing are not supported. `ROLE` reports a
+  standalone master with no replicas or replication stream; it does not imply
+  replica or failover support. Cluster clients that need `CLUSTER SHARDS`,
+  `SLOTS`, or `NODES` cannot connect as a cluster. Sharded-channel pub/sub is a
+  messaging namespace, not a distributed cluster.
   See [replication status](replication.md) and [unsupported capabilities](unsupported.md).
-- **No scripts or functions.** Applications depending on Lua, server-side
-  functions or loadable modules need functionality not currently available.
+- **Command discovery is not a compatibility matrix.** Hosted RESP2 tests
+  check that `COMMAND COUNT`, `COMMAND LIST` and `COMMAND INFO` agree for the
+  complete advertised registry, including targeted case-insensitive lookups.
+  A metadata entry does not mean every option or subcommand is implemented.
+- **No scripts or functions.** Clients that require Lua-backed operations
+  (including script registration and `EVALSHA` fallback), server-side functions,
+  or loadable modules are incompatible. `SCRIPT FLUSH` and `FUNCTION FLUSH`
+  acknowledge an empty registry; neither indicates execution support.
+  `COMMAND INFO` returns no metadata for the execution commands.
 - **Rebuildable data, not a system of record.** The journal supports replay and
   synchronous compaction, but there is no Redis RDB interoperability,
   background/incremental rewrite or validated crash/backup/restore guarantee.

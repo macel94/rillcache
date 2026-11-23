@@ -1148,11 +1148,11 @@ impl ShardExecutor {
                 } else {
                     "unavailable_on_this_platform"
                 };
+                let payload_limit = self.payload_limit();
+                let payload_headroom = payload_limit.saturating_sub(payload_bytes);
                 let _ = writeln!(
                     text,
-                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nused_memory_rss:{resident}\r\nused_memory_rss_human:{resident_human}\r\nused_memory_rss_scope:{resident_scope}\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
-                    payload_bytes,
-                    self.payload_limit(),
+                    "# Memory\r\nrillcache_payload_bytes:{payload_bytes}\r\nrillcache_payload_limit_bytes:{payload_limit}\r\nrillcache_payload_headroom_bytes:{payload_headroom}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nused_memory_rss:{resident}\r\nused_memory_rss_human:{resident_human}\r\nused_memory_rss_scope:{resident_scope}\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     eviction.name(),
                     self.notify_flags().as_string()
                 );
@@ -1196,7 +1196,7 @@ impl ShardExecutor {
                 let stats = self.stats_from_counters(lifecycle);
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\npubsub_queue_full_drops:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
@@ -1205,6 +1205,7 @@ impl ShardExecutor {
                     stats.evicted_keys,
                     stats.pubsub_channels,
                     stats.pubsub_patterns,
+                    stats.pubsub_queue_full_drops,
                     stats.audit_log_write_failures,
                     stats.audit_syslog_write_failures
                 );
@@ -1260,6 +1261,15 @@ impl ShardExecutor {
                             "ok"
                         },
                     );
+                    if let Some(bytes) = persistence.rewrite_bytes_written {
+                        let _ = write!(text, "\r\naof_rewrite_bytes_written:{bytes}");
+                    }
+                    if let Some(micros) = persistence.last_rewrite_start_usec {
+                        let _ = write!(text, "\r\naof_last_rewrite_start_usec:{micros}");
+                    }
+                    if let Some(micros) = persistence.last_rewrite_finish_usec {
+                        let _ = write!(text, "\r\naof_last_rewrite_finish_usec:{micros}");
+                    }
                     if let Some(size) = persistence.current_size {
                         let _ = write!(text, "\r\naof_current_size:{size}");
                     }
