@@ -102,6 +102,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "tests/string*.rs",
         "tests/multikey*.rs",
         "tests/keyspace*.rs",
+        "tests/subkey_stats.rs",
         "tests/scan*.rs",
     ),
     "security-clients": (
@@ -199,6 +200,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "compose.yaml",
         "deploy/**",
         "docs/containers.md",
+        "docs/plans/performance-architecture.md",
         "docs/pr-quality-gate.md",
         "docs/benchmarks.md",
         "docs/benchmark-reports.md",
