@@ -72,6 +72,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   pending/consumer references to removed IDs (as XDEL does), and touch the stream
   for WATCH/journal capture and an `xtrim` keyspace event when entries are
   removed.
+- **R504 (event-driven):** When `XTRIM` removes entries, update the logical
+  payload budget from their field/value bytes without rescanning surviving
+  entries or retaining a separate list of removed IDs. The stream key and
+  pending metadata remain accounted for as before.
 - **R192 (unwanted behavior):** Invalid or partial trimming arguments shall not
   mutate the stream. Tests shall cover exact/approximate MAXLEN/MINID, `=` and
   `~`, LIMIT bounds, empty and missing streams, TTL, pending retention, WATCH and

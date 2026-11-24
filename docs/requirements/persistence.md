@@ -77,20 +77,51 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
   server shall return a `# Persistence` block with `loading:0` and `aof_enabled`.
-  While the journal is enabled it shall also report `aof_rewrite_in_progress:0`,
-  the last rewrite and write statuses and the current file size; while disabled
-  it shall report only `aof_enabled:0`. It shall omit RDB, backlog, bio and other
-  unmeasured persistence fields rather than fabricating them.
+  While the journal is enabled it shall also report whether a cooperative
+  rewrite is in progress, the last rewrite and write statuses and the current
+  file size when known. It shall omit RDB, backlog, bio and other unmeasured
+  persistence fields rather than fabricating them.
 - **R314 (state-driven):** The reported write status shall reflect the journal's
   latched failure state, the rewrite status shall reflect the last completed
-  synchronous `BGREWRITEAOF`, and the size shall come from the open journal file.
-  Because rewrites are synchronous, `aof_rewrite_in_progress` shall remain `0`
-  and no asynchronous progress claim shall be made.
+  rewrite attempt, and the current size shall come from the open live journal.
 - **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
   measured field set, nonempty size after a write, status after rewrite, `INFO
-  all` inclusion and every worker mode. Documentation shall retain the absence
-  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
-  crash-recovery guarantees.
+  all` inclusion and every worker mode. Reported status does not guarantee
+  recovery or characterize physical storage faults.
+- **R466 (state-driven):** While a cooperative rewrite is active, the persistence
+  report shall expose the number of bytes already written to its temporary
+  file as `aof_rewrite_bytes_written`, counting successful framing and
+  reconciliation writes. The field shall be zero when the enabled journal is
+  idle and omitted if disabled or the journal cannot be inspected. It shall
+  not imply fsync completion, published file size or percentage complete.
+- **R471 (event-driven):** When rewrite setup succeeds, the persistence report
+  shall expose its elapsed monotonic microseconds as `aof_last_rewrite_start_usec`.
+  Include key enumeration and staging initialization, but not later rewrite
+  steps, request queueing or network time. Omit the field before a successful
+  setup; a failed or redundant start shall not replace the previous measurement.
+- **R481 (unwanted behavior):** If rewrite staging initialization fails,
+  `aof_last_bgrewrite_status` shall report `err` without latching a live append
+  error or keeping a rewrite active. The original journal shall be preserved
+  and a later successful rewrite shall clear the rewrite error.
+- **R484 (event-driven):** When rewrite finalization succeeds, the persistence
+  report shall expose `aof_last_rewrite_finish_usec`, the elapsed monotonic
+  microseconds from acquiring exclusive data access through final tail
+  reconciliation, journal sync and publication, and rewrite bookkeeping. Omit
+  the field before first success; a failed attempt shall not overwrite it.
+- **R493 (unwanted behavior):** If the final staging rename fails before the
+  live journal is replaced, report a failed rewrite and drop the rewrite job
+  without disabling live appends. The previous journal shall remain intact,
+  acknowledged writes shall replay after restart, and a subsequent rewrite
+  shall be possible. Test with a disposable local Unix fixture.
+- **R495 (event-driven):** When a key expires and is removed after its snapshot
+  slice was encoded, rewrite reconciliation shall remove the stale record's
+  effect from replay and preserve subsequent acknowledged writes. In a fixture
+  with a controlled clock, replay before the original expiry to distinguish
+  reconciliation from a stale record hidden by its deadline.
+- **R497 (unwanted behavior):** If a complete AOF group fails its CRC check,
+  startup shall refuse it without modifying the journal, even if it is the
+  final group. A verified replacement shall replay without manual removal of
+  the ownership lock after the refused startup.
 
 ## Journal configuration visibility and runtime fsync (S87)
 
@@ -132,6 +163,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   behavior and every worker mode. Documentation shall retain that this is a
   local-journal acknowledgement only, not replication, failover, RDB or a
   strong-consistency guarantee.
+- **R478 (state-driven):** After `WAITAOF 1 0 0` reports `[1, 0]`, a
+  same-host process kill and restart shall recover the prior values under
+  `appendfsync no` and `everysec`, without a graceful shutdown flush. That
+  regression does not assert a power-loss or real storage-fault guarantee.
 
 ## Explicit RDB, replication and database boundaries (S92)
 
@@ -176,6 +211,46 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   across restart. Documentation shall state the required server quiescence,
   configurable replay limits, AOF-only scope, local-filesystem assumptions and
   online backup/PITR/retention/RPO/RTO gaps.
+- **R456 (unwanted behavior):** If replay would truncate a torn source journal,
+  then `rillcache-backup create` shall fail before publishing an archive, keep
+  the source bytes unchanged, and release the ownership lock. Cover legacy,
+  CRC and HMAC tails and confirm that ordinary startup still recovers the
+  verified prefix.
+- **R470 (unwanted behavior):** If replaying a valid archive exceeds the logical
+  payload limit, `verify` and `restore` shall fail without retaining staging files
+  or publishing a destination journal. A retry with sufficient budget shall
+  leave the source archive unchanged and restore all its keys, not just the
+  prefix that fit. This limit is not a bound on allocator or RSS usage.
+- **R473 (unwanted behavior):** If two restores of valid archives target the
+  same empty offline directory on a supported local filesystem, at most one
+  shall publish a journal. On normal completion, the journal shall match the
+  successful restore's payload, neither archive shall change, and staging
+  files shall not remain. This does not cover concurrent server startup or
+  interrupted cleanup.
+- **R474 (event-driven):** When a complete legacy RESP journal is archived and
+  restored by the current binary, preserve the original journal and archive
+  bytes. After restoring, new CRC-framed appends shall retain the original
+  prefix and both old and new data shall replay after restart. This is a
+  format-level test, not a version-skew or downgrade guarantee.
+- **R482 (event-driven):** When `create --filename` selects a non-default AOF
+  and `restore --filename` names a different destination AOF, restore shall
+  preserve exact journal bytes and shall not create the default journal. An
+  isolated server using the restored basename shall replay the original data.
+- **R485 (unwanted behavior):** If the destination has an ownership lock but no
+  AOF, `restore` shall refuse without changing the lock or archive or leaving
+  staging files. A retry in the empty offline fixture shall restore the exact
+  journal and replay the original value. This does not cover concurrent startup.
+- **R488 (unwanted behavior):** If a regular backup archive's length disagrees
+  with its header, `verify` and `restore` shall reject it before creating a
+  staging file. Matching length does not waive streamed length and CRC checks,
+  trailing-data detection, or journal replay validation.
+- **R503 (unwanted behavior):** If the sync required to change `appendfsync`
+  fails, mark journal write health as failed, retain the current policy, and do
+  not publish any other settings or evict keys for a budget in that `CONFIG SET`.
+- **R499 (unwanted behavior):** If `create` targets an existing archive, refuse
+  without changing the archive or source journal or leaving staging or lock
+  files. A retry to a new filename shall capture the newer journal while the
+  original archive remains usable for an isolated rollback.
 
 ## Authenticated journal records (S119)
 
@@ -206,6 +281,16 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   encryption, does not cover suffix rollback or whole-file replacement, has no key
   rotation/keyring contract, and that unauthenticated writes after key removal
   are discarded by the next authenticated start.
+- **R455 (unwanted behavior):** If offline restore of an authenticated archive
+  fails because the supplied key does not match, it shall leave the archive
+  unchanged and publish no journal. In a working, empty destination directory,
+  it shall remove its staging files and lock so a retry with the matching key
+  can restore the archive without manual cleanup. Test by restarting the same
+  binary against the restored journal and reading the expected value.
+- **R464 (unwanted behavior):** When loading the journal authentication key,
+  the server and backup utility shall read at most 1027 bytes and shall not
+  accept a prefix of an oversized file. The 16..=1024-byte key range after
+  stripping one final LF or CRLF remains unchanged.
 
 ## Deleted-entry stream PEL durability (S120)
 
@@ -255,6 +340,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   missing-target failure, and all execution modes. Documentation shall retain the
   no-expiry clock shortcut, tombstone-claim semantics and the absence of history
   for deleted/renamed consumers.
+
+## Bounded offline string import
+
+- **R509 (event-driven):** Given an offline RESP stream consisting of an
+  optional initial `SELECT 0` and string `SET` records with optional positive
+  absolute `PXAT` expirations, emit a legacy Rillcache journal containing the
+  exact binary keys, values and expiry commands. Reject malformed, unsupported
+  or oversized input before publication. Never modify the source or replace
+  an existing destination. This does not establish native AOF interchange.
 
 ## Offline backup verification staging (S126)
 

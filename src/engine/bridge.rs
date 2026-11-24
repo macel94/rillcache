@@ -185,43 +185,66 @@ impl Store {
         limits: Limits,
         journal_auth: Option<JournalAuth>,
     ) -> std::io::Result<Self> {
-        Self::with_clock_auth_and_journal(
+        let journal = journal::Journal::open(path, policy, limits, journal_auth)?;
+        Self::from_open_journal(
             max_payload_bytes,
             auth,
             path,
             policy,
             limits,
-            journal_auth,
+            journal,
             Arc::new(SystemClock),
         )
     }
+
+    /// Replay an existing quiescent journal without repairing its contents.
+    /// Keep the returned store alive while syncing and copying the source.
+    pub fn open_backup_source(
+        max_payload_bytes: usize,
+        path: &Path,
+        limits: Limits,
+        journal_auth: Option<JournalAuth>,
+    ) -> std::io::Result<Self> {
+        let journal = journal::Journal::open_backup_source(path, limits, journal_auth)?;
+        Self::from_open_journal(
+            max_payload_bytes,
+            Auth::default(),
+            path,
+            FsyncPolicy::Always,
+            limits,
+            journal,
+            Arc::new(SystemClock),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn with_clock_and_journal(
         path: &Path,
         policy: FsyncPolicy,
         clock: Arc<dyn Clock>,
     ) -> std::io::Result<Self> {
-        Self::with_clock_auth_and_journal(
+        let limits = Limits::default();
+        let journal = journal::Journal::open(path, policy, limits, None)?;
+        Self::from_open_journal(
             16 * 1024 * 1024,
             Auth::default(),
             path,
             policy,
-            Limits::default(),
-            None,
+            limits,
+            journal,
             clock,
         )
     }
-    fn with_clock_auth_and_journal(
+    fn from_open_journal(
         max_payload_bytes: usize,
         auth: Auth,
         path: &Path,
         policy: FsyncPolicy,
         limits: Limits,
-        journal_auth: Option<JournalAuth>,
+        journal: journal::Journal,
         clock: Arc<dyn Clock>,
     ) -> std::io::Result<Self> {
         let mut services = ServerServices::with_clock_and_auth(max_payload_bytes, clock, auth);
-        let journal = journal::Journal::open(path, policy, limits, journal_auth)?;
         services.journal_limits = limits;
         services.journal = Some(std::sync::Mutex::new(journal));
         let store = Self {

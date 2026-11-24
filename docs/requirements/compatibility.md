@@ -66,6 +66,28 @@ negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
 `CLIENT` metadata across worker handoffs. Supported session commands are `CLIENT
 ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
 `RESET`.
+
+- **R467 (unwanted behavior):** If a client selects a malformed or nonzero DB
+  index, targets a nonzero DB with `COPY`, or attempts `MOVE` or `SWAPDB`, the
+  server shall reject the command without changing the shared DB 0 keyspace.
+  When a client explicitly selects DB 0, its `COPY ... DB 0` and `FLUSHDB` shall
+  affect the same keyspace as on a connection that never selected a DB.
+
+- **R469 (unwanted behavior):** If a client discovers or invokes `EVAL`,
+  `EVALSHA`, `FCALL` or `FCALL_RO`, it shall observe missing command metadata
+  or an unknown-command error, respectively. `SCRIPT FLUSH` and `FUNCTION
+  FLUSH` shall remain empty-registry no-ops; acknowledgement shall not change
+  discovery, enable execution, or alter existing keys.
+- **R472 (state-driven):** While in standalone mode, `ROLE` and `INFO replication`
+  shall report no replication stream or replicas, even after local writes and
+  rejected replication reconfiguration. `CLUSTER SHARDS`, `SLOTS`, and `NODES`
+  shall report that cluster support is disabled, not return topology metadata.
+- **R486 (state-driven):** For the RESP2 command registry, `COMMAND COUNT` shall
+  equal the number of sorted names in unfiltered `COMMAND LIST`. `COMMAND`,
+  unfiltered `COMMAND INFO`, and case-insensitive targeted `COMMAND INFO` shall
+  agree on each listed name's metadata. Targeted replies shall preserve the
+  caller's requested order. Registry consistency is not command conformance.
+
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
 RESP3 types are not implemented. See [client sessions](../client-sessions.md) for

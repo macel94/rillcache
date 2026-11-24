@@ -5,7 +5,7 @@
 //! publisher or another subscriber. Messages are at-most-once and never persisted.
 
 use std::collections::HashMap;
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 
 const SUBSCRIBER_QUEUE: usize = 1024;
 
@@ -21,6 +21,7 @@ pub(super) struct PubSub {
     channels: HashMap<Vec<u8>, Vec<Subscriber>>,
     patterns: HashMap<Vec<u8>, Vec<Subscriber>>,
     shard_channels: HashMap<Vec<u8>, Vec<Subscriber>>,
+    queue_full_drops: u64,
 }
 
 impl PubSub {
@@ -120,13 +121,14 @@ impl PubSub {
 
     pub(super) fn publish(&mut self, channel: &[u8], message: &[u8]) -> usize {
         let mut delivered = 0;
+        let queue_full_drops = &mut self.queue_full_drops;
         for (name, subscribers) in self.channels.iter_mut() {
             if name.as_slice() != channel {
                 continue;
             }
             subscribers.retain(|subscriber| {
                 let frame = message_frame(subscriber.resp3, false, None, channel, message);
-                if subscriber.sender.try_send(frame).is_ok() {
+                if try_delivery(&subscriber.sender, frame, queue_full_drops) {
                     delivered += 1;
                     true
                 } else {
@@ -141,7 +143,7 @@ impl PubSub {
             }
             subscribers.retain(|subscriber| {
                 let frame = message_frame(subscriber.resp3, true, Some(pattern), channel, message);
-                if subscriber.sender.try_send(frame).is_ok() {
+                if try_delivery(&subscriber.sender, frame, queue_full_drops) {
                     delivered += 1;
                     true
                 } else {
@@ -162,13 +164,14 @@ impl PubSub {
 
     pub(super) fn publish_shard(&mut self, channel: &[u8], message: &[u8]) -> usize {
         let mut delivered = 0;
+        let queue_full_drops = &mut self.queue_full_drops;
         for (name, subscribers) in self.shard_channels.iter_mut() {
             if name.as_slice() != channel {
                 continue;
             }
             subscribers.retain(|subscriber| {
                 let frame = shard_message_frame(subscriber.resp3, channel, message);
-                if subscriber.sender.try_send(frame).is_ok() {
+                if try_delivery(&subscriber.sender, frame, queue_full_drops) {
                     delivered += 1;
                     true
                 } else {
@@ -231,6 +234,10 @@ impl PubSub {
         self.patterns.len()
     }
 
+    pub(super) fn queue_full_drops(&self) -> u64 {
+        self.queue_full_drops
+    }
+
     pub(super) fn counts_for(&self, id: u64) -> (usize, usize, usize) {
         let channels = self
             .channels
@@ -252,6 +259,17 @@ impl PubSub {
 
     pub(super) fn is_empty(&self) -> bool {
         self.channels.is_empty() && self.patterns.is_empty() && self.shard_channels.is_empty()
+    }
+}
+
+fn try_delivery(sender: &SyncSender<Vec<u8>>, frame: Vec<u8>, queue_full_drops: &mut u64) -> bool {
+    match sender.try_send(frame) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            *queue_full_drops = queue_full_drops.saturating_add(1);
+            false
+        }
+        Err(TrySendError::Disconnected(_)) => false,
     }
 }
 

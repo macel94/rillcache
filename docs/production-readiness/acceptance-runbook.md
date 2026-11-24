@@ -39,6 +39,35 @@ A suggested order:
 | Staged rollout and rollback | Evaluate the exact artifact with representative traffic in isolation. Record the previous artifact digest, recoverable backup, rollback trigger, and an exercised rollback result. Do not point an older binary at the only copy of a newer journal. |
 | Distribution and sign-off | Record license and notices, artifact verification, and named reviewers' candidate-specific decisions for the deployment profile, security, recovery and performance. |
 
+### Check the evidence record
+
+Store a version-1 JSON record alongside the raw artifacts. It has `schema: 1`
+and a `results` object keyed by the table stages, in order: `merge`,
+`compatibility`, `security`, `load-soak`, `recovery`, `rollout-rollback`, and
+`distribution-signoff`. Each row records `candidate` (40-character commit),
+`artifact` (`sha256:` plus 64 hex characters), `profile` (40-character commit),
+and `result` (`pass`, `fail`, or `not-run`). A passing row also requires
+`method`, `environment`, `observed`, and `evidence_url` (HTTPS). The `security`
+and `distribution-signoff` rows also require a `reviewer` name. Record the
+reference, expected result and observed outcome in the method and observation,
+and keep all earlier failed attempts in the linked evidence. A reviewed scope
+exclusion belongs in the compatibility evidence; it does not remove a stage.
+
+```sh
+python3 scripts/release_evidence.py evidence.json \
+  --candidate "$candidate_commit" --artifact "$artifact_digest" \
+  --profile "$profile_commit"
+```
+
+Provide the expected identities from the candidate and approved profile, not
+from the record being checked. The checker reads only that local record (at
+most 256 KiB) and returns 1 for incomplete, failed or mismatched evidence, 2
+for invalid inputs, and 0 only for a structurally complete record. It does not
+fetch evidence or verify assertions, reviewer authority, link contents, or
+release acceptance. Even a complete record prints `promotion_authorized: false`.
+Run the canonical checklist preflight separately; both results are for human
+review, not a deployment trigger.
+
 Stop promotion on a failed, missing or stale result. Preserve its logs and mark
 which criterion failed before testing a changed candidate. A documented scope
 exclusion needs the responsible review and a decision in the

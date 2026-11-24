@@ -38,7 +38,10 @@ publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
 
 `HRANDFIELD key [count [WITHVALUES]]` returns a random field or, with count,
 distinct fields for positive counts and duplicate-capable fields for negative
-counts, adding values when requested. `HGETDEL key FIELDS numfields field
+counts, adding values when requested. The count magnitude must fit a signed
+64-bit integer, or half that maximum with `WITHVALUES`. Out-of-range counts
+return an error even if the key does not exist. These numeric bounds are not a
+reply-size or latency guarantee. `HGETDEL key FIELDS numfields field
 [field ...]` returns requested values (null for missing fields), atomically
 deletes present fields, deletes an emptied hash key, and preserves remaining TTL
 and payload accounting. Per-field TTL controls use `HEXPIRE`/`HPEXPIRE`,

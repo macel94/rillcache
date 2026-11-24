@@ -5,7 +5,7 @@
 //!
 //! Unlike the in-process persistence tests, these spawn the real binary so the
 //! process can be killed without unwinding, running destructors or flushing
-//! buffers. The two contracts asserted here are deliberately narrow and testable:
+//! buffers. These contracts are deliberately narrow and testable:
 //!
 //! 1. With `appendfsync always`, every write the client saw acknowledged is
 //!    present after `SIGKILL` and restart: the reply must not precede the durable
@@ -13,6 +13,8 @@
 //! 2. With `appendfsync everysec`, the recovered keys form a contiguous prefix of
 //!    the write order. A crash may drop un-fsynced writes, but it must never
 //!    recover a hole or a later write without the earlier ones.
+//! 3. After a local `WAITAOF` acknowledgement, writes made with `no` or
+//!    `everysec` are present after `SIGKILL` and restart on the same host.
 //!
 //! ENOSPC, fsync failure and permission loss are not injectable without either
 //! privileges or unsafe syscalls, so they remain open in the readiness checklist.
@@ -218,6 +220,49 @@ fn fsync_always_keeps_every_acknowledged_write_across_sigkill() {
     send(&mut stream, &[b"SET", b"after:crash", b"ok"], b"+OK\r\n");
     restarted.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn waitaof_acknowledged_values_replay_after_sigkill_with_no_or_everysec() {
+    for policy in ["no", "everysec"] {
+        let directory = temp_dir(&format!("waitaof-{policy}"));
+        let server = Server::start(&directory, policy);
+        let mut writer = server.connect();
+        let reported = format!(
+            "*2\r\n$11\r\nappendfsync\r\n${}\r\n{policy}\r\n",
+            policy.len()
+        );
+        send(
+            &mut writer,
+            &[b"CONFIG", b"GET", b"appendfsync"],
+            reported.as_bytes(),
+        );
+        let values = [("first", b"one\0"), ("second", b"two\xff")];
+        for (key, value) in values {
+            send(&mut writer, &[b"SET", key.as_bytes(), value], b"+OK\r\n");
+        }
+        send(
+            &mut writer,
+            &[b"WAITAOF", b"1", b"0", b"0"],
+            b"*2\r\n:1\r\n:0\r\n",
+        );
+        // Keep the writer connected until after the kill; no graceful flush.
+        server.kill();
+        drop(writer);
+
+        let restarted = Server::start(&directory, policy);
+        let mut reader = restarted.connect();
+        send(&mut reader, &[b"DBSIZE"], b":2\r\n");
+        for (key, value) in values {
+            assert_eq!(
+                get(&mut reader, key).as_deref(),
+                Some(value.as_slice()),
+                "{policy}: {key}"
+            );
+        }
+        restarted.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[test]

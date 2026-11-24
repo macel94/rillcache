@@ -81,8 +81,10 @@ pipelined commands until the pause ends, and polls with the same bounded model a
 blocking commands without holding the store lock. Replies preserve wire order,
 and a disconnect or shutdown drops the deferred command and the connection.
 Commands that started before the pause, already-blocked commands, background
-expiry and eviction, and journal syncing are not paused. This is deliberately a
-client-command gate, not Redis's full pause surface (which also pauses expiry,
+expiry and eviction, and journal syncing are not paused. For example, expiry
+maintenance can emit an `expired` event while `SET NX` is deferred. The write
+checks whether the key exists when it resumes, not when it was queued.
+This is deliberately a client-command gate, not Redis's full pause surface (which also pauses expiry,
 eviction and replica traffic); replication does not exist here.
 
 `CLIENT HELP` returns the supported subcommand list and argument hints.
@@ -112,7 +114,10 @@ push frames and `MONITOR` feeds are separate from command replies.
 `CLIENT NO-EVICT ON|OFF` is accepted and replies `+OK`. Established clients are
 never evicted—`max_clients` rejects new connections—so both modes have the same
 enforced behavior. The flag is not separately reported because no eviction path
-exists to suppress.
+exists to suppress. `CONFIG SET maxclients` also applies to the opt-in Tokio
+transport: raising it lets newly admitted connections start without waiting
+for a startup cap; lowering it refuses new excess connections without closing
+or withholding service from connections already admitted.
 
 Client-side caching is not implemented, so its introspection reports the disabled
 state: `CLIENT GETREDIR` returns `-1`, `CLIENT TRACKINGINFO` reports flags
@@ -124,8 +129,9 @@ RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
 become the genuine RESP3 null (`_\r\n`), including RESP2 null arrays
 (`*-1\r\n`) and null children. Conversion is by frame boundaries. Binary bulk payload bytes—including bytes that resemble a
-RESP null frame—are preserved. RESP2 behavior and `Store::execute` remain
-unchanged.
+RESP null frame—are preserved. `HRANDFIELD ... WITHVALUES` returns an array of
+two-element field/value arrays in RESP3, including deferred replies and
+inside `EXEC`. RESP2 and `Store::execute` retain the flat array shape.
 
 ## Session module layout
 

@@ -28,6 +28,7 @@ const CONSUMER_SEEN: &[u8] = b"__RILLCACHE_CONSUMER_SEEN_V1__:";
 const CONSUMER_ACTIVE: &[u8] = b"__RILLCACHE_CONSUMER_ACTIVE_V1__:";
 const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
 const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
+const MAX_AUTH_KEY_BYTES: usize = 1024;
 
 /// Optional keyed authentication for journal transactions.
 #[derive(Clone)]
@@ -38,7 +39,7 @@ pub struct JournalAuth {
 
 impl JournalAuth {
     pub fn new(key: Vec<u8>, migrate: bool) -> io::Result<Self> {
-        if !(16..=1024).contains(&key.len()) {
+        if !(16..=MAX_AUTH_KEY_BYTES).contains(&key.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "journal authentication key must be 16..=1024 bytes",
@@ -49,28 +50,40 @@ impl JournalAuth {
 }
 
 pub fn read_auth_key_file(path: &Path) -> io::Result<Vec<u8>> {
-    let mut key = fs::read(path).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "cannot read journal authentication key file {}: {error:?}",
-                path.display()
-            ),
-        )
-    })?;
+    let mut key = File::open(path)
+        .and_then(read_auth_key_file_bytes)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cannot read journal authentication key file {}: {error:?}",
+                    path.display()
+                ),
+            )
+        })?;
     if key.ends_with(b"\n") {
         key.pop();
         if key.ends_with(b"\r") {
             key.pop();
         }
     }
-    if !(16..=1024).contains(&key.len()) {
+    if !(16..=MAX_AUTH_KEY_BYTES).contains(&key.len()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "journal authentication key must be 16..=1024 bytes",
         ));
     }
     Ok(key)
+}
+
+fn read_auth_key_file_bytes(reader: impl Read) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    // Allow CRLF plus a sentinel byte. Even after stripping CRLF, a read
+    // that reaches the sentinel is too long and cannot pass as a prefix.
+    reader
+        .take((MAX_AUTH_KEY_BYTES + 3) as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -560,11 +573,14 @@ pub(super) struct Journal {
     last_sync: Instant,
     failed: bool,
     last_rewrite_failed: bool,
+    last_rewrite_start_usec: Option<u64>,
+    last_rewrite_finish_usec: Option<u64>,
     rewrite: Option<RewriteState>,
     _ownership: Ownership,
     checksum_nonce: Option<String>,
     auth_key: Option<Vec<u8>>,
     auth_migrate: bool,
+    repair_tail: bool,
     auth_tag: Option<[u8; 32]>,
     size: u64,
     rewrite_base: u64,
@@ -580,6 +596,9 @@ pub(super) struct PersistenceStatus {
     pub rewrite_phase: &'static str,
     pub rewrite_keys_done: u64,
     pub rewrite_keys_total: u64,
+    pub rewrite_bytes_written: Option<u64>,
+    pub last_rewrite_start_usec: Option<u64>,
+    pub last_rewrite_finish_usec: Option<u64>,
 }
 
 impl Journal {
@@ -591,27 +610,40 @@ impl Journal {
         limits: Limits,
         auth: Option<JournalAuth>,
     ) -> io::Result<Self> {
-        // Claim ownership before opening or replaying: a second process must not
-        // read a journal it is about to corrupt.
+        Self::open_with_repair(path, policy, limits, auth, true)
+    }
+
+    pub(super) fn open_backup_source(
+        path: &Path,
+        limits: Limits,
+        auth: Option<JournalAuth>,
+    ) -> io::Result<Self> {
+        Self::open_with_repair(path, FsyncPolicy::Always, limits, auth, false)
+    }
+
+    fn open_with_repair(
+        path: &Path,
+        policy: FsyncPolicy,
+        limits: Limits,
+        auth: Option<JournalAuth>,
+        repair_tail: bool,
+    ) -> io::Result<Self> {
+        // Use the same ownership lock as startup and hold it through the copy.
         let ownership = Ownership::acquire(path)?;
-        #[cfg(unix)]
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600)
-                .open(path)?
-        };
-        #[cfg(not(unix))]
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        // Keep the write-capable handle for the forced sync before copying. Do
+        // not create a missing source or repair its contents in backup mode.
+        options
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+            .create(repair_tail)
+            .truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
         let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         let (auth_key, auth_migrate) = match auth {
             Some(auth) => (Some(auth.key), auth.migrate),
@@ -626,15 +658,28 @@ impl Journal {
             last_sync: Instant::now(),
             failed: false,
             last_rewrite_failed: false,
+            last_rewrite_start_usec: None,
+            last_rewrite_finish_usec: None,
             rewrite: None,
             _ownership: ownership,
             checksum_nonce: None,
             auth_key,
-            auth_migrate,
+            auth_migrate: auth_migrate && repair_tail,
+            repair_tail,
             auth_tag: None,
             size,
             rewrite_base: size,
         })
+    }
+
+    fn recover_torn_tail(&self, valid_end: u64) -> io::Result<()> {
+        if !self.repair_tail {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source journal has a torn tail; backup will not truncate it",
+            ));
+        }
+        self.file.set_len(valid_end)
     }
 
     /// Validate checksummed transaction groups before executing any record. Legacy
@@ -764,7 +809,7 @@ impl Journal {
             }
         }
         if nonce.is_some() && (record_len > 0 || !buffer.is_empty()) {
-            self.file.set_len(valid_end)?;
+            self.recover_torn_tail(valid_end)?;
             self.size = valid_end;
         }
         self.checksum_nonce = nonce;
@@ -942,7 +987,7 @@ impl Journal {
             // A crash can tear the final transaction/marker after its checksum
             // group. Discard that unacknowledged suffix; authenticated history up
             // to the previous marker remains intact.
-            self.file.set_len(last_marker_end)?;
+            self.recover_torn_tail(last_marker_end)?;
             self.size = last_marker_end;
         }
         self.auth_tag = previous_tag;
@@ -1079,7 +1124,7 @@ impl Journal {
             // A crash can leave one incomplete trailing command; Redis's default
             // is to load everything before it. Truncate so future appends do not
             // follow garbage.
-            self.file.set_len(good_total)?;
+            self.recover_torn_tail(good_total)?;
         }
         self.file.seek(SeekFrom::End(0))?;
         self.size = self
@@ -1260,6 +1305,7 @@ impl Journal {
                 Ok(())
             }
             Err(error) => {
+                self.last_rewrite_failed = true;
                 let _ = fs::remove_file(&temporary);
                 Err(error)
             }
@@ -1390,6 +1436,9 @@ impl Journal {
             rewrite_phase: "none",
             rewrite_keys_done: 0,
             rewrite_keys_total: 0,
+            rewrite_bytes_written: Some(self.rewrite.as_ref().map_or(0, |state| state.bytes)),
+            last_rewrite_start_usec: self.last_rewrite_start_usec,
+            last_rewrite_finish_usec: self.last_rewrite_finish_usec,
         }
     }
 
@@ -1679,6 +1728,7 @@ impl ShardExecutor {
         if self.rewrite_job.borrow().is_some() {
             return Ok(0);
         }
+        let start = Instant::now();
         let keys = {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return Err(());
@@ -1693,7 +1743,10 @@ impl ShardExecutor {
                 .lock()
                 .map_err(|_| io::Error::other("poisoned journal lock"))?;
             journal.begin_rewrite()?;
-            journal.write_rewrite(&header)
+            journal.write_rewrite(&header)?;
+            journal.last_rewrite_start_usec =
+                Some(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            Ok(())
         })();
         if started.is_err() {
             if let Ok(mut data) = self.data.try_borrow_mut() {
@@ -1780,6 +1833,7 @@ impl ShardExecutor {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return Err(io::Error::other("data busy during rewrite commit"));
             };
+            let finish_started = Instant::now();
             let (mut tail, overflow) = data.take_rewrite_changes();
             if overflow {
                 tail = data.entries.keys().cloned().collect();
@@ -1800,6 +1854,8 @@ impl ShardExecutor {
             journal.commit_rewrite()?;
             data.journal_reset();
             data.end_rewrite_tracking();
+            journal.last_rewrite_finish_usec =
+                Some(u64::try_from(finish_started.elapsed().as_micros()).unwrap_or(u64::MAX));
             true
         };
         if finished {
@@ -1847,6 +1903,9 @@ impl ShardExecutor {
                 rewrite_phase: "none",
                 rewrite_keys_done: 0,
                 rewrite_keys_total: 0,
+                rewrite_bytes_written: None,
+                last_rewrite_start_usec: None,
+                last_rewrite_finish_usec: None,
             };
         };
         let in_progress = self.rewrite_in_progress();
@@ -1860,6 +1919,9 @@ impl ShardExecutor {
                 rewrite_phase,
                 rewrite_keys_done,
                 rewrite_keys_total,
+                rewrite_bytes_written: None,
+                last_rewrite_start_usec: None,
+                last_rewrite_finish_usec: None,
             },
             |journal| {
                 let mut status = journal.status();

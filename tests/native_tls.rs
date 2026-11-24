@@ -404,6 +404,56 @@ fn tls13_resp_works_in_all_execution_modes_and_plaintext_is_unchanged() {
 }
 
 #[test]
+fn fragmented_tls_pipeline_keeps_reply_order_and_resumes_a_partial_frame() {
+    use rillcache::protocol::encode_request;
+
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, false);
+        for fragment_bytes in [1, 7, 31] {
+            let mut stream = connect(&server, false);
+            stream.sock.set_nodelay(true).unwrap();
+            ping(&mut stream);
+
+            let binary = b"\0\r\n\xff";
+            let mut pipeline = Vec::new();
+            for args in [
+                &[b"SET".as_slice(), b"tls:binary", binary][..],
+                &[b"SET".as_slice(), b"tls:counter", b"0"][..],
+                &[b"INCR".as_slice(), b"tls:counter"][..],
+                &[b"GET".as_slice(), b"tls:binary"][..],
+            ] {
+                encode_request(args, &mut pipeline);
+            }
+            let mut trailing = Vec::new();
+            encode_request(&[b"INCR", b"tls:counter"], &mut trailing);
+            let last = trailing.pop().unwrap();
+            pipeline.extend_from_slice(&trailing);
+            for fragment in pipeline.chunks(fragment_bytes) {
+                stream.write_all(fragment).unwrap();
+                stream.flush().unwrap();
+            }
+
+            // Complete replies must not wait for the next request's missing LF.
+            let expected = b"+OK\r\n+OK\r\n:1\r\n$4\r\n\0\r\n\xff\r\n";
+            let mut replies = vec![0; expected.len()];
+            stream.read_exact(&mut replies).unwrap();
+            assert_eq!(replies.as_slice(), expected);
+
+            // Complete the final INCR and bracket it with an independent GET.
+            let mut rest = vec![last];
+            encode_request(&[b"GET", b"tls:counter"], &mut rest);
+            stream.write_all(&rest).unwrap();
+            stream.flush().unwrap();
+            let mut replies = [0; 11];
+            stream.read_exact(&mut replies).unwrap();
+            assert_eq!(&replies, b":2\r\n$1\r\n2\r\n");
+            ping(&mut stream);
+        }
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn sni_selects_exact_certificate_and_preserves_required_mtls() {
     for client_ca in [false, true] {
         let server = start_with_sni(client_ca);
@@ -559,6 +609,81 @@ fn tls_reload_replaces_configured_sni_identity_for_new_handshakes() {
     assert!(handshake.is_err(), "new SNI certificate must be served");
     ping(&mut initial);
 
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn invalid_sni_key_does_not_partially_publish_tls_staples() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-sni-atomic-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let trigger = directory.join("generation");
+    let default_ocsp = directory.join("default.der");
+    let sni_ocsp = directory.join("sni.der");
+    let sni_key = directory.join("sni.key");
+    // These are opaque test markers, not validated certificate status responses.
+    let first = [0x30, 0x03, 0x0a, 0x01, 0x00];
+    let second = [0x30, 0x03, 0x0a, 0x01, 0x01];
+    std::fs::write(&default_ocsp, first).unwrap();
+    std::fs::write(&sni_ocsp, second).unwrap();
+    std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
+    std::fs::write(&trigger, b"initial").unwrap();
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_ocsp_file: Some(default_ocsp.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        tls_sni_certificates: vec![rillcache::TlsSniCertificate {
+            server_name: "alt.test".into(),
+            cert_file: fixture("alternate.crt"),
+            key_file: sni_key.clone(),
+            ocsp_file: Some(sni_ocsp.clone()),
+        }],
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let observe = |name: Option<&str>, expected| {
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let mut stream = match name {
+            Some(name) => connect_capturing_ocsp(&server, name, Arc::clone(&responses)),
+            None => connect_without_sni_capturing_ocsp(&server, Arc::clone(&responses)),
+        };
+        ping(&mut stream);
+        assert_eq!(
+            responses.lock().unwrap().as_slice(),
+            &[expected],
+            "{name:?}"
+        );
+        stream
+    };
+    let mut established = observe(None, first);
+    observe(Some("alt.test"), second);
+
+    let publish = |token: &[u8]| {
+        let next = directory.join("generation.next");
+        std::fs::write(&next, token).unwrap();
+        std::fs::rename(next, &trigger).unwrap();
+    };
+    std::fs::write(&default_ocsp, second).unwrap();
+    std::fs::write(&sni_ocsp, first).unwrap();
+    std::fs::write(&sni_key, b"invalid SNI private key fixture").unwrap();
+    publish(b"invalid");
+    observe(None, first);
+    observe(Some("alt.test"), second);
+
+    std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
+    publish(b"repaired");
+    observe(None, second);
+    observe(Some("alt.test"), first);
+    ping(&mut established);
     server.shutdown().unwrap();
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -883,6 +1008,71 @@ fn client_crl_policy_allows_current_nonrevoked_and_rejects_revoked_or_expired() 
             server.shutdown().unwrap();
         }
     }
+}
+
+#[test]
+fn client_crl_reload_keeps_the_last_valid_policy_and_applies_revocation_to_new_handshakes() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-crl-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let crl = directory.join("client.crl");
+    let trigger = directory.join("generation");
+    let publish = |bytes: &[u8], generation: &[u8]| {
+        let staged_crl = directory.join("client.next");
+        let staged_trigger = directory.join("generation.next");
+        std::fs::write(&staged_crl, bytes).unwrap();
+        std::fs::rename(staged_crl, &crl).unwrap();
+        std::fs::write(&staged_trigger, generation).unwrap();
+        std::fs::rename(staged_trigger, &trigger).unwrap();
+    };
+    let good = std::fs::read(fixture("client-good.crl.der")).unwrap();
+    let revoked = std::fs::read(fixture("client-revoked.crl.der")).unwrap();
+    publish(&good, b"initial");
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_client_crl_file: Some(crl.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        idle_timeout: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut established = connect(&server, true);
+    ping(&mut established);
+
+    publish(b"invalid DER", b"invalid");
+    let mut retained = connect(&server, true);
+    ping(&mut retained);
+
+    publish(&revoked, b"revoked");
+    let mut client = connect(&server, true);
+    let mut reply = [0; 7];
+    let outcome = client
+        .write_all(b"*1\r\n$4\r\nPING\r\n")
+        .and_then(|()| client.read_exact(&mut reply));
+    let error = outcome.expect_err("revoked client reached the command loop");
+    assert!(
+        !matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+        "{error}"
+    );
+    ping(&mut established);
+    ping(&mut retained);
+
+    publish(&good, b"restored");
+    ping(&mut connect(&server, true));
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

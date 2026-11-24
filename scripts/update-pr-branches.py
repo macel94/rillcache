@@ -227,6 +227,43 @@ class Updater:
             for item in associated if isinstance(item, dict)
         )
 
+    def approval_held_runs(self, pr: dict, workflow: str, head: str) -> list[dict]:
+        """Pull-request runs GitHub is holding for maintainer approval.
+
+        A branch update pushed with ``GITHUB_TOKEN`` creates the required
+        ``pull_request`` runs in ``action_required`` state: they execute nothing,
+        and the merge box keeps reporting every required context as
+        "expected". ``workflow_dispatch`` evidence on the same SHA does not
+        satisfy the merge box, so an approval-held run must be approved (after
+        the workflow definition is verified against protected ``main``) for the
+        PR to become mergeable.
+        """
+        workflow_path = f".github/workflows/{workflow}"
+        held = [
+            run for run in self.workflow_runs(workflow, pr["head"]["ref"])
+            if run.get("path", "").split("@", 1)[0] == workflow_path
+            and run.get("head_sha") == head
+            and run.get("head_branch") == pr["head"]["ref"]
+            and run.get("event") == "pull_request"
+            and run.get("conclusion") == "action_required"
+        ]
+        return sorted(held, key=lambda run: (iso_time(run.get("created_at")), int(run.get("id", 0) or 0)))
+
+    def approval_pending_run(self, pr: dict, workflow: str, head: str) -> dict | None:
+        """An approved pull-request run for this head that is still not complete."""
+        workflow_path = f".github/workflows/{workflow}"
+        for run in self.workflow_runs(workflow, pr["head"]["ref"]):
+            if (run.get("path", "").split("@", 1)[0] == workflow_path
+                    and run.get("head_sha") == head
+                    and run.get("head_branch") == pr["head"]["ref"]
+                    and run.get("event") == "pull_request"
+                    and run.get("status") != "completed"):
+                return run
+        return None
+
+    def approve(self, run_id: int) -> None:
+        self.api.call(f"repos/{REPO}/actions/runs/{run_id}/approve", method="POST")
+
     def runs_for_head(self, pr: dict, workflow: str, head: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
         matched = [r for r in runs
@@ -301,9 +338,24 @@ class Updater:
                 return "waiting", detail
             ok, detail = self.check_identity(runs[-1], workflow)
             return ("passed" if ok else "failed"), detail
+        pending = self.approval_pending_run(pr, workflow, head)
+        if pending is not None:
+            _, detail = self.check_identity(pending, workflow)
+            return "waiting", detail
+        held = self.approval_held_runs(pr, workflow, head)
         trusted, trust_detail = self.workflow_trusted(workflow, pr["head"]["ref"])
         if not trusted:
             return "untrusted_workflow", trust_detail
+        if held:
+            try:
+                self.approve(held[0]["id"])
+            except ApiError as exc:
+                # An uncertain mutation is not repeated in this pass; a later
+                # pass reconciles the observed run state instead.
+                return "approval_uncertain", str(exc)
+            return ("approved",
+                    f"approved approval-held pull_request run {held[0]['id']}; "
+                    "that run is the required check identity")
         try:
             self.dispatch(pr, workflow)
         except ApiError as exc:
@@ -431,7 +483,7 @@ class Updater:
                     return outcome
                 state, detail = self.ensure_workflow(pr, workflow, head, main)
                 states[workflow] = {"status": state, "detail": detail}
-                if state not in {"passed", "dispatched"}:
+                if state not in {"passed", "dispatched", "approved"}:
                     outcome.update(status="waiting" if state == "waiting" else state,
                                    workflows=states, detail=f"{workflow}: {detail}")
                     return outcome
@@ -445,9 +497,13 @@ class Updater:
                 outcome.update(status="identity_race", workflows=states,
                                detail="head/main changed while required checks were being reconciled")
                 return outcome
-            if all(value["status"] == "passed" for value in states.values()):
+            states_list = [value["status"] for value in states.values()]
+            if all(state == "passed" for state in states_list):
                 outcome.update(status="checks_passed", workflows=states,
                                detail="all exact required workflow/check identities passed; protected auto-merge remains authoritative")
+            elif all(state in {"passed", "approved"} for state in states_list) and "approved" in states_list:
+                outcome.update(status="checks_approved", workflows=states,
+                               detail="approval-held pull_request runs approved; those runs are the required check identity")
             else:
                 outcome.update(status="checks_dispatched", workflows=states,
                                detail="missing required workflows explicitly dispatched; awaiting exact runs")

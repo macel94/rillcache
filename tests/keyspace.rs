@@ -16,26 +16,154 @@ fn start(workers: Option<usize>) -> ServerHandle {
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
+fn connect(server: &ServerHandle) -> TcpStream {
+    let stream = TcpStream::connect(server.local_addr()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+}
+
 fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
     let mut request = Vec::new();
     encode_request(args, &mut request);
     stream.write_all(&request).unwrap();
     let mut reply = vec![0; expected.len()];
     stream.read_exact(&mut reply).unwrap();
-    assert_eq!(reply, expected);
+    assert_eq!(reply, expected, "{args:?}");
+}
+
+#[test]
+fn database_zero_rejections_leave_the_shared_keyspace_unchanged() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut default_client = connect(&server);
+        let mut selecting_client = connect(&server);
+        let source = b"src\0";
+        let destination = b"dst\xff";
+
+        command(&mut selecting_client, &[b"SELECT", b"0"], b"+OK\r\n");
+        command(&mut default_client, &[b"SET", source, b"v\0"], b"+OK\r\n");
+        command(
+            &mut default_client,
+            &[b"SET", destination, b"old"],
+            b"+OK\r\n",
+        );
+
+        let cases: &[(&[&[u8]], &[u8])] = &[
+            (&[b"SELECT", b"1"], b"-ERR DB index is out of range\r\n"),
+            (&[b"SELECT", b"0\0"], b"-ERR invalid DB index\r\n"),
+            (
+                &[b"COPY", source, destination, b"DB", b"1", b"REPLACE"],
+                b"-ERR DB index is out of range\r\n",
+            ),
+            (
+                &[b"MOVE", source, b"1"],
+                b"-ERR this server supports only database 0\r\n",
+            ),
+            (
+                &[b"SWAPDB", b"0", b"1"],
+                b"-ERR this server supports only database 0\r\n",
+            ),
+        ];
+        for &(args, expected) in cases {
+            command(&mut selecting_client, args, expected);
+            for client in [&mut selecting_client, &mut default_client] {
+                command(client, &[b"GET", source], b"$2\r\nv\0\r\n");
+                command(client, &[b"GET", destination], b"$3\r\nold\r\n");
+                command(client, &[b"DBSIZE"], b":2\r\n");
+            }
+        }
+
+        command(
+            &mut selecting_client,
+            &[b"COPY", source, destination, b"DB", b"0", b"REPLACE"],
+            b":1\r\n",
+        );
+        command(
+            &mut default_client,
+            &[b"GET", destination],
+            b"$2\r\nv\0\r\n",
+        );
+        command(&mut selecting_client, &[b"FLUSHDB", b"SYNC"], b"+OK\r\n");
+        command(&mut default_client, &[b"DBSIZE"], b":0\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn copy_replace_budget_refusal_preserves_values_and_expiry_over_tcp() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: workers,
+            max_data_bytes: 20,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut writer = connect(&server);
+        let mut observer = connect(&server);
+        let source = b"src\0";
+        let destination = b"dst\xff";
+        command(
+            &mut writer,
+            &[b"SET", source, b"source\0\xff", b"PXAT", b"4102444800000"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"SET", destination, b"old\0", b"PXAT", b"4102444900000"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"COPY", source, destination, b"REPLACE"],
+            b"-OOM configured payload limit exceeded\r\n",
+        );
+        command(&mut observer, &[b"GET", source], b"$8\r\nsource\0\xff\r\n");
+        command(&mut observer, &[b"GET", destination], b"$4\r\nold\0\r\n");
+        command(
+            &mut observer,
+            &[b"PEXPIRETIME", source],
+            b":4102444800000\r\n",
+        );
+        command(
+            &mut observer,
+            &[b"PEXPIRETIME", destination],
+            b":4102444900000\r\n",
+        );
+        command(&mut observer, &[b"DBSIZE"], b":2\r\n");
+
+        // Two four-byte keys and two eight-byte values fit the new budget exactly.
+        command(
+            &mut writer,
+            &[b"CONFIG", b"SET", b"maxmemory", b"24"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut writer,
+            &[b"COPY", source, destination, b"REPLACE"],
+            b":1\r\n",
+        );
+        for key in [source, destination] {
+            command(&mut observer, &[b"GET", key], b"$8\r\nsource\0\xff\r\n");
+            command(&mut observer, &[b"PEXPIRETIME", key], b":4102444800000\r\n");
+        }
+        command(&mut observer, &[b"DBSIZE"], b":2\r\n");
+        server.shutdown().unwrap();
+    }
 }
 
 #[test]
 fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);
-        let mut stream = TcpStream::connect(server.local_addr()).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
+        let mut stream = connect(&server);
 
         command(&mut stream, &[b"TYPE", b"absent"], b"+none\r\n");
         command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");

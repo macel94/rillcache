@@ -27,7 +27,7 @@ fn request(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
     reply
 }
 
-fn read_frame(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usize, depth: usize) {
+fn read_frame(stream: &mut impl Read, output: &mut Vec<u8>, remaining: &mut usize, depth: usize) {
     assert!(depth <= 16, "RESP nesting limit exceeded");
     let mut prefix = [0];
     stream.read_exact(&mut prefix).expect("RESP frame prefix");
@@ -71,7 +71,7 @@ fn read_frame(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usiz
     }
 }
 
-fn read_line(stream: &mut TcpStream, output: &mut Vec<u8>, remaining: &mut usize) -> String {
+fn read_line(stream: &mut impl Read, output: &mut Vec<u8>, remaining: &mut usize) -> String {
     let mut line = Vec::new();
     loop {
         let mut byte = [0];
@@ -102,6 +102,110 @@ fn connect(server: &ServerHandle) -> TcpStream {
         .set_write_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     stream
+}
+
+#[test]
+fn script_and_function_flush_do_not_imply_execution_support() {
+    let absent = b"-ERR unknown command\r\n";
+    let unsupported = b"-ERR unsupported subcommand or syntax error\r\n";
+    let cases: &[(&[&[u8]], &[u8])] = &[
+        (&[b"EVAL", b"return 1", b"0"], absent),
+        (
+            &[
+                b"EVALSHA",
+                b"0000000000000000000000000000000000000000",
+                b"0",
+            ],
+            absent,
+        ),
+        (&[b"FCALL", b"example", b"0"], absent),
+        (&[b"FCALL_RO", b"example", b"0"], absent),
+        (&[b"SCRIPT", b"LOAD", b"return 1"], unsupported),
+        (
+            &[
+                b"SCRIPT",
+                b"EXISTS",
+                b"0000000000000000000000000000000000000000",
+            ],
+            unsupported,
+        ),
+        (
+            &[b"FUNCTION", b"LOAD", b"#!lua name=example\n"],
+            unsupported,
+        ),
+        (&[b"FUNCTION", b"LIST"], unsupported),
+    ];
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(request(&mut client, &[b"SET", b"key", b"v\0"]), b"+OK\r\n");
+        assert_eq!(
+            request(&mut client, &[b"SCRIPT", b"FLUSH", b"SYNC"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"FUNCTION", b"FLUSH", b"ASYNC"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"INFO",
+                    b"EVAL",
+                    b"EVALSHA",
+                    b"FCALL",
+                    b"FCALL_RO"
+                ]
+            ),
+            b"*4\r\n*-1\r\n*-1\r\n*-1\r\n*-1\r\n"
+        );
+        for &(args, expected) in cases {
+            assert_eq!(request(&mut client, args), expected, "{args:?}");
+        }
+        assert_eq!(request(&mut client, &[b"GET", b"key"]), b"$2\r\nv\0\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn topology_probes_stay_standalone_after_writes_and_rejected_reconfiguration() {
+    let role = b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n";
+    let replication = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\n";
+    let info = format!("${}\r\n{replication}\r\n", replication.len());
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(request(&mut client, &[b"ROLE"]), role);
+        assert_eq!(
+            request(&mut client, &[b"INFO", b"replication"]),
+            info.as_bytes()
+        );
+        assert_eq!(request(&mut client, &[b"SET", b"key", b"v\0"]), b"+OK\r\n");
+        for subcommand in [b"SHARDS".as_slice(), b"SLOTS", b"NODES"] {
+            assert_eq!(
+                request(&mut client, &[b"CLUSTER", subcommand]),
+                b"-ERR This instance has cluster support disabled\r\n",
+                "{subcommand:?}"
+            );
+        }
+        assert_eq!(
+            request(&mut client, &[b"REPLICAOF", b"127.0.0.1", b"1"]),
+            b"-ERR replication is not supported by this standalone server\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"REPLICAOF", b"NO", b"ONE"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(request(&mut client, &[b"ROLE"]), role);
+        assert_eq!(
+            request(&mut client, &[b"INFO", b"replication"]),
+            info.as_bytes()
+        );
+        assert_eq!(request(&mut client, &[b"GET", b"key"]), b"$2\r\nv\0\r\n");
+        server.shutdown().unwrap();
+    }
 }
 
 #[test]
@@ -373,6 +477,49 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             expected_list.extend_from_slice(b"\r\n");
         }
         assert_eq!(request(&mut client, &[b"COMMAND", b"LIST"]), expected_list);
+        assert_eq!(request(&mut client, &[b"COMMAND"]), all_info);
+
+        // Rebuild the complete reply from bounded, targeted lookups. Uppercase
+        // names and reversed order distinguish lookup from just
+        // returning the registry in its sorted order.
+        let mut metadata = Vec::new();
+        write!(&mut metadata, "*{}\r\n", expected_names.len()).unwrap();
+        for names in expected_names.chunks(24) {
+            let upper: Vec<_> = names
+                .iter()
+                .rev()
+                .map(|name| name.to_ascii_uppercase())
+                .collect();
+            let mut args: Vec<&[u8]> = vec![b"COMMAND", b"INFO"];
+            args.extend(upper.iter().map(Vec::as_slice));
+            let reply = request(&mut client, &args);
+            let header = format!("*{}\r\n", names.len());
+            let mut remaining = reply
+                .strip_prefix(header.as_bytes())
+                .expect("targeted INFO array");
+            let mut rows = Vec::new();
+            for name in names.iter().rev() {
+                let mut row = Vec::new();
+                let mut budget = remaining.len();
+                read_frame(&mut remaining, &mut row, &mut budget, 0);
+                let expected = format!(
+                    "*6\r\n${}\r\n{}\r\n",
+                    name.len(),
+                    std::str::from_utf8(name).unwrap()
+                );
+                assert!(
+                    row.starts_with(expected.as_bytes()),
+                    "incorrect metadata row for {}",
+                    String::from_utf8_lossy(name)
+                );
+                rows.push(row);
+            }
+            assert!(remaining.is_empty(), "unexpected metadata after batch");
+            for row in rows.into_iter().rev() {
+                metadata.extend(row);
+            }
+        }
+        assert_eq!(metadata, all_info);
         let info = request(&mut client, &[b"INFO"]);
         let text = std::str::from_utf8(&info).unwrap();
         assert_eq!(info.first(), Some(&b'$'));
@@ -393,6 +540,70 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             assert!(text.contains("max_memory_cgroup_human:"));
             assert!(text.contains("used_memory_cgroup_scope:"));
         }
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn info_payload_headroom_tracks_admission_and_deletion() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: mode,
+            max_data_bytes: 8,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut client = connect(&server);
+        let check = |client: &mut TcpStream, section: &[u8], used, remaining| {
+            let info = request(client, &[b"INFO", section]);
+            let text = std::str::from_utf8(&info).unwrap();
+            for expected in [
+                format!("rillcache_payload_bytes:{used}"),
+                "rillcache_payload_limit_bytes:8".to_owned(),
+                format!("rillcache_payload_headroom_bytes:{remaining}"),
+                "rillcache_payload_scope:key_and_value_bytes_not_RSS".to_owned(),
+            ] {
+                assert!(text.lines().any(|line| line == expected), "{text}");
+            }
+        };
+        check(&mut client, b"memory", 0, 8);
+        assert_eq!(
+            request(&mut client, &[b"SET", b"x", b"1234567"]),
+            b"+OK\r\n"
+        );
+        check(&mut client, b"memory", 8, 0);
+        assert_eq!(
+            request(&mut client, &[b"SET", b"y", b"v"]),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        check(&mut client, b"all", 8, 0);
+        assert_eq!(request(&mut client, &[b"DEL", b"x"]), b":1\r\n");
+        check(&mut client, b"memory", 0, 8);
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"CONFIG", b"GET", b"MAX-DATA-BYTES", b"maxmemory"]
+            ),
+            b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[
+                b"CONFIG", b"SET", b"maxmemory", b"16", b"appendonly", b"yes",
+            ]),
+            b"-ERR appendonly and appendfilename are startup-only; restart with the desired options\r\n"
+        );
+        check(&mut client, b"memory", 0, 8);
+        assert_eq!(
+            request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"16"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"CONFIG", b"GET", b"max-data-bytes"]),
+            b"*2\r\n$9\r\nmaxmemory\r\n$2\r\n16\r\n"
+        );
         server.shutdown().unwrap();
     }
 }

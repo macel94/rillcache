@@ -105,6 +105,21 @@ permissions and their own head/base validation. This is necessary because GitHub
 suppresses most events caused by `GITHUB_TOKEN`; token-created PR synchronization
 runs may be approval-held, while `workflow_dispatch` is an explicit allowed trigger.
 
+Approval-held `pull_request` runs are approved, not just dispatched. A branch
+update pushed with `GITHUB_TOKEN` creates the six required runs in
+`action_required` state; they execute nothing, and the merge box reports every
+required context as "expected" until they run. `workflow_dispatch` evidence on
+the same head SHA does not satisfy the merge box because those runs are not
+associated with the pull request, so dispatch alone can leave a fully green
+branch permanently unmergeable (observed on six open PRs before this fix). After
+the same blob-identity check that guards privileged dispatch, the updater posts
+`POST /actions/runs/{id}/approve` for the approval-held run of each required
+workflow, at most one per workflow per pass, and reports `checks_approved`.
+Approval runs the allowlisted workflow exactly as a maintainer's click would:
+the branch cannot execute a rewritten workflow because a definition that differs
+from protected `main` is still reported as `untrusted_workflow` and never
+approved. Explicit dispatch remains for PRs that have no pull-request run at all.
+
 The privileged job has only the contents, pull-request and Actions permissions
 needed for the GitHub branch-update and workflow-dispatch APIs. One repository-
 wide Actions concurrency group has no active-run cancellation and allows up to

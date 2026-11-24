@@ -131,26 +131,31 @@ pub fn check(
     )
 }
 
-pub fn check_with_aof_write_probe(
+#[derive(Default)]
+pub struct StatusChecks<'a> {
+    pub require_aof: bool,
+    pub aof_write_probe_directory: Option<&'a Path>,
+    pub min_payload_headroom: Option<u64>,
+}
+
+pub fn check_with_status(
     address: SocketAddr,
     username: Option<&[u8]>,
     password: Option<&[u8]>,
-    require_aof: bool,
-    aof_write_probe_directory: Option<&Path>,
+    status: StatusChecks<'_>,
     tls: Option<TlsSettings>,
 ) -> io::Result<()> {
-    if aof_write_probe_directory.is_some() && !require_aof {
+    if status.aof_write_probe_directory.is_some() && !status.require_aof {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "AOF write probe requires the journal-status check",
         ));
     }
-    check_with_timeout_and_aof_probe(
+    probe(
         address,
         username,
         password,
-        require_aof,
-        aof_write_probe_directory,
+        status,
         tls,
         Duration::from_secs(1),
     )
@@ -172,15 +177,18 @@ fn check_with_timeout(
     tls: Option<TlsSettings>,
     timeout: Duration,
 ) -> io::Result<()> {
-    check_with_timeout_and_aof_probe(address, username, password, require_aof, None, tls, timeout)
+    let status = StatusChecks {
+        require_aof,
+        ..StatusChecks::default()
+    };
+    probe(address, username, password, status, tls, timeout)
 }
 
-fn check_with_timeout_and_aof_probe(
+fn probe(
     address: SocketAddr,
     username: Option<&[u8]>,
     password: Option<&[u8]>,
-    require_aof: bool,
-    aof_write_probe_directory: Option<&Path>,
+    status: StatusChecks<'_>,
     tls: Option<TlsSettings>,
     timeout: Duration,
 ) -> io::Result<()> {
@@ -213,10 +221,19 @@ fn check_with_timeout_and_aof_probe(
         exchange(&mut stream, &request, b"+OK\r\n", deadline)?;
     }
     exchange(&mut stream, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n", deadline)?;
-    if require_aof {
+    if status.require_aof {
         check_persistence(&mut stream, deadline)?;
     }
-    if let Some(directory) = aof_write_probe_directory {
+    if let Some(minimum) = status.min_payload_headroom {
+        let body = read_info(
+            &mut stream,
+            b"*2\r\n$4\r\nINFO\r\n$6\r\nmemory\r\n",
+            deadline,
+            invalid_payload_headroom,
+        )?;
+        validate_payload_headroom(&body, minimum)?;
+    }
+    if let Some(directory) = status.aof_write_probe_directory {
         check_aof_write_probe(directory)?;
     }
     Ok(())
@@ -322,11 +339,22 @@ fn invalid_persistence() -> io::Error {
 }
 
 fn check_persistence(stream: &mut ProbeStream, deadline: Instant) -> io::Result<()> {
-    send_request(
+    let body = read_info(
         stream,
         b"*2\r\n$4\r\nINFO\r\n$11\r\npersistence\r\n",
         deadline,
+        invalid_persistence,
     )?;
+    validate_persistence(&body)
+}
+
+fn read_info(
+    stream: &mut ProbeStream,
+    request: &[u8],
+    deadline: Instant,
+    invalid: fn() -> io::Error,
+) -> io::Result<Vec<u8>> {
+    send_request(stream, request, deadline)?;
     // A bounded RESP2 bulk only: never allocate from an unchecked peer length.
     let mut header = Vec::new();
     while header.len() < 32 {
@@ -344,40 +372,98 @@ fn check_persistence(stream: &mut ProbeStream, deadline: Instant) -> io::Result<
         .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|length| *length <= 16 * 1024)
-        .ok_or_else(invalid_persistence)?;
+        .ok_or_else(invalid)?;
     let mut body = vec![0; length + 2];
     read_exact(stream, &mut body, deadline)?;
     if !body.ends_with(b"\r\n") {
-        return Err(invalid_persistence());
+        return Err(invalid());
     }
-    validate_persistence(&body[..length])
+    body.truncate(length);
+    Ok(body)
+}
+
+fn invalid_payload_headroom() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid logical payload headroom",
+    )
+}
+
+fn validate_payload_headroom(body: &[u8], minimum: u64) -> io::Result<()> {
+    let text = std::str::from_utf8(body).map_err(|_| invalid_payload_headroom())?;
+    let mut headroom = None;
+    let mut scope = None;
+    for line in text.split("\r\n") {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or_else(invalid_payload_headroom)?;
+        let field = match name {
+            "rillcache_payload_headroom_bytes" => &mut headroom,
+            "rillcache_payload_scope" => &mut scope,
+            _ => continue,
+        };
+        if field.replace(value).is_some() {
+            return Err(invalid_payload_headroom());
+        }
+    }
+    if scope != Some("key_and_value_bytes_not_RSS") {
+        return Err(invalid_payload_headroom());
+    }
+    let value = headroom
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(invalid_payload_headroom)?;
+    if value < minimum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "logical payload headroom is below the configured minimum",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_persistence(body: &[u8]) -> io::Result<()> {
     let text = std::str::from_utf8(body).map_err(|_| invalid_persistence())?;
-    let required = [
-        ("loading", "0"),
-        ("aof_enabled", "1"),
-        ("aof_last_write_status", "ok"),
-        ("aof_last_bgrewrite_status", "ok"),
+    let fields = [
+        "loading",
+        "aof_enabled",
+        "aof_last_write_status",
+        "aof_last_bgrewrite_status",
     ];
-    let mut seen = [false; 4];
+    let mut reported = [None; 4];
     for line in text.split("\r\n") {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let (name, value) = line.split_once(':').ok_or_else(invalid_persistence)?;
-        if let Some(index) = required.iter().position(|(field, _)| *field == name) {
-            if seen[index] || value != required[index].1 {
-                return Err(invalid_persistence());
-            }
-            seen[index] = true;
+        if let Some(index) = fields.iter().position(|field| *field == name)
+            && reported[index].replace(value).is_some()
+        {
+            return Err(invalid_persistence());
         }
     }
-    if !seen.iter().all(|present| *present) {
-        return Err(invalid_persistence());
-    }
-    Ok(())
+    // Report only recognized states, never names or values from the peer.
+    // A disabled Rillcache journal does not report last-write/rewrite status.
+    let reason = match reported {
+        [Some("0"), Some("1"), Some("ok"), Some("ok")] => return Ok(()),
+        [
+            Some("1"),
+            Some("0" | "1"),
+            None | Some("ok" | "err"),
+            None | Some("ok" | "err"),
+        ] => "journal is loading",
+        [Some("0"), Some("0"), None, None] => "AOF is disabled",
+        // Rillcache's disabled INFO section ends with a lone CR. Recognize
+        // that shape only as an unhealthy state, never as healthy framing.
+        [Some("0"), Some("0\r"), None, None] if text.ends_with("\r\naof_enabled:0\r") => {
+            "AOF is disabled"
+        }
+        [Some("0"), Some("1"), Some("err"), Some("ok" | "err")] => "AOF last write failed",
+        [Some("0"), Some("1"), Some("ok"), Some("err")] => "AOF last rewrite failed",
+        _ => return Err(invalid_persistence()),
+    };
+    Err(io::Error::new(io::ErrorKind::InvalidData, reason))
 }
 
 #[cfg(test)]
@@ -423,12 +509,14 @@ mod tests {
     #[test]
     fn rejects_aof_write_probe_without_the_journal_status_check_before_connecting() {
         let directory = std::env::temp_dir();
-        let error = check_with_aof_write_probe(
+        let error = check_with_status(
             "127.0.0.1:1".parse().unwrap(),
             None,
             None,
-            false,
-            Some(&directory),
+            StatusChecks {
+                aof_write_probe_directory: Some(&directory),
+                ..StatusChecks::default()
+            },
             None,
         )
         .unwrap_err();
@@ -529,6 +617,33 @@ mod tests {
     const HEALTHY: &str = "# Persistence\r\nloading:0\r\naof_enabled:1\r\naof_last_write_status:ok\r\naof_last_bgrewrite_status:ok\r\n";
 
     #[test]
+    fn payload_headroom_requires_one_numeric_field_and_the_logical_scope() {
+        let valid = "# Memory\r\nrillcache_payload_headroom_bytes:32\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\n";
+        assert!(validate_payload_headroom(valid.as_bytes(), 32).is_ok());
+        assert_eq!(
+            validate_payload_headroom(valid.as_bytes(), 33)
+                .unwrap_err()
+                .to_string(),
+            "logical payload headroom is below the configured minimum"
+        );
+        for invalid in [
+            valid.replace("32", "peer-controlled"),
+            valid.replace("32", "18446744073709551616"),
+            valid.replace("key_and_value_bytes_not_RSS", "RSS"),
+            "rillcache_payload_headroom_bytes:32\r\n".into(),
+            format!("{valid}rillcache_payload_headroom_bytes:32\r\n"),
+            format!("{valid}rillcache_payload_scope:key_and_value_bytes_not_RSS\r\n"),
+        ] {
+            assert_eq!(
+                validate_payload_headroom(invalid.as_bytes(), 0)
+                    .unwrap_err()
+                    .to_string(),
+                "invalid logical payload headroom"
+            );
+        }
+    }
+
+    #[test]
     fn persistence_fields_fail_closed_on_missing_duplicate_or_reported_errors() {
         assert!(validate_persistence(HEALTHY.as_bytes()).is_ok());
         assert!(
@@ -560,6 +675,43 @@ mod tests {
             b"loading:0\naof_enabled:1\n",
         ] {
             assert!(validate_persistence(body).is_err());
+        }
+    }
+
+    #[test]
+    fn persistence_reports_recognized_states_without_echoing_values() {
+        let disabled = "# Persistence\r\nloading:0\r\naof_enabled:0";
+        let loading = HEALTHY.replace("loading:0", "loading:1");
+        let write_failed = HEALTHY.replace("aof_last_write_status:ok", "aof_last_write_status:err");
+        let rewrite_failed = HEALTHY.replace(
+            "aof_last_bgrewrite_status:ok",
+            "aof_last_bgrewrite_status:err",
+        );
+        let both_failed = write_failed.replace(
+            "aof_last_bgrewrite_status:ok",
+            "aof_last_bgrewrite_status:err",
+        );
+        let unknown = HEALTHY.replace(
+            "aof_last_write_status:ok",
+            "aof_last_write_status:private-value",
+        );
+        let duplicate = format!("{disabled}\r\naof_enabled:1\r\n");
+        for (body, reason) in [
+            (disabled, "AOF is disabled"),
+            (
+                "# Persistence\r\nloading:0\r\naof_enabled:0\r",
+                "AOF is disabled",
+            ),
+            (&loading, "journal is loading"),
+            (&write_failed, "AOF last write failed"),
+            (&rewrite_failed, "AOF last rewrite failed"),
+            (&both_failed, "AOF last write failed"),
+            (&unknown, "invalid or unhealthy journal status"),
+            (&duplicate, "invalid or unhealthy journal status"),
+        ] {
+            let error = validate_persistence(body.as_bytes()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), reason);
         }
     }
 
