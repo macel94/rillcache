@@ -24,7 +24,7 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test-unit dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test-unit dev-check test test-readiness-docs test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
@@ -51,6 +51,9 @@ test:
 		printf '\nTesting server mode (0=thread-per-client): %s\n' "$$workers"
 		RILLCACHE_TEST_THREADS="$$workers" $(CARGO) test $(CARGO_FLAGS)
 	done
+
+test-readiness-docs:
+	python3 scripts/test_production_readiness.py -v
 
 # The async Tokio engine is opt-in (--io-mode tokio), so the default mode matrix
 # above covers the proven readiness reactor. This passes the transport suites and
@@ -79,7 +82,7 @@ test-constrained:
 		printf 'Single-CPU affinity test unavailable here; portable policy/ownership tests still run.\n'
 	fi
 
-check: fmt-check lint test test-constrained test-async
+check: fmt-check lint test test-constrained test-async test-readiness-docs
 
 release:
 	$(CARGO) build $(CARGO_FLAGS) --release --bins
