@@ -17,6 +17,14 @@ ignored by default and requires `RILLCACHE_REFERENCE_ADDR` plus
 - **When** SET NX rejects an existing key with GET, or SET rejects conflicting
   options / an invalid expiry, **then** the old value and absolute expiry shall
   remain unchanged; failures shall not partially mutate the key.
+- **When** `MSETNX` encounters an existing key, **then** it shall not insert an
+  earlier absent key or change the existing binary value or absolute deadline.
+  When all keys are absent, it shall write all values, including empty strings.
+- **When** `HSETNX` encounters an existing binary field or a string instead of a
+  hash, **then** it shall preserve the value and absolute deadline, returning
+  zero or `WRONGTYPE` respectively. On a missing hash, it shall create the field.
+  An existing field with an empty value still rejects replacement; the rejection
+  checks the field without cloning the hash.
 - **When** counter updates succeed, **then** the integer result and existing TTL
   shall be preserved; **if** signed-64-bit arithmetic overflows or PEXPIRE receives
   an invalid integer, **then** the error shall leave the value and TTL unchanged.

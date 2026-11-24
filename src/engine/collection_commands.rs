@@ -2167,21 +2167,22 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(key, now);
         let current = data.entries.get(key);
-        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
-        {
+        let collection = current.and_then(|entry| entry.collection.as_ref());
+        if current.is_some() && !collection.is_some_and(Collection::is_hash) {
             wrong_type(out);
             return;
         }
-        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
-            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+        // Reject against the borrowed field before staging a full hash copy.
+        if collection.and_then(|hash| hash.hash_get(args[2])).is_some() {
+            integer(0, out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = collection
+            .and_then(Collection::hash_items)
             .unwrap_or_default()
             .into_iter()
             .map(|(field, value)| (field.to_vec(), value.to_vec()))
             .collect();
-        if hash.contains_key(args[2]) {
-            integer(0, out);
-            return;
-        }
         hash.insert(args[2].to_vec(), args[3].to_vec());
         if hash.len() > MAX_ELEMENTS {
             out.extend_from_slice(OOM);
