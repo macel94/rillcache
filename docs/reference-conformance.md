@@ -23,6 +23,8 @@ ignored by default and requires `RILLCACHE_REFERENCE_ADDR` plus
 - **When** `HSETNX` encounters an existing binary field or a string instead of a
   hash, **then** it shall preserve the value and absolute deadline, returning
   zero or `WRONGTYPE` respectively. On a missing hash, it shall create the field.
+  An existing field with an empty value still rejects replacement; the rejection
+  checks the field without cloning the hash.
 - **When** counter updates succeed, **then** the integer result and existing TTL
   shall be preserved; **if** signed-64-bit arithmetic overflows or PEXPIRE receives
   an invalid integer, **then** the error shall leave the value and TTL unchanged.

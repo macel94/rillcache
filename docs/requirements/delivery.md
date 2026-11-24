@@ -188,6 +188,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   non-root/read-only execution and bounded resources; keep data-loss, payload-not-
   RSS, missing authentication/transport hardening and non-graceful process-termination limitations
   explicit. A single replica/Service shall not imply persistence, replication or HA.
+- **R457 (event-driven):** When rendering the opt-in Kubernetes password overlay,
+  the server and both startup and readiness probes shall use the same mounted
+  Secret file without putting the password value in the manifest or arguments.
+  The mounted file shall not update in a running container; rotate the password
+  by replacing the Secret and rolling out a new Pod. Preserve the restricted
+  single-replica deployment and do not add a liveness
+  restart. The direct base manifest shall remain unchanged.
 
 ## Profile-guided hot-path delivery acceptance (S16–S18)
 

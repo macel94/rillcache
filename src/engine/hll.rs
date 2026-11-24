@@ -10,7 +10,9 @@
 use super::data::Data;
 use super::options::OOM;
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
+use crate::protocol::encode_bulk;
 use std::collections::BTreeSet;
+use std::io::Write as _;
 
 const MAGIC: &[u8; 4] = b"HYLL";
 const VERSION: u8 = 1;
@@ -21,6 +23,10 @@ const CACHE_BYTES: usize = 8;
 const DENSE_REGISTERS: usize = 1 << 14;
 const DENSE_PAYLOAD: usize = HEADER_BYTES + DENSE_REGISTERS + CACHE_BYTES;
 const EXACT_LIMIT: usize = 4096;
+/// Highest representable register value: the rank is `leading_zeros(rest) - 13`
+/// over the 50 bits above the 14-bit register index, so an all-zero remainder
+/// reaches `64 - 13`.
+const MAX_RANK: u8 = 51;
 const INVALID_HLL: &[u8] = b"-WRONGTYPE Key is not a valid HyperLogLog string value.\r\n";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,6 +209,10 @@ impl Hll {
     }
 }
 
+fn write_array_len(length: usize, output: &mut Vec<u8>) {
+    let _ = write!(output, "*{length}\r\n");
+}
+
 fn update_register(registers: &mut [u8], hash: u64) -> bool {
     let index = (hash & ((1 << 14) - 1)) as usize;
     let remaining = hash >> 14;
@@ -298,6 +308,10 @@ impl ShardExecutor {
             self.pfcount(args, out);
         } else if command.eq_ignore_ascii_case(b"PFMERGE") {
             self.pfmerge(args, out);
+        } else if command.eq_ignore_ascii_case(b"PFDEBUG") {
+            self.pfdebug(args, out);
+        } else if command.eq_ignore_ascii_case(b"PFSELFTEST") {
+            self.pfselftest(args, out);
         } else {
             return false;
         }
@@ -524,6 +538,155 @@ impl ShardExecutor {
     }
 }
 
+impl Hll {
+    /// Register values for `PFDEBUG GETREG`. An exact set is projected into a
+    /// zeroed register array without mutating the stored value; a dense sketch
+    /// already stores one register byte per index.
+    fn registers(&self) -> Vec<u8> {
+        match self {
+            Self::Exact(hashes) => {
+                let mut registers = vec![0u8; DENSE_REGISTERS];
+                for hash in hashes {
+                    update_register(&mut registers, *hash);
+                }
+                registers
+            }
+            Self::Dense(registers) => registers.clone(),
+        }
+    }
+
+    fn encoding(&self) -> &'static [u8] {
+        match self {
+            Self::Exact(_) => b"exact",
+            Self::Dense(_) => b"dense",
+        }
+    }
+}
+
+/// Deterministic self-test of the private representation. It exercises the same
+/// register math, estimator and payload validation the commands use; it does
+/// not touch stored data and makes no claim about Redis-format HLL payloads.
+fn hyperloglog_self_test() -> Result<(), &'static str> {
+    let mut registers = vec![0u8; DENSE_REGISTERS];
+    for hash in 0..1024u64 {
+        update_register(&mut registers, hash.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    }
+    if registers.iter().any(|register| *register > MAX_RANK) {
+        return Err("register rank overflow");
+    }
+    let empty = dense_count(&vec![0u8; DENSE_REGISTERS]);
+    if empty != 0 {
+        return Err("empty sketch count");
+    }
+    let small = dense_count(&registers);
+    if small == 0 || small > 4096 {
+        return Err("small sketch count");
+    }
+    let mut more = registers.clone();
+    for hash in 1024..2048u64 {
+        update_register(&mut more, hash.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    }
+    if dense_count(&more) < small {
+        return Err("count decreased after adds");
+    }
+
+    let mut exact = Hll::Exact(BTreeSet::new());
+    for hash in 0..EXACT_LIMIT as u64 {
+        exact.add_hash(hash);
+    }
+    let exact_count = exact.count();
+    let payload = exact.serialize(None);
+    let parsed = Hll::parse(&payload).ok_or("exact payload did not parse")?;
+    if parsed != exact || parsed.count() != exact_count {
+        return Err("exact round trip");
+    }
+    if parsed.registers().len() != DENSE_REGISTERS {
+        return Err("exact register projection");
+    }
+
+    let dense = Hll::Dense(registers.clone());
+    let payload = dense.serialize(None);
+    let parsed = Hll::parse(&payload).ok_or("dense payload did not parse")?;
+    if parsed != dense || parsed.count() != small {
+        return Err("dense round trip");
+    }
+    if Hll::shape(&payload[..payload.len() - 1]).is_some() {
+        return Err("truncated payload accepted");
+    }
+    let mut corrupted = payload;
+    corrupted[0] ^= 0xff;
+    if Hll::shape(&corrupted).is_some() {
+        return Err("corrupted magic accepted");
+    }
+    Ok(())
+}
+
+impl ShardExecutor {
+    fn pfselftest(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() != 1 {
+            arity("pfselftest", out);
+            return;
+        }
+        match hyperloglog_self_test() {
+            Ok(()) => out.extend_from_slice(b"+OK\r\n"),
+            Err(step) => {
+                let _ = write!(out, "-ERR HyperLogLog self-test failed: {step}\r\n");
+            }
+        }
+    }
+
+    fn pfdebug(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() != 3 {
+            arity("pfdebug", out);
+            return;
+        }
+        let subcommand = args[1];
+        let key = args[2];
+        if !(subcommand.eq_ignore_ascii_case(b"ENCODING")
+            || subcommand.eq_ignore_ascii_case(b"GETREG"))
+        {
+            out.extend_from_slice(
+                b"-ERR PFDEBUG supports only ENCODING and GETREG for this private representation\r\n",
+            );
+            return;
+        }
+        let hll = {
+            let Ok(data) = self.data.try_borrow() else {
+                internal_error(out);
+                return;
+            };
+            let now = self.now(&data);
+            if let Some(entry) = data.entries.get(key).filter(|entry| entry.alive(now)) {
+                if !entry.is_string() {
+                    wrong_type(out);
+                    return;
+                }
+                let Some(hll) = Hll::parse(&entry.value) else {
+                    out.extend_from_slice(INVALID_HLL);
+                    return;
+                };
+                Some(hll)
+            } else {
+                None
+            }
+        };
+        if subcommand.eq_ignore_ascii_case(b"ENCODING") {
+            encode_bulk(Some(hll.as_ref().map_or(b"exact", Hll::encoding)), out);
+        } else if let Some(hll) = hll {
+            let registers = hll.registers();
+            write_array_len(registers.len(), out);
+            for register in registers {
+                integer(i64::from(register), out);
+            }
+        } else {
+            write_array_len(DENSE_REGISTERS, out);
+            for _ in 0..DENSE_REGISTERS {
+                integer(0, out);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +729,100 @@ mod tests {
         assert_eq!(run(&store, &[b"PFCOUNT", b"d"]), b":2\r\n");
         assert_eq!(run(&store, &[b"PFMERGE", b"fresh"]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"PFCOUNT", b"fresh"]), b":0\r\n");
+    }
+
+    fn register_values(reply: &[u8]) -> Vec<i64> {
+        std::str::from_utf8(reply)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                line.trim_start_matches(':')
+                    .trim_end_matches('\r')
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selftest_and_debug_report_the_private_representation() {
+        let store = ShardExecutor::new(1 << 20);
+        assert_eq!(run(&store, &[b"PFSELFTEST"]), b"+OK\r\n");
+        assert!(run(&store, &[b"PFSELFTEST", b"extra"]).starts_with(b"-ERR wrong number"));
+
+        // A missing key is an empty exact value, so the register array is all
+        // zeroes and no key is created.
+        assert_eq!(
+            run(&store, &[b"PFDEBUG", b"ENCODING", b"missing"]),
+            b"$5\r\nexact\r\n"
+        );
+        let registers = run(&store, &[b"PFDEBUG", b"GETREG", b"missing"]);
+        assert!(registers.starts_with(b"*16384\r\n:0\r\n"));
+        assert_eq!(registers.len(), b"*16384\r\n".len() + 16384 * 4);
+        assert_eq!(run(&store, &[b"EXISTS", b"missing"]), b":0\r\n");
+
+        assert_eq!(run(&store, &[b"PFADD", b"hll", b"a"]), b":1\r\n");
+        assert_eq!(
+            run(&store, &[b"PFDEBUG", b"ENCODING", b"hll"]),
+            b"$5\r\nexact\r\n"
+        );
+        let registers = run(&store, &[b"PFDEBUG", b"GETREG", b"hll"]);
+        assert!(registers.starts_with(b"*16384\r\n"));
+        let values = register_values(&registers);
+        assert_eq!(values.len(), 16384);
+        assert!(values.iter().any(|value| *value > 0), "no register was set");
+
+        for index in 0..5000 {
+            run(&store, &[b"PFADD", b"hll", index.to_string().as_bytes()]);
+        }
+        assert_eq!(
+            run(&store, &[b"PFDEBUG", b"ENCODING", b"hll"]),
+            b"$5\r\ndense\r\n"
+        );
+        assert!(run(&store, &[b"PFDEBUG", b"GETREG", b"hll"]).starts_with(b"*16384\r\n"));
+
+        // Unsupported diagnostic payloads stay explicit, and arity/type errors
+        // are validated before any data access.
+        assert!(
+            run(&store, &[b"PFDEBUG", b"DECODE", b"hll"])
+                .starts_with(b"-ERR PFDEBUG supports only")
+        );
+        assert!(run(&store, &[b"PFDEBUG", b"GETREG"]).starts_with(b"-ERR wrong number"));
+        assert!(run(&store, &[b"PFDEBUG", b"ENCODING"]).starts_with(b"-ERR wrong number"));
+        run(&store, &[b"SET", b"plain", b"value"]);
+        assert!(run(&store, &[b"PFDEBUG", b"ENCODING", b"plain"]).starts_with(b"-WRONGTYPE"));
+        run(&store, &[b"SET", b"broken", b"not-an-hll"]);
+        assert!(run(&store, &[b"PFDEBUG", b"GETREG", b"broken"]).starts_with(b"-WRONGTYPE"));
+    }
+
+    #[test]
+    fn debug_treats_expired_hll_as_missing_without_reaping_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        #[derive(Default)]
+        struct TestClock(AtomicI64);
+        impl super::super::Clock for TestClock {
+            fn now_ms(&self) -> i64 {
+                self.0.load(Ordering::Relaxed)
+            }
+        }
+
+        let clock = Arc::new(TestClock::default());
+        let store = ShardExecutor::with_clock(1 << 20, clock.clone());
+        assert_eq!(run(&store, &[b"PFADD", b"hll", b"a"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"PEXPIRE", b"hll", b"100"]), b":1\r\n");
+        clock.0.store(101, Ordering::Relaxed);
+
+        let mut out = Vec::new();
+        // Run the diagnostic directly, without command dispatch maintenance.
+        store.pfdebug(&[b"PFDEBUG", b"GETREG", b"hll"], &mut out);
+        assert!(out.starts_with(b"*16384\r\n"));
+        assert!(register_values(&out).iter().all(|&value| value == 0));
+        let data = store.data.try_borrow().unwrap();
+        assert!(data.entries.contains_key(b"hll".as_slice()));
+        assert_eq!(data.expired_keys, 0);
     }
 
     #[test]

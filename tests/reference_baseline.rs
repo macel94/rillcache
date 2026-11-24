@@ -636,6 +636,24 @@ fn run_conditional_write_corpus(client: &mut Client, suffix: &[u8]) {
     assert_command(client, &[b"HGET", &hash, field], bulk());
     assert_deadline(client, &hash, deadline);
     assert_command(client, &[b"HLEN", &hash], Resp::Integer(1));
+    let empty_field = b"\0empty\xff";
+    assert_command(
+        client,
+        &[b"HSETNX", &hash, empty_field, b""],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"HSETNX", &hash, empty_field, b"overwrite"],
+        Resp::Integer(0),
+    );
+    assert_command(
+        client,
+        &[b"HGET", &hash, empty_field],
+        Resp::Bulk(Some(Vec::new())),
+    );
+    assert_deadline(client, &hash, deadline);
+    assert_command(client, &[b"HLEN", &hash], Resp::Integer(2));
 
     assert_command(client, &[b"DEL", &existing, &hash], Resp::Integer(2));
     assert_command(

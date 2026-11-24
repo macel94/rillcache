@@ -421,6 +421,11 @@ pub(crate) struct Data {
     pub(in crate::engine) evicted_keys: u64,
     pub(in crate::engine) eviction: EvictionPolicy,
     pub field_ttls: usize,
+    /// Maintained keyspace fields: live keys with a key deadline, keys with at
+    /// least one field deadline, and the signed sum of absolute key deadlines.
+    expiring_keys: usize,
+    subexpiry_keys: usize,
+    ttl_deadline_sum: i128,
     eviction_seq: u64,
     access_seq: u64,
 }
@@ -461,7 +466,12 @@ impl Data {
         };
         for (key, entry) in entries {
             data.field_ttls = data.field_ttls.saturating_add(entry.field_ttl.len());
+            if !entry.field_ttl.is_empty() {
+                data.subexpiry_keys = data.subexpiry_keys.saturating_add(1);
+            }
             if let Some(at) = entry.expires {
+                data.expiring_keys = data.expiring_keys.saturating_add(1);
+                data.ttl_deadline_sum = data.ttl_deadline_sum.saturating_add(i128::from(at));
                 data.expirations.insert((at, key.clone()));
             }
             data.payload_bytes = data
@@ -701,18 +711,65 @@ impl Data {
         self.expired_events.clear();
         self.evicted_events.clear();
         self.field_ttls = 0;
+        self.expiring_keys = 0;
+        self.subexpiry_keys = 0;
+        self.ttl_deadline_sum = 0;
     }
 
     pub(super) fn peak_payload_bytes(&self) -> usize {
         self.peak_payload_bytes
     }
 
+    /// Exact live/expiring/subexpiry counts and average remaining key TTL.
+    /// Counters are maintained on mutation; only already-due keys still present
+    /// in the expiration index are walked, and they are not reaped here.
+    pub(crate) fn keyspace_stats(&self, now: i64) -> (usize, usize, usize, u64) {
+        let (mut due_live, mut due_expiring, mut due_subexpiry) = (0usize, 0usize, 0usize);
+        let mut due_sum = 0i128;
+        for (at, key) in &self.expirations {
+            if *at >= now {
+                break;
+            }
+            let Some(entry) = self.entries.get(key) else {
+                continue;
+            };
+            if entry.alive(now) {
+                continue;
+            }
+            due_live = due_live.saturating_add(1);
+            if entry.expires.is_some() {
+                due_expiring = due_expiring.saturating_add(1);
+                due_sum = due_sum.saturating_add(i128::from(*at));
+            }
+            if !entry.field_ttl.is_empty() {
+                due_subexpiry = due_subexpiry.saturating_add(1);
+            }
+        }
+        let live = self.entries.len().saturating_sub(due_live);
+        let expiring = self.expiring_keys.saturating_sub(due_expiring);
+        let subexpiry = self.subexpiry_keys.saturating_sub(due_subexpiry);
+        let sum = self.ttl_deadline_sum.saturating_sub(due_sum);
+        let elapsed = i128::from(now).saturating_mul(i128::try_from(expiring).unwrap_or(i128::MAX));
+        let remaining = sum.saturating_sub(elapsed).max(0);
+        let avg_ttl = if expiring == 0 {
+            0
+        } else {
+            u64::try_from(remaining / i128::try_from(expiring).unwrap_or(1)).unwrap_or(u64::MAX)
+        };
+        (live, expiring, subexpiry, avg_ttl)
+    }
+
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
         self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
+        if !entry.field_ttl.is_empty() {
+            self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+        }
         self.touch(&key);
         self.payload_bytes -= key.len() + entry.payload_len;
         if let Some(at) = entry.expires {
+            self.expiring_keys = self.expiring_keys.saturating_sub(1);
+            self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_sub(i128::from(at));
             self.expirations.remove(&(at, key));
         }
         Some(entry)
@@ -755,6 +812,9 @@ impl Data {
             }
         }
         self.field_ttls = self.field_ttls.saturating_sub(expired.len());
+        if entry.field_ttl.is_empty() {
+            self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+        }
         self.expired_subkeys = self
             .expired_subkeys
             .saturating_add(u64::try_from(expired.len()).unwrap_or(u64::MAX));
@@ -781,29 +841,40 @@ impl Data {
 
     pub fn remove_field_ttls(&mut self, key: &[u8], fields: &[&[u8]]) {
         if let Some(entry) = self.entries.get_mut(key) {
+            let had_ttls = !entry.field_ttl.is_empty();
             for field in fields {
                 if entry.field_ttl.remove(*field).is_some() {
                     self.field_ttls = self.field_ttls.saturating_sub(1);
                 }
             }
+            if had_ttls && entry.field_ttl.is_empty() {
+                self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+            }
         }
     }
 
     pub fn set_field_ttl(&mut self, key: &[u8], field: &[u8], deadline: i64) {
-        if let Some(entry) = self.entries.get_mut(key)
-            && entry.field_ttl.insert(field.to_vec(), deadline).is_none()
-        {
-            self.field_ttls = self.field_ttls.saturating_add(1);
+        if let Some(entry) = self.entries.get_mut(key) {
+            let was_empty = entry.field_ttl.is_empty();
+            if entry.field_ttl.insert(field.to_vec(), deadline).is_none() {
+                self.field_ttls = self.field_ttls.saturating_add(1);
+                if was_empty {
+                    self.subexpiry_keys = self.subexpiry_keys.saturating_add(1);
+                }
+            }
         }
     }
 
     pub fn persist_field(&mut self, key: &[u8], field: &[u8]) -> bool {
-        let removed = self
-            .entries
-            .get_mut(key)
-            .is_some_and(|entry| entry.field_ttl.remove(field).is_some());
+        let (removed, now_empty) = self.entries.get_mut(key).map_or((false, false), |entry| {
+            let removed = entry.field_ttl.remove(field).is_some();
+            (removed, entry.field_ttl.is_empty())
+        });
         if removed {
             self.field_ttls = self.field_ttls.saturating_sub(1);
+            if now_empty {
+                self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+            }
         }
         removed
     }
@@ -832,7 +903,23 @@ impl Data {
             self.touch(key);
         }
         let entry = self.entries.get_mut(key).expect("existing entry");
+        let previous = entry.expires;
         Self::replace_expiry(&mut self.expirations, key, entry, expires);
+        self.adjust_expiry(previous, expires);
+    }
+
+    fn adjust_expiry(&mut self, previous: Option<i64>, next: Option<i64>) {
+        if previous == next {
+            return;
+        }
+        if let Some(at) = previous {
+            self.expiring_keys = self.expiring_keys.saturating_sub(1);
+            self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_sub(i128::from(at));
+        }
+        if let Some(at) = next {
+            self.expiring_keys = self.expiring_keys.saturating_add(1);
+            self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_add(i128::from(at));
+        }
     }
 
     fn replace_expiry(
@@ -999,8 +1086,16 @@ impl Data {
         if let Some(entry) = self.entries.get_mut(key) {
             entry.collection = None;
             entry.stream = None;
+            // A string replacement owns no hash fields; drop any field deadlines
+            // inherited from a hash so INFO/expiry cannot see stale subkeys.
+            if !entry.field_ttl.is_empty() {
+                self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+            }
+            self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
+            entry.field_ttl.clear();
             entry.payload_len = value.len();
             entry.last_access = access;
+            let previous_expiry = entry.expires;
             // Reuse admitted overwrites, but release disproportionate old capacity
             // on shrink (and all capacity for an empty replacement).
             if entry.value.capacity() > value.len().saturating_mul(2) {
@@ -1009,6 +1104,7 @@ impl Data {
                 value.clone_into(&mut entry.value);
             }
             Self::replace_expiry(&mut self.expirations, key, entry, expires);
+            self.adjust_expiry(previous_expiry, expires);
         } else {
             self.entries.insert(
                 key.to_vec(),
@@ -1024,6 +1120,8 @@ impl Data {
             );
             self.record_new_key(key);
             if let Some(at) = expires {
+                self.expiring_keys = self.expiring_keys.saturating_add(1);
+                self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_add(i128::from(at));
                 self.expirations.insert((at, key.to_vec()));
             }
         }
@@ -1096,9 +1194,14 @@ impl Data {
         self.access_seq = self.access_seq.wrapping_add(1);
         entry.last_access = self.access_seq;
         if let Some(at) = entry.expires {
+            self.expiring_keys = self.expiring_keys.saturating_add(1);
+            self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_add(i128::from(at));
             self.expirations.insert((at, key.to_vec()));
         }
         self.field_ttls = self.field_ttls.saturating_add(entry.field_ttl.len());
+        if !entry.field_ttl.is_empty() {
+            self.subexpiry_keys = self.subexpiry_keys.saturating_add(1);
+        }
         self.entries.insert(key.to_vec(), entry);
         if !existed {
             self.record_new_key(key);
@@ -1126,10 +1229,15 @@ impl Data {
             entry.stream = None;
             entry.payload_len = collection_bytes;
             if !hash {
+                if !entry.field_ttl.is_empty() {
+                    self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+                }
                 self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
                 entry.field_ttl.clear();
             }
+            let previous_expiry = entry.expires;
             Self::replace_expiry(&mut self.expirations, key, entry, expires);
+            self.adjust_expiry(previous_expiry, expires);
         } else {
             self.entries.insert(
                 key.to_vec(),
@@ -1145,6 +1253,8 @@ impl Data {
             );
             self.record_new_key(key);
             if let Some(at) = expires {
+                self.expiring_keys = self.expiring_keys.saturating_add(1);
+                self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_add(i128::from(at));
                 self.expirations.insert((at, key.to_vec()));
             }
         }
@@ -1169,9 +1279,14 @@ impl Data {
             entry.collection = None;
             entry.stream = Some(stream);
             entry.payload_len = stream_bytes;
+            if !entry.field_ttl.is_empty() {
+                self.subexpiry_keys = self.subexpiry_keys.saturating_sub(1);
+            }
             self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
             entry.field_ttl.clear();
+            let previous_expiry = entry.expires;
             Self::replace_expiry(&mut self.expirations, key, entry, expires);
+            self.adjust_expiry(previous_expiry, expires);
         } else {
             self.entries.insert(
                 key.to_vec(),
@@ -1187,6 +1302,8 @@ impl Data {
             );
             self.record_new_key(key);
             if let Some(at) = expires {
+                self.expiring_keys = self.expiring_keys.saturating_add(1);
+                self.ttl_deadline_sum = self.ttl_deadline_sum.saturating_add(i128::from(at));
                 self.expirations.insert((at, key.to_vec()));
             }
         }
@@ -1430,5 +1547,59 @@ mod tests {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());
         }
         assert_eq!(data.expired_events.len(), MAX_LIFECYCLE_EVENTS);
+    }
+
+    #[test]
+    fn keyspace_counters_match_a_scan_across_mutations() {
+        let scan = |data: &Data, now: i64| {
+            let (mut live, mut expiring, mut subexpiry) = (0usize, 0usize, 0usize);
+            let mut sum = 0i128;
+            for entry in data.entries.values().filter(|entry| entry.alive(now)) {
+                live += 1;
+                if let Some(at) = entry.expires {
+                    expiring += 1;
+                    sum += i128::from(at);
+                }
+                subexpiry += usize::from(!entry.field_ttl.is_empty());
+            }
+            let avg = if expiring == 0 {
+                0
+            } else {
+                u64::try_from((sum - i128::from(now) * expiring as i128).max(0) / expiring as i128)
+                    .unwrap()
+            };
+            (live, expiring, subexpiry, avg)
+        };
+
+        let mut data = Data::default();
+        data.put(b"a", b"v", Some(1000), 2, 0);
+        data.put(b"b", b"v", Some(500), 4, 0);
+        data.put_collection(
+            b"h",
+            Collection::Hash(HashMap::from([(b"f".to_vec(), b"v".to_vec())])),
+            None,
+            7,
+            0,
+        );
+        data.set_field_ttl(b"h", b"f", 2000);
+        for now in [0, 400, 600] {
+            assert_eq!(data.keyspace_stats(now), scan(&data, now), "now {now}");
+        }
+
+        data.remove_field_ttls(b"h", &[b"f"]);
+        data.set_expiry(b"b", None);
+        assert_eq!(data.keyspace_stats(0), scan(&data, 0));
+
+        data.set_field_ttl(b"h", b"f", 2000);
+        data.persist_field(b"h", b"f");
+        data.set_expiry(b"a", Some(1));
+        assert_eq!(data.keyspace_stats(2), scan(&data, 2));
+
+        data.remove(b"b");
+        data.remove(b"a");
+        assert_eq!(data.keyspace_stats(2), scan(&data, 2));
+
+        data.flush();
+        assert_eq!(data.keyspace_stats(0), (0, 0, 0, 0));
     }
 }
