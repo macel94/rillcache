@@ -974,17 +974,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   contract are published.
 
 - [ ] **L3. Image signing, SBOM and provenance are missing.** [P1]
-  **Partial, awaiting protected review and first release evidence:** the container
-  workflow now scans each exact tested platform image into an SPDX SBOM, publishes
-  signed SBOM attestations for both platform digests and SLSA provenance for the
-  multi-platform index, then verifies them from a fresh read-only job after an
-  anonymous pull. Mutable aliases are promoted only after signing and must resolve
-  to the tested digest only after a fresh read-only consumer verifies the
-  attestations and anonymously pulls/runs the image. `SECURITY.md` documents
-  private reporting and best-effort
-  triage/disclosure; GitHub private vulnerability reporting is enabled. No main
-  run has yet exercised this changed workflow, and no vulnerability scan, license
-  review, supported release policy, or independent security sign-off is claimed.
+  **Partial (2026-11-24):** PR #592 added trusted publication, exact-tested-image
+  SPDX inventory generation, per-platform SBOM attestations and index provenance,
+  but merged without a recorded review. The active ruleset has code-owner review
+  enabled with zero required approvals; this mismatch remains unresolved and is
+  not independent security acceptance. The first trusted main run built/tested
+  both architectures and pushed their child tags, then failed before creating the
+  multi-platform index because Docker-format manifests cannot carry the requested
+  OCI index annotations. No index provenance, SBOM attestations, anonymous
+  verification or alias promotion occurred. A follow-up removes those incompatible
+  annotations while retaining SHA tags, platform source/revision labels and
+  provenance source identity; fresh hosted PR and post-merge evidence remain
+  pending. `SECURITY.md` documents private reporting and best-effort
+  triage/disclosure; GitHub private vulnerability reporting is enabled. An SPDX
+  SBOM is an inventory, not a vulnerability scan. No license review, supported
+  release policy or independent security sign-off is claimed.
   **Closes when:** a protected post-merge publication run records the exact index
   and child digests, the anonymous consumer verifies provenance and both SBOM
   attestations, the vulnerability-response route is confirmed, and any required

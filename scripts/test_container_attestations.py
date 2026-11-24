@@ -22,6 +22,17 @@ class ContainerAttestationPolicyTests(unittest.TestCase):
         self.assertIn("target/images/rillcache-amd64.spdx.json", WORKFLOW)
         self.assertIn("target/images/rillcache-arm64.spdx.json", WORKFLOW)
 
+    def test_docker_media_type_index_uses_source_tags_and_child_labels(self):
+        publisher = WORKFLOW.split("  publish:\n", 1)[1].split("  public-pull:\n", 1)[0]
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertNotIn("--annotation", publisher)
+        self.assertIn('tags=(--tag "$image:sha-$GITHUB_SHA")', publisher)
+        self.assertIn(
+            'org.opencontainers.image.source="https://github.com/macel94/rillcache"',
+            dockerfile,
+        )
+        self.assertIn('org.opencontainers.image.revision="${VCS_REF}"', dockerfile)
+
     def test_attestations_are_scoped_to_the_trusted_publisher(self):
         publisher = WORKFLOW.split("  publish:\n", 1)[1].split("  public-pull:\n", 1)[0]
         self.assertIn("github.event_name != 'pull_request'", publisher)

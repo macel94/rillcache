@@ -317,7 +317,10 @@ aliases are promoted only after a fresh read-only job verifies the signed
 attestations and anonymously pulls/runs the image; each alias must resolve to the
 tested index digest. The final manifest
 must contain exactly amd64 and arm64. A digest—not a mutable tag—is the
-content-immutable deployment identity. OCI labels link the real source revision.
+content-immutable deployment identity. Each tested platform image carries OCI
+config labels for the source repository and exact revision; the multi-platform
+index uses the full source SHA tag and its signed provenance binds the source
+revision. The Docker-format index is not decorated with OCI index annotations.
 The trusted publisher creates SLSA build provenance for the exact multi-platform
 index and SPDX 2.3 SBOM attestations for each exact tested platform manifest.
 A fresh read-only job anonymously pulls the image and verifies the provenance,

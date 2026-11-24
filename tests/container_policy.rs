@@ -71,6 +71,13 @@ fn publishing_is_separate_from_unprivileged_builds_and_anonymous_checks() {
     assert!(publish.contains("github.event_name != 'pull_request'"));
     assert!(publish.contains("docker image load --input"));
     assert!(publish.contains("for arch in amd64 arm64"));
+    assert!(publish.contains("tags=(--tag \"$image:sha-$GITHUB_SHA\")"));
+    assert!(!publish.contains("--annotation"));
+    let dockerfile = file("Dockerfile");
+    assert!(
+        dockerfile.contains("org.opencontainers.image.source=\"https://github.com/macel94/rillcache\"")
+    );
+    assert!(dockerfile.contains("org.opencontainers.image.revision=\"${VCS_REF}\""));
     assert!(promotion.contains("\"$head\" == \"$GITHUB_SHA\""));
     assert!(public.contains("DOCKER_CONFIG=\"$config\" docker image pull"));
     assert!(!public.contains("docker/login-action"));

@@ -134,7 +134,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Publish both tested architectures and a source-labelled manifest
+      - name: Publish both tested architectures and a source-bound manifest
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -157,11 +157,11 @@ jobs:
             fi
             sources+=("$image@$digest")
           done
+          # docker image save/load produces Docker v2 manifests. Buildx cannot add
+          # OCI annotations to the resulting Docker manifest list. Source identity
+          # is carried by the full-SHA index tag, child config labels and provenance.
           tags=(--tag "$image:sha-$GITHUB_SHA")
-          docker buildx imagetools create "${tags[@]}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --annotation 'index:org.opencontainers.image.description=Experimental safe-std-only Rillcache; no authentication, TLS or persistence' \
-            "${sources[@]}"
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
           ref="$image:sha-$GITHUB_SHA"
           digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
