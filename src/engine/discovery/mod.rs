@@ -635,7 +635,7 @@ fn subcommands(name: &str) -> Option<&'static [&'static str]> {
         ],
         "command" => &["count", "getkeys", "getkeysandflags", "info", "list"],
         "config" => &["get", "resetstat", "set"],
-        "latency" => &["doctor", "help", "history", "latest", "reset"],
+        "latency" => &["doctor", "help", "histogram", "history", "latest", "reset"],
         "memory" => &["doctor", "help", "malloc-stats", "purge", "stats", "usage"],
         "object" => &["encoding", "freq", "help", "idletime", "refcount"],
         "pubsub" => &[
@@ -805,7 +805,8 @@ fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option
         }
         "latency" => {
             let help = subcommand.eq_ignore_ascii_case(b"help");
-            let recognized = help || is(&[b"doctor", b"history", b"latest", b"reset"]);
+            let recognized =
+                help || is(&[b"doctor", b"histogram", b"history", b"latest", b"reset"]);
             if !recognized {
                 return None;
             }
@@ -946,7 +947,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "georadiusbymember_ro"
         | "geosearch"
         | "geosearchstore" => "geo",
-        "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
+        "pfadd" | "pfcount" | "pfdebug" | "pfmerge" | "pfselftest" => "hyperloglog",
         "blmove" | "blmpop" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen"
         | "lmove" | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim"
         | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",

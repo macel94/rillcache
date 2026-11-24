@@ -119,17 +119,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   per-database observability, or explicitly excludes clients that require them.
 
 - [ ] **C5. The command and subcommand surface is incomplete.** [P0]
-  The registry contains 243 commands, but common surfaces are absent or bounded:
+  The registry contains 245 commands, but common surfaces are absent or bounded:
   `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
-  `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH`;
-  `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
+  `CLIENT TRACKING|NO-TOUCH`; `COMMAND DOCS`; `CONFIG REWRITE`;
+  `LATENCY GRAPH`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
   **Partial (2026-11-14): named exclusions for common surfaces.**
-  `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
+  `DUMP`/`RESTORE`/`MIGRATE`, `COMMAND DOCS`,
   `CONFIG REWRITE` now returns a specific
   capability error with normal arity validation, documented in
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
-  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT REPLY ON|OFF|SKIP`
+  `LATENCY GRAPH` was already explicit; `LATENCY HISTOGRAM` is now backed by the
+  bounded per-command histogram (see O3). `CLIENT REPLY ON|OFF|SKIP`
   now suppresses immediate, paused and blocked-completion replies (RESET
   restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
   clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
@@ -241,8 +242,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   The private payload uses an exact hash set then a 2^14-register sketch, not
-  Redis's sparse/dense encoding. `PFDEBUG`, `PFSELFTEST` and sparse-threshold
-  configuration are absent.
+  Redis's sparse/dense encoding. `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` now
+  report this private representation; Redis payload conversion and
+  sparse-threshold configuration remain absent.
   **Closes when:** the profile either implements Redis/Valkey-compatible HLL
   payloads and diagnostics, or explicitly excludes HLL persistence/interchange
   and documents the accuracy/representation differences.
@@ -747,8 +749,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
-  only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
-  unsupported.
+  only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
+  `LATENCY HISTOGRAM` reports the same bounded 32-bucket approximation as
+  `INFO latencystats`, not exact HDR percentiles.
   **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
   and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
   `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
@@ -993,7 +996,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **L6. Production deployment artifacts are incomplete.** [P1]
   There are restricted Docker/Compose/Kubernetes examples but no HA topology,
   backup job, certificate rotation, systemd unit, Helm chart/operator, or
-  production configuration profiles.
+  production configuration profiles. The optional Kubernetes password overlay
+  wires the same read-only Secret into the server and both health probes; it
+  does not add persistence, automatic rotation or live cluster evidence.
   **Closes when:** the profile's deployment path has reviewed manifests and
   runbooks; examples do not imply unsupported HA/persistence guarantees.
 
