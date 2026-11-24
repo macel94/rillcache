@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the pinned Rillcache Pi pane every ten minutes
+
+[Timer]
+OnActiveSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1s
+Unit=rillcache-pi-wake.service
+
+[Install]
+WantedBy=timers.target

@@ -24,7 +24,7 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test-unit dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test-unit test-readiness-loop dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
@@ -43,6 +43,9 @@ lint:
 # Editing feedback only. The full check/ci prerequisites below remain unchanged.
 test-unit:
 	$(CARGO) test $(CARGO_FLAGS) --lib
+
+test-readiness-loop:
+	python3 scripts/test_rillcache_pi_wake.py
 
 dev-check: fmt-check lint test-unit
 
@@ -79,7 +82,7 @@ test-constrained:
 		printf 'Single-CPU affinity test unavailable here; portable policy/ownership tests still run.\n'
 	fi
 
-check: fmt-check lint test test-constrained test-async
+check: fmt-check lint test-readiness-loop test test-constrained test-async
 
 release:
 	$(CARGO) build $(CARGO_FLAGS) --release --bins

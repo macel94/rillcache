@@ -1,0 +1,10 @@
+[Unit]
+Description=Continue the pinned Rillcache Pi session when it is idle
+
+[Service]
+Type=oneshot
+User=root
+Environment=HOME=/root
+EnvironmentFile=-/etc/rillcache/readiness-loop.env
+ExecStart=/root/.local/bin/rillcache-pi-wake
+TimeoutStartSec=30s
