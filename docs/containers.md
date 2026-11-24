@@ -312,10 +312,19 @@ are pinned. Registry permissions do not grant source-repository write access.
 
 Tags: `sha-<full source SHA>` plus architecture-specific source tags; `latest`
 only for the current main head; `v<version>` only when the tag matches Cargo's
-real package version. Reruns cannot promote an old source to `latest`. The final
-manifest must contain exactly amd64 and arm64. A digest—not a mutable tag—is the
+real package version. Reruns cannot promote an old source to `latest`. Mutable
+aliases are promoted only after a fresh read-only job verifies the signed
+attestations and anonymously pulls/runs the image; each alias must resolve to the
+tested index digest. The final manifest
+must contain exactly amd64 and arm64. A digest—not a mutable tag—is the
 content-immutable deployment identity. OCI labels link the real source revision.
-No image signature, SBOM or SLSA attestation is claimed by this workflow.
+The trusted publisher creates SLSA build provenance for the exact multi-platform
+index and SPDX 2.3 SBOM attestations for each exact tested platform manifest.
+A fresh read-only job anonymously pulls the image and verifies the provenance,
+SBOM predicate types, repository and signer workflow from OCI registry bundles.
+The SBOM is an inventory of the tested image; it is not a vulnerability scan,
+license approval or independent security review. See the
+[security reporting policy](../SECURITY.md).
 
 ### Check the published index against release evidence
 
@@ -333,9 +342,30 @@ The checker hashes the raw bytes and requires exactly one `linux/amd64` and
 one `linux/arm64` image manifest descriptor with the expected digests. It
 accepts OCI indexes and Docker v2 manifest lists up to 256 KiB. A match does
 not authenticate the expected digests, fetch or validate the child manifests
-or layers, verify signatures or attestations, or establish native platform
-support. Retain the exact index bytes and result alongside the separate native
-platform and release-verification evidence.
+or layers, or establish native platform support. Verify the release's signed
+provenance and platform SBOM attestations separately using the exact digest and
+child digests printed in the container workflow summary:
+
+```sh
+image='ghcr.io/macel94/rillcache'
+index_digest='sha256:...'
+amd64_digest='sha256:...'
+arm64_digest='sha256:...'
+signer='macel94/rillcache/.github/workflows/container.yml'
+
+gh attestation verify "oci://$image@$index_digest" \
+  --bundle-from-oci --repo macel94/rillcache --signer-workflow "$signer"
+for digest in "$amd64_digest" "$arm64_digest"; do
+  gh attestation verify "oci://$image@$digest" \
+    --bundle-from-oci --repo macel94/rillcache --signer-workflow "$signer" \
+    --predicate-type https://spdx.dev/Document/v2.3
+done
+```
+
+Use an empty Docker credential configuration when verifying a public image to
+avoid silently relying on publisher credentials. The workflow's read-only
+consumer job does this after its anonymous pull. Retain the exact index bytes,
+result and attestations alongside the separate native-platform evidence.
 
 ### One-time GitHub public visibility
 
@@ -373,5 +403,7 @@ measurements are correctness smoke, not the native performance dashboard.
 
 References: [scratch](https://docs.docker.com/build/building/base-images/),
 [GHCR](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry),
+[GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds),
+[`gh attestation verify`](https://cli.github.com/manual/gh_attestation_verify),
 [package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility),
 [Kubernetes probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/).

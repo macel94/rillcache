@@ -198,6 +198,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "Dockerfile",
         "container/notices/**",
         "CONTRIBUTING.md",
+        "SECURITY.md",
         "docs/upstream-ci.md",
         "docs/redis-py-conformance.md",
         "compose.yaml",
@@ -210,6 +211,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/ci-benchmark-review.md",
         "docs/parallel-pr-delivery.md",
         "docs/parallel-work-lanes.md",
+        "tests/container_policy.rs",
     ),
 }
 

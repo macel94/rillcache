@@ -60,7 +60,8 @@
       },
       "non_pr_jobs": {
         "publish": "not-pull-request",
-        "public-pull": "needs-publish"
+        "public-pull": "needs-publish",
+        "promote": "needs-publish-and-public-pull"
       }
     },
     "upstream-compatibility.yml": {

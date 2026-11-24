@@ -188,6 +188,18 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   non-root/read-only execution and bounded resources; keep data-loss, payload-not-
   RSS, missing authentication/transport hardening and non-graceful process-termination limitations
   explicit. A single replica/Service shall not imply persistence, replication or HA.
+- **R513 (event-driven):** When trusted main/tag publication builds a container,
+  the workflow shall generate an SPDX SBOM from each exact tested native image,
+  publish signed SBOM attestations for both platform-manifest digests and signed
+  SLSA provenance for the exact multi-platform index, then verify these claims
+  from a fresh non-publishing consumer using anonymous registry access and the
+  expected repository/workflow identity. Mutable `latest`/version aliases shall
+  be promoted only after this verification and shall resolve to the same index
+  digest. A failed SBOM, attestation, anonymous pull, claim verification or image
+  smoke test shall prevent alias promotion. PR jobs shall not receive publishing
+  credentials. Vulnerability reports shall use the enabled private-reporting
+  route and a documented triage/disclosure process; SBOM evidence is not a
+  vulnerability scan, license approval, independent review or release sign-off.
 - **R457 (event-driven):** When rendering the opt-in Kubernetes password overlay,
   the server and both startup and readiness probes shall use the same mounted
   Secret file without putting the password value in the manifest or arguments.

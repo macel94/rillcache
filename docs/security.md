@@ -1,5 +1,9 @@
 # Password authentication and transport boundaries
 
+For reporting repository or release vulnerabilities, use the private process in
+[`SECURITY.md`](../SECURITY.md); do not disclose suspected vulnerabilities in a
+public issue.
+
 Rillcache supports either one operator-configured password for the implicit Redis
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real

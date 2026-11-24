@@ -175,6 +175,21 @@ class GatePolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.PolicyError, "publication/writer"):
                 gate.audit_local(root)
 
+    def test_mutable_alias_promotion_requires_publish_and_public_read_only_check(self):
+        mutations = (
+            ("needs", lambda text: text.replace("needs: [publish, public-pull]", "needs: publish", 1)),
+            ("condition", lambda text: text.replace(
+                "  promote:\n    needs: [publish, public-pull]\n    if: github.event_name != 'pull_request'",
+                "  promote:\n    needs: [publish, public-pull]\n    if: true", 1)),
+        )
+        for label, mutate in mutations:
+            with tempfile.TemporaryDirectory() as name:
+                root = Path(name); self.fixture(root)
+                p = root / ".github/workflows/container.yml"
+                p.write_text(mutate(p.read_text()))
+                with self.subTest(label=label), self.assertRaisesRegex(gate.PolicyError, "post-verification promotion"):
+                    gate.audit_local(root)
+
     def test_api_adapter_is_bounded_get_only_and_does_not_echo_secrets(self):
         response = subprocess.CompletedProcess([], 0, '{"ok": true}', "")
         with patch.object(subprocess, "run", return_value=response) as run:

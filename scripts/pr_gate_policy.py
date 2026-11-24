@@ -154,6 +154,12 @@ def audit_local(root=ROOT):
             elif kind == "needs-publish":
                 ensure("    needs: publish\n" in jobs[job] and exempt.get("publish") == "not-pull-request",
                        f"publication dependent exemption is not guarded: {path}/{job}")
+            elif kind == "needs-publish-and-public-pull":
+                ensure("    needs: [publish, public-pull]\n" in jobs[job]
+                       and exempt.get("publish") == "not-pull-request"
+                       and exempt.get("public-pull") == "needs-publish"
+                       and "github.event_name != 'pull_request'" in jobs[job],
+                       f"post-verification promotion exemption is not guarded: {path}/{job}")
             else:
                 raise PolicyError(f"unknown non-PR job exemption: {path}/{job}")
     ensure(len(all_checks) == len(set(all_checks)), "required check names collide across workflows/jobs")
