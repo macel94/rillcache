@@ -4,13 +4,19 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use rillcache::engine::ErrorDialect;
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
 
 fn start(workers: Option<usize>) -> ServerHandle {
+    start_with_dialect(workers, ErrorDialect::default())
+}
+
+fn start_with_dialect(workers: Option<usize>, error_dialect: ErrorDialect) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         worker_threads: workers,
+        error_dialect,
         ..Config::default()
     })
     .unwrap()
@@ -98,6 +104,43 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[test]
+fn hgetdel_redis_error_wording_preserves_binary_fields() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start_with_dialect(workers, ErrorDialect::Redis);
+        let mut stream = connect(&server);
+        command(&mut stream, &[b"HSET", b"h", b"f\0", b"v\xff"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HGETDEL", b"h", b"BAD", b"1", b"f\0"],
+            b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+        );
+        for invalid_count in [
+            b"0".as_slice(),
+            b"-1",
+            b"noninteger",
+            b"9223372036854775808",
+        ] {
+            command(
+                &mut stream,
+                &[b"HGETDEL", b"h", b"FIELDS", invalid_count, b"f\0"],
+                b"-ERR Number of fields must be a positive integer\r\n",
+            );
+        }
+        command(
+            &mut stream,
+            &[b"HGETDEL", b"h", b"FIELDS", b"2", b"f\0"],
+            b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"HGETDEL", b"h", b"FIELDS", b"1", b"f\0"],
+            b"*1\r\n$2\r\nv\xff\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn hash_random_field_and_getdel_work_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);
@@ -179,17 +222,22 @@ fn hash_random_field_and_getdel_work_in_all_modes() {
         command(
             &mut stream,
             &[b"HGETDEL", b"h", b"BAD", b"1", b"a"],
-            b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+            b"-ERR syntax error\r\n",
         );
         command(
             &mut stream,
             &[b"HGETDEL", b"h", b"FIELDS", b"0", b"a"],
-            b"-ERR Number of fields must be a positive integer\r\n",
+            b"-ERR numfields should be greater than 0 and match the provided number of fields\r\n",
         );
         command(
             &mut stream,
             &[b"HGETDEL", b"h", b"FIELDS", b"2", b"a"],
-            b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            b"-ERR numfields should be greater than 0 and match the provided number of fields\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"HGETDEL", b"h", b"FIELDS", b"noninteger", b"a"],
+            b"-ERR value is not an integer or out of range\r\n",
         );
         command(
             &mut stream,

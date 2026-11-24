@@ -37,6 +37,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   loader shall read at most 4 MiB plus one byte to detect overflow, independent
   of reported file size. An oversized file shall be rejected without publishing
   a replacement map. A valid file exactly at the limit shall still load.
+- **R505 (unwanted behavior):** When `--secure-secret-files` is enabled on
+  Unix, reject an opened ACL file that is non-regular or has group or other
+  permission bits, at startup and on `ACL LOAD`. On reload failure, retain the
+  active ACL and return a diagnostic without file paths or credentials.
 - **R114 (state-driven):** While a connection is authenticated as a user, the
   server shall evaluate ordered command/category rules and declared key positions
   before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall
@@ -336,6 +340,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   fails, emit counts for previously accepted and rejected datagrams and
   `output_failures 1`, then exit nonzero. Do not increment the accepted count
   for the failed write or echo datagram contents.
+- **R508 (unwanted behavior):** If the audit producer or collector cannot
+  rename the active file over the previous generation, keep the previous
+  generation unchanged. A successful rename may replace it as before. If the
+  server cannot then reopen its active file, later writes shall retry that open
+  without rotating or appending to the archive; failed records are not replayed.
 - **R483 (unwanted behavior):** If the newline-normalized record exceeds
   `--max-bytes`, count and drop the datagram before writing or rotating, even
   if its raw size fits `--max-datagram`. A record exactly at the file bound

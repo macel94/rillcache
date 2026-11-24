@@ -27,6 +27,7 @@ pub struct AuditLog {
     rotated: PathBuf,
     max_bytes: u64,
     written: u64,
+    reopen_pending: bool,
 }
 
 impl AuditLog {
@@ -53,6 +54,7 @@ impl AuditLog {
             rotated: PathBuf::from(rotated),
             max_bytes,
             written,
+            reopen_pending: false,
         })
     }
 
@@ -72,8 +74,12 @@ impl AuditLog {
     }
 
     pub fn record_line(&mut self, line: &str) -> io::Result<()> {
+        if self.reopen_pending {
+            self.reopen_active()?;
+        }
         if self.written > 0 && self.written.saturating_add(line.len() as u64) > self.max_bytes {
-            self.rotate()?;
+            self.publish_rotation()?;
+            self.reopen_active()?;
         }
         self.file.write_all(line.as_bytes())?;
         self.file.flush()?;
@@ -81,16 +87,21 @@ impl AuditLog {
         Ok(())
     }
 
-    fn rotate(&mut self) -> io::Result<()> {
+    fn publish_rotation(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        match fs::remove_file(&self.rotated) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        // Replace the previous generation only if the rename succeeds.
         fs::rename(&self.path, &self.rotated)?;
-        self.file = open_append(&self.path)?;
-        self.written = 0;
+        self.reopen_pending = true;
+        Ok(())
+    }
+
+    fn reopen_active(&mut self) -> io::Result<()> {
+        // Until this succeeds, self.file refers to the archive. Never append
+        // through it or rename the active path again during retry.
+        let file = open_append(&self.path)?;
+        self.written = file.metadata()?.len();
+        self.file = file;
+        self.reopen_pending = false;
         Ok(())
     }
 }
@@ -286,6 +297,56 @@ mod tests {
         let mut rotated_path = OsString::from(path.as_os_str());
         rotated_path.push(".1");
         let _ = fs::remove_file(rotated_path);
+    }
+
+    #[test]
+    fn failed_audit_rotation_keeps_the_previous_generation() {
+        let path = temp_path("rotate-failure");
+        let parked = path.with_extension("parked");
+        let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
+        let active = "x".repeat(MIN_MAX_BYTES as usize - 1) + "\n";
+        log.record_line(&active).unwrap();
+        fs::write(&log.rotated, b"previous generation\n").unwrap();
+        fs::rename(&path, &parked).unwrap();
+        assert_eq!(
+            log.record_line("next\n").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&log.rotated).unwrap(), b"previous generation\n");
+        assert_eq!(fs::read(&parked).unwrap(), active.as_bytes());
+        fs::rename(&parked, &path).unwrap();
+        log.record_line("next\n").unwrap();
+        assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        assert_eq!(fs::read(&path).unwrap(), b"next\n");
+        let rotated = log.rotated.clone();
+        drop(log);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn audit_retries_reopen_without_rotating_or_appending_to_archive() {
+        let path = temp_path("reopen-failure");
+        let mut log = AuditLog::open(&path, MIN_MAX_BYTES).unwrap();
+        let active = "x".repeat(MIN_MAX_BYTES as usize - 1) + "\n";
+        log.record_line(&active).unwrap();
+        log.publish_rotation().unwrap();
+        fs::create_dir(&path).unwrap();
+
+        for _ in 0..2 {
+            assert!(log.record_line("discarded\n").is_err());
+            assert!(path.is_dir());
+            assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        }
+
+        fs::remove_dir(&path).unwrap();
+        log.record_line("resumed\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"resumed\n");
+        assert_eq!(fs::read(&log.rotated).unwrap(), active.as_bytes());
+        let rotated = log.rotated.clone();
+        drop(log);
+        fs::remove_file(rotated).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -69,12 +69,25 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   destination, preserve the destination TTL, create an empty destination for
   destination-only/missing inputs and return `+OK`. Wrong types, malformed HLL
   payloads or payload-budget failure shall leave the destination unchanged.
+- **R512 (event-driven):** `PFDEBUG ENCODING <key>` shall report this project's
+  private `exact` or `dense` encoding for a valid value, `PFDEBUG GETREG <key>`
+  shall return the 16,384 register values as an integer array without mutating
+  the stored value or its WATCH version, a missing or expired key shall report
+  the empty exact value without creating or reaping a key, and Redis payload conversions shall return
+  an explicit unsupported error. `PFSELFTEST` shall run a deterministic
+  self-test of the private representation without reading stored keys and reply
+  `+OK` or a named failure. Both shall be admin/dangerous/read commands and shall
+  validate arity and key type before any data access.
 - **R156 (ubiquitous):** HLL values shall remain ordinary binary string keys for
   `TYPE`, expiry, keyspace, ACL key positions and append-only journal handling,
   with a private exact/dense payload rather than a Redis HLL encoding claim.
   Tests shall cover exact and dense promotion, cardinality tolerance, binary/empty
   elements, TTL, merge, malformed payloads, wrong types, ACL category metadata and
   transaction queueing in all execution modes.
+- **R506 (event-driven):** After a CRC or authenticated journal rewrite and
+  same-binary restart, replay the exact private HLL string payloads for a
+  small exact set and a promoted dense sketch, with unchanged cardinality
+  and absolute expiry.
 
 ## Geospatial sorted sets (S45)
 
@@ -355,6 +368,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   require the FIELDS token, a positive numfields exactly matching the supplied
   fields, and return one value-or-null per field while atomically deleting
   present fields.
+- **R510 (unwanted behavior):** HGETDEL shall reject malformed FIELDS/count
+  arguments before mutation. The startup error dialect selects the pinned
+  Redis or Valkey wording for these errors without changing valid replies or
+  promising matching error precedence across vendors.
 - **R259 (event-driven):** HGETDEL shall preserve remaining TTL and payload
   accounting, delete an emptied hash key, leave missing keys null-filled, and
   touch the key for WATCH/journal capture. Successful deletions shall publish
