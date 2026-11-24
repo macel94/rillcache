@@ -75,7 +75,8 @@ fn publishing_is_separate_from_unprivileged_builds_and_anonymous_checks() {
     assert!(!publish.contains("--annotation"));
     let dockerfile = file("Dockerfile");
     assert!(
-        dockerfile.contains("org.opencontainers.image.source=\"https://github.com/macel94/rillcache\"")
+        dockerfile
+            .contains("org.opencontainers.image.source=\"https://github.com/macel94/rillcache\"")
     );
     assert!(dockerfile.contains("org.opencontainers.image.revision=\"${VCS_REF}\""));
     assert!(promotion.contains("\"$head\" == \"$GITHUB_SHA\""));
