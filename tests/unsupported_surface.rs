@@ -92,12 +92,11 @@ fn reply(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
-fn excluded_serialization_hll_and_admin_surfaces_are_explicit() {
+fn excluded_serialization_and_admin_surfaces_are_explicit() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);
         let mut stream = connect(&server);
         let serialization = b"-ERR DUMP, RESTORE and MIGRATE are not supported by this bounded server; use the append-only journal or rillcache-backup\r\n";
-        let hll = b"-ERR PFDEBUG and PFSELFTEST are not supported; HyperLogLog uses a private bounded representation\r\n";
 
         command(&mut stream, &[b"DUMP", b"key"], serialization);
         command(
@@ -121,8 +120,14 @@ fn excluded_serialization_hll_and_admin_surfaces_are_explicit() {
             b"-ERR wrong number of arguments for 'restore' command\r\n",
         );
 
-        command(&mut stream, &[b"PFDEBUG", b"GETREG", b"key"], hll);
-        command(&mut stream, &[b"PFSELFTEST"], hll);
+        // HyperLogLog diagnostics are implemented over the private
+        // representation, so they are no longer capability errors.
+        command(&mut stream, &[b"PFSELFTEST"], b"+OK\r\n");
+        let empty_registers = reply(&mut stream, &[b"PFDEBUG", b"GETREG", b"key"]);
+        assert!(
+            empty_registers.starts_with(b"*16384\r\n"),
+            "{empty_registers:?}"
+        );
         command(
             &mut stream,
             &[b"PFDEBUG", b"GETREG"],

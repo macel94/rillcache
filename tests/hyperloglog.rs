@@ -83,6 +83,13 @@ fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
     assert_eq!(read_frame(stream, 0), expected, "{args:?}");
 }
 
+fn send(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
+    let mut request = Vec::new();
+    encode_request(args, &mut request);
+    stream.write_all(&request).unwrap();
+    read_frame(stream, 0)
+}
+
 #[test]
 fn hyperloglog_commands_work_over_tcp_in_all_execution_modes() {
     for workers in [None, Some(1), Some(4)] {
@@ -183,4 +190,43 @@ fn dense_hyperloglog_promotion_keeps_a_bounded_estimate() {
         .unwrap();
     assert!((4500..=5500).contains(&count), "dense count {count}");
     server.shutdown().unwrap();
+}
+
+#[test]
+fn hyperloglog_diagnostics_work_over_tcp_in_all_execution_modes() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut stream = connect(&server);
+
+        command(&mut stream, &[b"PFSELFTEST"], b"+OK\r\n");
+        command(
+            &mut stream,
+            &[b"PFDEBUG", b"ENCODING", b"missing"],
+            b"$5\r\nexact\r\n",
+        );
+        let empty = send(&mut stream, &[b"PFDEBUG", b"GETREG", b"missing"]);
+        assert!(empty.starts_with(b"*16384\r\n"), "{empty:?}");
+        command(&mut stream, &[b"EXISTS", b"missing"], b":0\r\n");
+
+        command(&mut stream, &[b"PFADD", b"hll", b"a", b"b"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"PFDEBUG", b"ENCODING", b"hll"],
+            b"$5\r\nexact\r\n",
+        );
+        let registers = send(&mut stream, &[b"PFDEBUG", b"GETREG", b"hll"]);
+        assert!(registers.starts_with(b"*16384\r\n"), "{registers:?}");
+
+        command(&mut stream, &[b"SET", b"plain", b"value"], b"+OK\r\n");
+        let wrong_type = send(&mut stream, &[b"PFDEBUG", b"ENCODING", b"plain"]);
+        assert!(wrong_type.starts_with(b"-WRONGTYPE"), "{wrong_type:?}");
+        let unsupported = send(&mut stream, &[b"PFDEBUG", b"DECODE", b"hll"]);
+        assert!(
+            unsupported.starts_with(b"-ERR PFDEBUG supports only"),
+            "{unsupported:?}"
+        );
+        let arity = send(&mut stream, &[b"PFDEBUG", b"GETREG"]);
+        assert!(arity.starts_with(b"-ERR wrong number"), "{arity:?}");
+        server.shutdown().unwrap();
+    }
 }

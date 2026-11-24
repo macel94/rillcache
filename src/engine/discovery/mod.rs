@@ -947,7 +947,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "georadiusbymember_ro"
         | "geosearch"
         | "geosearchstore" => "geo",
-        "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
+        "pfadd" | "pfcount" | "pfdebug" | "pfmerge" | "pfselftest" => "hyperloglog",
         "blmove" | "blmpop" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen"
         | "lmove" | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim"
         | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
@@ -1073,40 +1073,40 @@ impl ShardExecutor {
             return;
         };
         let (mut live_keys, mut expiring_keys, mut subexpiry_keys) = (0usize, 0usize, 0usize);
-        let (mut ttl_sum, mut ttl_count) = (0u64, 0u64);
+        let mut avg_ttl = 0u64;
         if sections.iter().any(|section| {
             section.eq_ignore_ascii_case(b"keyspace")
                 || section.eq_ignore_ascii_case(b"default")
                 || section.eq_ignore_ascii_case(b"all")
         }) {
-            if data.expirations.is_empty() && data.field_ttls == 0 {
-                // No key or field deadline exists, so every entry is alive and
-                // the expiry fields are zero; avoid the per-entry walk.
-                live_keys = data.entries.len();
-            } else {
-                let now = self.now(&data);
-                for entry in data.entries.values().filter(|entry| entry.alive(now)) {
-                    live_keys += 1;
-                    subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
-                    if let Some(deadline) = entry.expires {
-                        expiring_keys += 1;
-                        ttl_count += 1;
-                        ttl_sum = ttl_sum.saturating_add(
-                            u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
-                        );
-                    }
-                }
-            }
+            let now = self.now(&data);
+            let (live, expiring, subexpiry, average) = data.keyspace_stats(now);
+            live_keys = live;
+            expiring_keys = expiring;
+            subexpiry_keys = subexpiry;
+            avg_ttl = average;
         }
-        let avg_ttl = ttl_sum.checked_div(ttl_count).unwrap_or(0);
         let payload_bytes = data.payload_bytes;
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
-        let resident_bytes = process_memory::snapshot().map(|memory| memory.resident_bytes);
-        let cgroup_memory = process_memory::cgroup_snapshot();
-        // Do not hold data across helpers that can take data or another lock:
-        // std RwLock reads are not reentrant when a writer is queued.
+        // Release the keyspace before filesystem reads or helpers that can
+        // acquire other locks. RwLock reads are not reentrant with a queued writer.
         drop(data);
+        // Only the memory section reports process memory; `INFO keyspace` must
+        // not pay for the /proc and cgroup reads that feed it.
+        let wants_memory = sections.iter().any(|section| {
+            section.eq_ignore_ascii_case(b"memory")
+                || section.eq_ignore_ascii_case(b"default")
+                || section.eq_ignore_ascii_case(b"all")
+        });
+        let (resident_bytes, cgroup_memory) = if wants_memory {
+            (
+                process_memory::snapshot().map(|memory| memory.resident_bytes),
+                process_memory::cgroup_snapshot(),
+            )
+        } else {
+            (None, None)
+        };
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
