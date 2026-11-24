@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github/workflows/container.yml").read_text()
 SECURITY = (ROOT / "SECURITY.md").read_text()
 CONTAINERS = (ROOT / "docs/containers.md").read_text()
+RUST_POLICY = (ROOT / "tests/container_policy.rs").read_text()
 
 
 class ContainerAttestationPolicyTests(unittest.TestCase):
@@ -59,6 +60,10 @@ class ContainerAttestationPolicyTests(unittest.TestCase):
         self.assertIn("packages: write", promotion)
         self.assertIn("IMAGE_NAME@$INDEX_DIGEST", promotion)
         self.assertIn("[[ \"$promoted\" == \"$INDEX_DIGEST\" ]]", promotion)
+
+    def test_rust_policy_checks_the_latest_guard_in_the_promotion_job(self):
+        self.assertIn('assert!(promotion.contains("\\\"$head\\\" == \\\"$GITHUB_SHA\\\""));', RUST_POLICY)
+        self.assertNotIn('assert!(publish.contains("\\\"$head\\\"', RUST_POLICY)
 
     def test_security_policy_uses_private_reporting_and_disclaims_unprovided_coverage(self):
         self.assertIn("security/advisories/new", SECURITY)
