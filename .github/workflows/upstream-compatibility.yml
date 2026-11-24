@@ -8,6 +8,10 @@ on:
         description: Also run the original hash suite against each pinned reference and Rillcache
         type: boolean
         default: false
+      redis_py_tls:
+        description: Run pinned redis-py with native TLS and endpoint identity checks
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -135,5 +139,35 @@ jobs:
         with:
           name: upstream-tcl-hash-diagnostic-${{ matrix.reference }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/upstream/evidence/compat-*-unit-type-hash/
+          retention-days: 30
+          if-no-files-found: warn
+
+  redis-py-tls:
+    name: redis-py TLS diagnostic
+    if: github.event_name != 'pull_request' && github.event_name == 'workflow_dispatch' && inputs.redis_py_tls
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upstream-tcp-tools-${{ github.run_id }}
+          path: target/upstream/
+      - name: Unpack same-run tools
+        run: tar -xzf target/upstream/bundle.tar.gz -C target/upstream
+      - name: Install the hash-pinned client wheel and test TLS identity
+        run: |
+          python3 -m venv target/redis-py-venv
+          target/redis-py-venv/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r scripts/redis-py-requirements.txt
+          target/redis-py-venv/bin/python scripts/redis_py_conformance.py --server target/upstream/rillcache --tls
+      - name: Preserve client results and server logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-redis-py-tls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/redis-py-conformance/
           retention-days: 30
           if-no-files-found: warn

@@ -1,0 +1,2 @@
+# PyPI universal wheel used by the optional hosted redis-py diagnostic.
+redis==5.2.1 --hash=sha256:ee7e1056b9aea0f04c6c2ed59452947f34c4940ee025f5dd83e6a6418b6989e4
