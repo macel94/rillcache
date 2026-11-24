@@ -57,12 +57,13 @@ fn thin_image_keeps_runtime_and_build_context_boundaries_explicit() {
 #[test]
 fn publishing_is_separate_from_unprivileged_builds_and_anonymous_checks() {
     let workflow = file(".github/workflows/container.yml");
-    assert_eq!(workflow.matches("packages: write").count(), 1);
+    assert_eq!(workflow.matches("packages: write").count(), 2);
     assert!(!workflow.contains("contents: write"));
     assert!(!workflow.contains("pull_request_target"));
     assert!(!workflow.contains("secrets."));
     let (builds, rest) = workflow.split_once("\n  publish:\n").unwrap();
-    let (publish, public) = rest.split_once("\n  public-pull:\n").unwrap();
+    let (publish, public_and_promotion) = rest.split_once("\n  public-pull:\n").unwrap();
+    let (public, promotion) = public_and_promotion.split_once("\n  promote:\n").unwrap();
     assert!(!builds.contains("docker/login-action"));
     assert!(builds.contains("runner: ubuntu-24.04-arm"));
     assert!(builds.contains("run: make ci"));
@@ -74,6 +75,9 @@ fn publishing_is_separate_from_unprivileged_builds_and_anonymous_checks() {
     assert!(public.contains("DOCKER_CONFIG=\"$config\" docker image pull"));
     assert!(!public.contains("docker/login-action"));
     assert!(!public.contains("packages: write"));
+    assert!(promotion.contains("needs: [publish, public-pull]"));
+    assert!(promotion.contains("if: github.event_name != 'pull_request'"));
+    assert!(promotion.contains("packages: write"));
     for line in workflow
         .lines()
         .filter_map(|line| line.trim().strip_prefix("- uses: "))

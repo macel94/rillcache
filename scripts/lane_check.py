@@ -211,6 +211,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/ci-benchmark-review.md",
         "docs/parallel-pr-delivery.md",
         "docs/parallel-work-lanes.md",
+        "tests/container_policy.rs",
     ),
 }
 
