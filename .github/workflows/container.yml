@@ -34,6 +34,8 @@ jobs:
             echo '::error::A release tag must equal v<Cargo package version>.'
             exit 1
           fi
+      - name: Validate signed container evidence and vulnerability response policy
+        run: python3 scripts/test_container_attestations.py
       - name: Same offline safety, dependency, mode and benchmark checks as normal CI
         run: make ci
 
@@ -71,6 +73,15 @@ jobs:
         run: cargo build --locked --offline --release --bin rillcache-bench
       - name: Test default networking, health, size, static linking and all three worker modes
         run: bash scripts/container-smoke.sh 'rillcache:tested-${{ matrix.arch }}'
+      - name: Generate SPDX SBOM from the tested native image
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: rillcache:tested-${{ matrix.arch }}
+          format: spdx-json
+          output-file: target/rillcache-${{ matrix.arch }}.spdx.json
+          syft-version: v1.57.2
+          upload-artifact: false
+          upload-release-assets: false
       - name: Export the exact tested image, not a subsequent rebuild
         run: docker image save 'rillcache:tested-${{ matrix.arch }}' -o 'target/image-${{ matrix.arch }}.tar'
       - name: Preserve the tested image and evidence
@@ -79,6 +90,7 @@ jobs:
           name: rillcache-container-${{ matrix.arch }}-${{ github.sha }}
           path: |
             target/image-${{ matrix.arch }}.tar
+            target/rillcache-${{ matrix.arch }}.spdx.json
             target/container-smoke/
           if-no-files-found: error
           compression-level: 0
@@ -93,12 +105,18 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      id-token: write
+      attestations: write
       packages: write
     concurrency:
       group: container-publication
       cancel-in-progress: false
     outputs:
       image: ${{ steps.publish.outputs.image }}
+      image_name: ${{ steps.publish.outputs.image_name }}
+      index_digest: ${{ steps.publish.outputs.index_digest }}
+      amd64_digest: ${{ steps.publish.outputs.amd64_digest }}
+      arm64_digest: ${{ steps.publish.outputs.arm64_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,6 +141,8 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           sources=()
+          amd64_digest=''
+          arm64_digest=''
           for arch in amd64 arm64; do
             docker image load --input "target/images/image-$arch.tar"
             ref="$image:sha-$GITHUB_SHA-$arch"
@@ -130,19 +150,14 @@ jobs:
             docker image push "$ref"
             digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ "$arch" == amd64 ]]; then
+              amd64_digest=$digest
+            else
+              arm64_digest=$digest
+            fi
             sources+=("$image@$digest")
           done
           tags=(--tag "$image:sha-$GITHUB_SHA")
-          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-            if [[ "$head" == "$GITHUB_SHA" ]]; then
-              tags+=(--tag "$image:latest")
-            else
-              echo '::notice::An older source run cannot move latest backwards; source tag still published.'
-            fi
-          else
-            tags+=(--tag "$image:$GITHUB_REF_NAME")
-          fi
           docker buildx imagetools create "${tags[@]}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --annotation 'index:org.opencontainers.image.description=Experimental safe-std-only Rillcache; no authentication, TLS or persistence' \
@@ -152,15 +167,45 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           docker buildx imagetools inspect "$ref" --raw | jq -e \
             '([.manifests[].platform | .os + "/" + .architecture] | sort) == ["linux/amd64", "linux/arm64"]'
+          echo "image_name=$image" >> "$GITHUB_OUTPUT"
           echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          echo "index_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "amd64_digest=$amd64_digest" >> "$GITHUB_OUTPUT"
+          echo "arm64_digest=$arm64_digest" >> "$GITHUB_OUTPUT"
           {
             echo '## Tested thin container image'
             echo
             echo "Digest-pinned image: \`$image@$digest\`"
+            echo "linux/amd64 manifest: \`$amd64_digest\`"
+            echo "linux/arm64 manifest: \`$arm64_digest\`"
             echo
             echo 'Both native architectures passed default/per-client, one-worker and four-worker tests.'
-            echo 'Public availability is checked separately without registry credentials.'
+            echo 'The published multi-platform index has signed SLSA provenance; each tested platform manifest has a signed SPDX SBOM attestation.'
+            echo 'A fresh read-only job verifies the registry attestations after an anonymous pull.'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Sign provenance for the exact published multi-platform index
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.index_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Sign the tested amd64 image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.amd64_digest }}
+          sbom-path: target/images/rillcache-amd64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Sign the tested arm64 image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.arm64_digest }}
+          sbom-path: target/images/rillcache-arm64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
 
   public-pull:
     needs: publish
@@ -170,6 +215,8 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,9 +231,77 @@ jobs:
             echo '::error::GHCR defaults new packages to PRIVATE. Open the repository Packages > rillcache > Package settings > Change visibility > Public, then rerun this job. No personal token is required.'
             exit 1
           fi
+      - name: Verify signed provenance and both SPDX attestations without registry credentials
+        env:
+          IMAGE_NAME: ${{ needs.publish.outputs.image_name }}
+          INDEX_DIGEST: ${{ needs.publish.outputs.index_digest }}
+          AMD64_DIGEST: ${{ needs.publish.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.publish.outputs.arm64_digest }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          signer="$GITHUB_REPOSITORY/.github/workflows/container.yml"
+          gh attestation verify "oci://$IMAGE_NAME@$INDEX_DIGEST" \
+            --bundle-from-oci --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" --source-digest "$SOURCE_SHA" \
+            --deny-self-hosted-runners
+          for digest in "$AMD64_DIGEST" "$ARM64_DIGEST"; do
+            gh attestation verify "oci://$IMAGE_NAME@$digest" \
+              --bundle-from-oci --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --predicate-type https://spdx.dev/Document/v2.3 \
+              --deny-self-hosted-runners
+          done
       - name: Verify the public image really runs, with no publishing credential
         env:
           IMAGE: ${{ needs.publish.outputs.image }}
         run: |
           cargo build --locked --offline --release --bin rillcache-bench
           bash scripts/container-smoke.sh "$IMAGE"
+
+  promote:
+    needs: [publish, public-pull]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: container-promotion
+      cancel-in-progress: false
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Authenticate with the short-lived workflow token, not a stored PAT
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Promote aliases only after anonymous verification of the signed digest
+        env:
+          IMAGE_NAME: ${{ needs.publish.outputs.image_name }}
+          INDEX_DIGEST: ${{ needs.publish.outputs.index_digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tags=()
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+            if [[ "$head" == "$GITHUB_SHA" ]]; then
+              tags+=(latest)
+            else
+              echo '::notice::An older source run cannot move latest backwards; signed source digest remains published.'
+            fi
+          else
+            tags+=("$GITHUB_REF_NAME")
+          fi
+          for tag in "${tags[@]}"; do
+            docker buildx imagetools create --tag "$IMAGE_NAME:$tag" "$IMAGE_NAME@$INDEX_DIGEST"
+            promoted=$(docker buildx imagetools inspect "$IMAGE_NAME:$tag" --format '{{.Manifest.Digest}}')
+            [[ "$promoted" == "$INDEX_DIGEST" ]] || {
+              echo "::error::Alias $tag resolved to $promoted, expected $INDEX_DIGEST."
+              exit 1
+            }
+          done

@@ -974,11 +974,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   contract are published.
 
 - [ ] **L3. Image signing, SBOM and provenance are missing.** [P1]
-  The container workflow explicitly sets `provenance: false` and `sbom: false`.
-  There is no signature, attestation, vulnerability scan or dependency/license
-  inventory for the image.
-  **Closes when:** signed digests, SBOM/provenance attestations and a documented
-  vulnerability-response process are part of release.
+  **Partial, awaiting protected review and first release evidence:** the container
+  workflow now scans each exact tested platform image into an SPDX SBOM, publishes
+  signed SBOM attestations for both platform digests and SLSA provenance for the
+  multi-platform index, then verifies them from a fresh read-only job after an
+  anonymous pull. Mutable aliases are promoted only after signing and must resolve
+  to the tested digest only after a fresh read-only consumer verifies the
+  attestations and anonymously pulls/runs the image. `SECURITY.md` documents
+  private reporting and best-effort
+  triage/disclosure; GitHub private vulnerability reporting is enabled. No main
+  run has yet exercised this changed workflow, and no vulnerability scan, license
+  review, supported release policy, or independent security sign-off is claimed.
+  **Closes when:** a protected post-merge publication run records the exact index
+  and child digests, the anonymous consumer verifies provenance and both SBOM
+  attestations, the vulnerability-response route is confirmed, and any required
+  reviewer decision and remaining scan/license disposition are recorded.
 
 - [ ] **L4. Release notes and migration guidance are missing.** [P1]
   There is no changelog, compatibility delta, migration guide or rollback note
