@@ -141,7 +141,8 @@ fn combined_info_keeps_memory_and_keyspace_sections() {
             &[b"SET", b"k", b"val", b"EX", b"100"],
             b"+OK\r\n",
         );
-        for arguments in [&[b"INFO".as_slice()][..], &[b"INFO", b"all"][..]] {
+        let info_requests: [&[&[u8]]; 2] = [&[b"INFO"], &[b"INFO", b"all"]];
+        for arguments in info_requests {
             let report = info(&mut stream, arguments);
             assert_eq!(field(&report, "rillcache_payload_bytes"), Some("4"));
             assert!(report.contains("db0:keys=1,expires=1,"), "{report}");
