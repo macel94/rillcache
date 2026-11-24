@@ -36,6 +36,8 @@ SHARED_SURFACES: tuple[str, ...] = (
     "docs/README.md",
     "docs/compatibility.md",
     "docs/production-profile.md",
+    "docs/reference-conformance.md",
+    "tests/reference_baseline.rs",
     "docs/production-readiness.md",
     "docs/production-readiness-gaps.md",
     "docs/production-readiness/*",
