@@ -1089,6 +1089,9 @@ impl ShardExecutor {
         let payload_bytes = data.payload_bytes;
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
+        // Release the keyspace before filesystem reads or helpers that can
+        // acquire other locks. RwLock reads are not reentrant with a queued writer.
+        drop(data);
         // Only the memory section reports process memory; `INFO keyspace` must
         // not pay for the /proc and cgroup reads that feed it.
         let wants_memory = sections.iter().any(|section| {
@@ -1104,9 +1107,6 @@ impl ShardExecutor {
         } else {
             (None, None)
         };
-        // Do not hold data across helpers that can take data or another lock:
-        // std RwLock reads are not reentrant when a writer is queued.
-        drop(data);
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();

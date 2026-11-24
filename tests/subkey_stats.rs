@@ -107,15 +107,15 @@ fn field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-fn keyspace(stream: &mut TcpStream) -> String {
+fn info(stream: &mut TcpStream, arguments: &[&[u8]]) -> String {
     let mut request = Vec::new();
-    encode_request(&[b"INFO", b"keyspace"], &mut request);
+    encode_request(arguments, &mut request);
     stream.write_all(&request).unwrap();
     bulk_text(&read_frame(stream, 0))
 }
 
 fn assert_keyspace(stream: &mut TcpStream, keys: usize, expires: usize, subexpiry: usize) {
-    let text = keyspace(stream);
+    let text = info(stream, &[b"INFO", b"keyspace"]);
     let line = text
         .lines()
         .find(|line| line.starts_with("db0:keys="))
@@ -129,6 +129,27 @@ fn assert_keyspace(stream: &mut TcpStream, keys: usize, expires: usize, subexpir
         line.contains(&format!("subexpiry={subexpiry}")),
         "expected subexpiry={subexpiry} in {line:?}"
     );
+}
+
+#[test]
+fn combined_info_keeps_memory_and_keyspace_sections() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        command(
+            &mut stream,
+            &[b"SET", b"k", b"val", b"EX", b"100"],
+            b"+OK\r\n",
+        );
+        for arguments in [&[b"INFO".as_slice()][..], &[b"INFO", b"all"][..]] {
+            let report = info(&mut stream, arguments);
+            assert_eq!(field(&report, "rillcache_payload_bytes"), Some("4"));
+            assert!(report.contains("db0:keys=1,expires=1,"), "{report}");
+        }
+        let keyspace = info(&mut stream, &[b"INFO", b"keyspace"]);
+        assert!(field(&keyspace, "used_memory_rss").is_none(), "{keyspace}");
+        server.shutdown().unwrap();
+    }
 }
 
 #[test]
