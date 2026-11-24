@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -35,10 +36,15 @@ def check(condition: bool, description: str) -> None:
         raise RuntimeError(f"conformance check failed: {description}")
 
 
-def reserve_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
+def listener_port(log: bytes, *, tls: bool) -> int | None:
+    prefix = rb"rillcache TLS 1\.3" if tls else rb"rillcache [^\s]+"
+    match = re.search(rb"^" + prefix + rb" listening on 127\.0\.0\.1:([0-9]{1,5})\r?\n",
+                      log, flags=re.MULTILINE)
+    if match:
+        port = int(match[1])
+        if 0 < port <= 65535:
+            return port
+    return None
 
 
 class ManagedServer:
@@ -48,7 +54,7 @@ class ManagedServer:
         self.binary = binary
         self.mode = mode
         self.directory = directory
-        self.port = reserve_port()
+        self.port = 0
         self.certificate = certificate
         self.process: subprocess.Popen | None = None
         label = f"{mode}-tls-{certificate}" if certificate else mode
@@ -56,10 +62,10 @@ class ManagedServer:
         self.log = None
 
     def command(self) -> list[str]:
-        command = [str(self.binary), "--bind", f"127.0.0.1:{0 if self.certificate else self.port}",
+        command = [str(self.binary), "--bind", "127.0.0.1:0",
                    "--aclfile", str(self.directory / "users.acl"), "--idle-timeout-ms", "5000"]
         if self.certificate:
-            command += ["--tls-bind", f"127.0.0.1:{self.port}",
+            command += ["--tls-bind", "127.0.0.1:0",
                         "--tls-cert-file", str(TLS_FIXTURES / f"{self.certificate}.crt"),
                         "--tls-key-file", str(TLS_FIXTURES / f"{self.certificate}.key")]
         if self.mode == "fixed-one":
@@ -79,11 +85,17 @@ class ManagedServer:
             while time.monotonic() < deadline:
                 if self.process.poll() is not None:
                     raise RuntimeError(f"server exited during startup ({self.process.returncode}); see {self.log_path}")
-                try:
-                    with socket.create_connection(("127.0.0.1", self.port), timeout=0.1):
-                        return
-                except OSError:
-                    time.sleep(0.025)
+                with self.log_path.open("rb") as log:
+                    port = listener_port(log.read(64 * 1024), tls=bool(self.certificate))
+                if port is not None:
+                    try:
+                        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                            if self.process.poll() is None:
+                                self.port = port
+                                return
+                    except OSError:
+                        pass
+                time.sleep(0.025)
             raise TimeoutError(f"server readiness timed out after {STARTUP_TIMEOUT}s; see {self.log_path}")
         except BaseException:
             self.stop()
