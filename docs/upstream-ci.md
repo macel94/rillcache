@@ -73,10 +73,10 @@ Never reuse compiled native sources with different make flags.
 ## Opt-in deterministic differential corpus v1
 
 The initial command-group corpus compares binary strings, expiry, wrong-type errors,
-transactions, integer counters, list ordering and key deletion against the exact Redis/Valkey pins. It is not
+transaction execution/discard, integer counters, list ordering, set membership/cardinality, hash field access, key deletion and conditional SET options against the exact Redis/Valkey pins. It is not
 part of the required Tcl/performance gates and is not full compatibility evidence.
 The runner deliberately preserves error text, so Redis/Valkey dialect differences
-remain visible; only expiry TTL timing is reduced to a semantic validity check.
+remain visible; expiry TTL timing is reduced to semantic validity/persistence checks rather than exact milliseconds.
 
 On a clean GitHub Actions `ubuntu-latest` checkout with native build prerequisites,
 provision candidate and references by running:
@@ -104,9 +104,9 @@ claimed until it executes on the exact candidate.
 
 The six required reference/row contexts run the original upstream Tcl files
 `unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
-Valkey. Each keyspace context additionally runs the original `unit/type/set`
-and `unit/scan` files as native-first child suites, so neither adds an optional
-check or policy bypass. Matrix fail-fast is
+Valkey. Each keyspace context additionally runs the original `unit/type/set`,
+`unit/bitfield` and `unit/scan` files as separate native-first child runs, so they
+add no matrix rows, optional checks or policy bypass. Matrix fail-fast is
 disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
@@ -160,11 +160,11 @@ Performance runs retain the unchanged default configuration.
 `ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
 `unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
 and carries the manifest's reason (including the hash-suite blocker above).
-The set and scan files are additional mandatory original units embedded in each
-keyspace matrix context; their native and candidate artifacts are retained
+The set, bitfield and scan files are additional mandatory original units embedded
+in each keyspace matrix context; their native and candidate artifacts are retained
 alongside that context's keyspace evidence. The scan selection preserves the
-complete pinned files, including Redis/Valkey-specific scan options; it does not
-claim the cursor implementation is an internal hash-table or cluster equivalent.
+complete pinned files, including Redis/Valkey-specific scan options; the cursor
+implementation is not claimed to be an internal hash-table or cluster equivalent.
 There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and
