@@ -128,6 +128,31 @@ fn hash_random_count_range_is_checked_before_lookup_in_all_modes() {
 }
 
 #[test]
+fn smove_destination_type_and_watch_semantics_work_over_tcp_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut watcher = connect(&server);
+        let mut mover = connect(&server);
+        command(&mut watcher, &[b"SADD", b"src", b"a", b"b"], b":2\r\n");
+        command(&mut watcher, &[b"SADD", b"dst", b"a"], b":1\r\n");
+        command(&mut watcher, &[b"SET", b"wrong", b"type"], b"+OK\r\n");
+        command(
+            &mut watcher,
+            &[b"SMOVE", b"absent", b"wrong", b"member"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+
+        command(&mut watcher, &[b"WATCH", b"dst"], b"+OK\r\n");
+        command(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        command(&mut watcher, &[b"SADD", b"dst", b"c"], b"+QUEUED\r\n");
+        command(&mut mover, &[b"SMOVE", b"src", b"dst", b"a"], b":1\r\n");
+        command(&mut watcher, &[b"EXEC"], b"*1\r\n:1\r\n");
+        command(&mut watcher, &[b"SCARD", b"dst"], b":2\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn collection_mutations_work_over_tcp_in_all_execution_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);

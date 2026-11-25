@@ -1376,10 +1376,8 @@ fn acl_counted_set_cardinality_checks_only_counted_keys() {
         ],
         b"+OK\r\n",
     );
-    let mut client = connect(&server);
-    send(&mut client, &[b"AUTH", b"counter", b"pw"], b"+OK\r\n");
     send(
-        &mut client,
+        &mut admin,
         &[
             b"ACL",
             b"DRYRUN",
@@ -1395,7 +1393,7 @@ fn acl_counted_set_cardinality_checks_only_counted_keys() {
         b"+OK\r\n",
     );
     send(
-        &mut client,
+        &mut admin,
         &[
             b"ACL",
             b"DRYRUN",
@@ -1410,7 +1408,7 @@ fn acl_counted_set_cardinality_checks_only_counted_keys() {
         b"+OK\r\n",
     );
     send(
-        &mut client,
+        &mut admin,
         &[
             b"ACL",
             b"DRYRUN",

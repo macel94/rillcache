@@ -232,6 +232,14 @@ impl ShardExecutor {
                     self.auto_aof_rewrite_min_size().to_string(),
                 ));
             }
+            let wants_save = if wildcard {
+                glob_match(&folded_pattern, b"save")
+            } else {
+                pattern.eq_ignore_ascii_case(b"save")
+            };
+            if wants_save {
+                matches.push((b"save", String::new()));
+            }
             let wants_appendonly = if wildcard {
                 glob_match(&folded_pattern, b"appendonly")
             } else {
@@ -471,6 +479,11 @@ impl ShardExecutor {
                     return;
                 };
                 maxclients = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"save") {
+                if !pair[1].is_empty() {
+                    out.extend_from_slice(b"-ERR RDB snapshots are unsupported\r\n");
+                    return;
+                }
             } else if pair[0].eq_ignore_ascii_case(b"appendonly")
                 || pair[0].eq_ignore_ascii_case(b"appendfilename")
             {
@@ -847,6 +860,37 @@ mod tests {
             .starts_with(b"-ERR")
         );
         assert_eq!(store.auto_aof_rewrite_percentage(), 0);
+    }
+
+    #[test]
+    fn rdb_save_config_only_accepts_disabled_snapshots() {
+        let store = ShardExecutor::new(1024);
+        let empty_save = b"*2\r\n$4\r\nsave\r\n$0\r\n\r\n";
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"save", b""]),
+            b"+OK\r\n"
+        );
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
+        assert!(run(&store, &[b"CONFIG", b"SET", b"save", b"900 1"])
+            .starts_with(b"-ERR RDB snapshots are unsupported"));
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
+        assert!(run(
+            &store,
+            &[
+                b"CONFIG",
+                b"SET",
+                b"maxclients",
+                b"20",
+                b"save",
+                b"900 1"
+            ]
+        )
+        .starts_with(b"-ERR"));
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxclients"]),
+            b"*2\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n"
+        );
     }
 
     #[test]
