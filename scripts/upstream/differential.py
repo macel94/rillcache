@@ -1,6 +1,7 @@
 """Versioned, deterministic Redis/Valkey differential corpus (execution is hosted-only)."""
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -58,7 +59,10 @@ def run(output, candidate):
     manifest = json.loads(MANIFEST.read_text())
     seed = int(manifest["seed"])
     results = {"schema": 1, "manifest": str(MANIFEST.relative_to(common.ROOT)), "seed": seed,
-               "candidate": {"path": str(candidate), "sha256": common.digest(candidate)},
+               "candidate": {"path": str(candidate), "sha256": common.digest(candidate),
+                             "version": os.environ.get("GITHUB_SHA") or common.probe(
+                                 ["git", "rev-parse", "HEAD"], timeout=10, cwd=common.ROOT,
+                                 capture_output=True, text=True, check=True).stdout.strip()},
                "references": {}, "divergences": []}
     # Existing launchers use pinned sources. Override only the candidate executable.
     original_binary = common.binary
@@ -70,7 +74,14 @@ def run(output, candidate):
                 with common.server(name, output / reference / name, error_dialect=reference if name == "rillcache" else None) as (_, port):
                     with common.Client(port) as client:
                         for index, case in enumerate(manifest["cases"]):
-                            results["references"][reference]["cases"].setdefault(case["id"], {})[name] = run_case(client, case, seed + index)
+                            try:
+                                case_result = run_case(client, case, seed + index)
+                            except Exception as error:
+                                results["references"][reference]["cases"].setdefault(case["id"], {})[name] = {
+                                    "failure": f"{type(error).__name__}: {error}"}
+                                common.save(output / "result.json", results)
+                                raise
+                            results["references"][reference]["cases"].setdefault(case["id"], {})[name] = case_result
                             common.save(output / "result.json", results)
             for index, case in enumerate(manifest["cases"]):
                 pair = results["references"][reference]["cases"][case["id"]]
