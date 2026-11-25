@@ -122,7 +122,23 @@ each pinned reference, using the same native-first runner and exclusions. Retain
 the `upstream-tcl-hash-diagnostic-*` archives even when a control or candidate
 fails. These jobs do not run on PRs or replace any of the six required Tcl rows.
 A passing diagnostic applies only to its tested revision and selection; it does
-not approve a release profile or establish full hash compatibility.
+not approve a release profile or establish full hash compatibility. The hash
+family remains diagnostic because its unchanged original suite exercises
+`DUMP`/`RESTORE` in `Hash ziplist of various encodings` and
+`Hash ziplist of various encodings - sanitize dump`, while those commands are
+explicitly excluded from the standalone profile. The tests are not filtered or
+rewritten, so this known unsupported surface remains a visible failure rather
+than a passing hash claim. This constraint is recorded in
+`ci/upstream/scope.json` under `diagnostic_suite_reasons`.
+
+The preserved diagnostic on head `a354626` (run
+[45153905180](https://github.com/macel94/rillcache/actions/runs/45153905180))
+confirms that both pinned native controls completed: Redis passed 87 tests and
+Valkey passed 84 tests, with no named test failures. Rillcache failed the same
+two named tests against each reference because `DUMP` is unsupported and the
+second test then lacks its dump input. This red result is diagnostic evidence,
+not an exclusion-adjusted pass or a basis to promote hash to the mandatory PR
+matrix. The original run artifacts retain both endpoint logs and counts.
 
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
@@ -138,8 +154,10 @@ These configured results are not proof that one unconfigured default returns
 both contradictory errors or that all other vendor divergences are supported.
 Performance runs retain the unchanged default configuration.
 
-`ci/upstream/scope.json` is the capability/exclusion manifest. There are no
-hand-copied or Rust-reimplemented upstream assertions and no test patches,
+`ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
+`unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
+and carries the manifest's reason (including the hash-suite blocker above).
+There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and
 after execution. The original `tests/test_helper.tcl` coordinator and support
