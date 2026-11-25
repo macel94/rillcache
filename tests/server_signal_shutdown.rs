@@ -8,7 +8,7 @@ mod signal_cancellation;
 mod unix {
     use super::signal_cancellation;
     use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::net::{SocketAddr, TcpStream};
     use std::process::{Child, Command, Stdio};
     use std::sync::mpsc;
     use std::thread;
@@ -35,15 +35,14 @@ mod unix {
     }
 
     fn start_with(directory: &std::path::Path, extra: &[&str]) -> (ServerProcess, SocketAddr) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-
+        // Let the server itself bind port zero. Reserving a port here and then
+        // dropping the listener before spawn creates a TOCTOU race with other
+        // parallel integration tests and can fail with EADDRINUSE.
         let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
         command
             .args([
                 "--bind",
-                &address.to_string(),
+                "127.0.0.1:0",
                 "--appendonly",
                 "yes",
                 "--appendfsync",
@@ -91,7 +90,13 @@ mod unix {
             .recv_timeout(Duration::from_secs(10))
             .expect("server did not announce readiness")
             .expect("server stderr read failed");
-        assert!(ready.contains(" listening on "), "{ready}");
+        let address = ready
+            .split_once(" listening on ")
+            .expect("server readiness log did not include bound address")
+            .1
+            .trim()
+            .parse::<SocketAddr>()
+            .expect("server readiness log contained invalid bound address");
         (server, address)
     }
 
