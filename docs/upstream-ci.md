@@ -70,6 +70,36 @@ GitHub's API. Every `uses:` is a full verified commit SHA; action identities are
 also recorded in `pins.json`. Preserve old run evidence and disclose changes.
 Never reuse compiled native sources with different make flags.
 
+## Opt-in deterministic differential corpus v1
+
+The initial command-group corpus compares binary strings, expiry, wrong-type errors,
+transactions and integer counters against the exact Redis/Valkey pins. It is not
+part of the required Tcl/performance gates and is not full compatibility evidence.
+The runner deliberately preserves error text, so Redis/Valkey dialect differences
+remain visible; only expiry TTL timing is reduced to a semantic validity check.
+
+On a clean GitHub Actions `ubuntu-latest` checkout with native build prerequisites,
+provision candidate and references by running:
+
+```sh
+python3 scripts/upstream/prepare.py --bundle
+python3 scripts/upstream/differential.py \\
+  --candidate target/upstream/rillcache \\
+  --output target/upstream/evidence/differential-v1
+```
+
+`prepare.py` itself refuses to build outside Actions; it checksum-verifies the
+pinned source archives and builds the candidate plus pinned Redis 8.10.2 and
+Valkey 9.1.2 servers. Do not use binaries from another head/run or unverified
+source trees. The runner also defaults `--candidate` to that prepared candidate.
+The output directory retains `result.json`, each owned server's command identity
+and logs, candidate hash, reference versions, exact replies/errors, divergences
+and replay seeds. A divergence exits 1 after retaining evidence; provisioning or
+execution failures exit nonzero and leave partial result/logs. Do not rerun a
+failed candidate unchanged to seek a preferred outcome. This is an opt-in hosted
+study; existing required workflows remain unchanged and no differential pass is
+claimed until it executes on the exact candidate.
+
 ## Compatibility contract and exclusions
 
 Each independent matrix job selects one original upstream Tcl file:
