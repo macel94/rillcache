@@ -39,6 +39,17 @@ def case_commands(case, seed):
     return commands
 
 
+def normalize_replies(case, replies):
+    replies = list(replies)
+    if case.get("semantic") == "expiry":
+        ttl = replies[1].get("reply")
+        replies[1] = {"reply": "valid-positive-ttl" if isinstance(ttl, int) and 0 < ttl <= 500 else "invalid-ttl"}
+    elif case.get("semantic") == "expiry-persist":
+        ttl = replies[2].get("reply")
+        replies[2] = {"reply": "persistent" if ttl == -1 else "invalid-persistent-ttl"}
+    return replies
+
+
 def run_case(client, case, seed):
     replies = []
     for command in case_commands(case, seed):
@@ -48,11 +59,8 @@ def run_case(client, case, seed):
             replies.append({"reply": encode(client.call(*command))})
         except RuntimeError as error:
             replies.append({"error": str(error)})
-    if case.get("semantic") == "expiry":
-        # PTTL is timing-dependent; compare its type/range and eventual expiry, not milliseconds.
-        ttl = replies[1].get("reply")
-        replies[1] = {"reply": "valid-positive-ttl" if isinstance(ttl, int) and 0 < ttl <= 500 else "invalid-ttl"}
-    return replies
+    # TTL milliseconds are clock-dependent; compare expiry validity, not timing.
+    return normalize_replies(case, replies)
 
 
 def run(output, candidate):
