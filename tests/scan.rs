@@ -281,11 +281,15 @@ fn collection_scans_page_hash_set_and_zset_members() {
     assert_eq!(hash_values.len(), fields.len() * 2);
     assert!(
         hash_values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|pair| pair[1].as_slice() == b"value")
     );
     let mut found_fields: Vec<Vec<u8>> = hash_values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| pair[0].clone())
         .collect();
     found_fields.sort_unstable();
@@ -330,7 +334,9 @@ fn collection_scans_page_hash_set_and_zset_members() {
     let zset_values = collect_scan(&mut stream, b"ZSCAN", b"zset", &[b"COUNT", b"2"]);
     assert_eq!(zset_values.len(), members.len() * 2);
     let mut found_scores: Vec<(Vec<u8>, Vec<u8>)> = zset_values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0].clone(), pair[1].clone()))
         .collect();
     found_scores.sort_unstable_by(|left, right| left.0.cmp(&right.0));
