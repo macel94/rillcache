@@ -11,6 +11,7 @@
     {"id": "transaction", "commands": [["MULTI"], ["SET", "tx", "v"], ["GET", "tx"], ["EXEC"]]},
     {"id": "transaction-discard", "commands": [["MULTI"], ["SET", "discard", "v"], ["DISCARD"], ["EXISTS", "discard"]]},
     {"id": "set-membership", "commands": [["SADD", "members", "a", "b"], ["SISMEMBER", "members", "a"], ["SISMEMBER", "members", "missing"], ["SCARD", "members"]]},
+    {"id": "hash-field", "commands": [["HSET", "hash", "field", "value"], ["HGET", "hash", "field"], ["HEXISTS", "hash", "field"]]},
     {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
     {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"},
     {"id": "list-order", "commands": [["LPUSH", "list", "a", "b"], ["RPUSH", "list", "c"], ["LRANGE", "list", "0", "-1"]]},
