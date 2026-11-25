@@ -23,11 +23,12 @@ STATE_FILE = Path(os.environ.get("RILLCACHE_WAKE_STATE", str(STATE_DIR / "wake-s
 PANE = os.environ.get("RILLCACHE_PI_PANE", "%0")
 PID = int(os.environ.get("RILLCACHE_PI_PID", "3915422"))
 PANE_PID = int(os.environ.get("RILLCACHE_TMUX_PANE_PID", str(PID)))
+PANE_COMMAND = os.environ.get("RILLCACHE_TMUX_PANE_COMMAND", "pi")
 START_TICKS = os.environ.get("RILLCACHE_PI_START_TICKS", "25951090")
 TMUX = ["/usr/bin/tmux", "-S", os.environ.get("RILLCACHE_TMUX_SOCKET", "/tmp/tmux-0/default")]
 SESSION = os.environ.get("RILLCACHE_PI_SESSION", "rillcache-pr393-owner")
 META = "#{session_name}|#{pane_pid}|#{pane_current_command}|#{pane_dead}|#{pane_in_mode}"
-EXPECTED = f"{SESSION}|{PANE_PID}|pi|0|0"
+EXPECTED = f"{SESSION}|{PANE_PID}|{PANE_COMMAND}|0|0"
 MIN_WAIT_SECONDS = 60 * 60
 HEARTBEAT_SECONDS = 24 * 60 * 60
 TAIL_BYTES = 1024 * 1024
@@ -154,6 +155,14 @@ def tmux(*args: str) -> str:
     return subprocess.check_output([*TMUX, *args], text=True, timeout=3)
 
 
+def expected_pane_meta(session: str, pane_pid: int, pane_command: str) -> str:
+    return f"{session}|{pane_pid}|{pane_command}|0|0"
+
+
+def pane_owns_pi(pane_pid: int, pi_pid: int, children: str) -> bool:
+    return pane_pid == pi_pid or str(pi_pid) in children.split()
+
+
 def empty_composer(screen: str) -> bool:
     lines = screen.rstrip("\n").splitlines()
     borders = [i for i, line in enumerate(lines) if re.fullmatch(r"─{10,}", line.rstrip())]
@@ -168,6 +177,13 @@ def ready() -> tuple[tuple[int, int] | None, str]:
         return None, "paused"
     if tmux("display-message", "-p", "-t", PANE, META).strip() != EXPECTED:
         return None, "pinned pane is absent, changed, or in copy mode"
+    if PID != PANE_PID:
+        try:
+            children = Path(f"/proc/{PANE_PID}/task/{PANE_PID}/children").read_text()
+        except OSError:
+            return None, "pinned pane process tree is unavailable"
+        if not pane_owns_pi(PANE_PID, PID, children):
+            return None, "pinned Pi is not a child of the expected tmux pane"
     stat = Path(f"/proc/{PID}/stat").read_text().rsplit(")", 1)[1].split()
     if stat[19] != START_TICKS:
         return None, "pinned Pi process identity changed"

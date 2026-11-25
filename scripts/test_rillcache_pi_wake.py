@@ -8,6 +8,15 @@ import rillcache_pi_wake as wake
 
 
 class WakeDecisionTests(unittest.TestCase):
+    def test_pane_metadata_supports_explicit_shell_command(self):
+        self.assertEqual(wake.expected_pane_meta("agent", 123, "sh"), "agent|123|sh|0|0")
+        self.assertEqual(wake.expected_pane_meta("agent", 123, "pi"), "agent|123|pi|0|0")
+
+    def test_pinned_pi_must_belong_to_expected_pane(self):
+        self.assertTrue(wake.pane_owns_pi(10, 11, "11 12"))
+        self.assertFalse(wake.pane_owns_pi(10, 11, "12 13"))
+        self.assertTrue(wake.pane_owns_pi(10, 10, ""))
+
     def test_continue_mode_always_wakes(self):
         self.assertTrue(wake.should_wake("continue", None, "", "p", 100)[0])
         self.assertTrue(wake.should_wake("continue", {"fingerprint": "same", "prompt_hash": "p", "last_wake": 99}, "same", "p", 100)[0])
