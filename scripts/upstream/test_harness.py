@@ -51,9 +51,10 @@ class ScopeTests(unittest.TestCase):
             "unit/type/set": "unit/keyspace",
             "unit/bitfield": "unit/keyspace",
             "unit/scan": "unit/keyspace",
+            "unit/quit": "unit/keyspace",
         })
         self.assertEqual(
-            ["unit/type/set", "unit/bitfield", "unit/scan"],
+            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit"],
             compat.embedded_suites("unit/keyspace"),
         )
         self.assertEqual([], compat.embedded_suites("unit/type/string"))
@@ -83,13 +84,13 @@ class ScopeTests(unittest.TestCase):
 
 class ProcessTests(unittest.TestCase):
     def test_embedded_suites_run_as_children_and_propagate_failures(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children) as run:
             self.assertEqual(1, compat.run_embedded_suites("unit/keyspace", "redis"))
-        self.assertEqual(3, run.call_count)
+        self.assertEqual(4, run.call_count)
         for call, suite in zip(
             run.call_args_list,
-            ("unit/type/set", "unit/bitfield", "unit/scan"),
+            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit"),
         ):
             argv = call.args[0]
             self.assertEqual("--reference", argv[2])
@@ -99,7 +100,7 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual({"check": False}, call.kwargs)
 
     def test_embedded_suite_signal_exit_is_not_a_pass(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children):
             self.assertEqual(2, compat.run_embedded_suites("unit/keyspace", "redis"))
 
@@ -276,7 +277,7 @@ class CompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)
             units = (
-                "unit/type/string", "unit/type/set", "unit/bitfield", "unit/scan",
+                "unit/type/string", "unit/type/set", "unit/bitfield", "unit/scan", "unit/quit",
                 "unit/type/hash", "unit/moduleapi/a", "unit/protocol", "integration/repl",
             )
             for unit in units:
@@ -284,7 +285,7 @@ class CompatibilityTests(unittest.TestCase):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text("# original")
             inventory = compat.inventory(tree, "unit/type/string")
-            self.assertEqual(8, len(inventory))
+            self.assertEqual(9, len(inventory))
             self.assertEqual(1, sum(item["selected_in_this_job"] for item in inventory))
             self.assertTrue(all(item["reason"] for item in inventory))
             by_unit = {item["unit"]: item for item in inventory}
@@ -295,6 +296,8 @@ class CompatibilityTests(unittest.TestCase):
             self.assertTrue(by_unit["unit/bitfield"]["selected_in_matrix"])
             self.assertEqual("mandatory", by_unit["unit/scan"]["classification"])
             self.assertTrue(by_unit["unit/scan"]["selected_in_matrix"])
+            self.assertEqual("mandatory", by_unit["unit/quit"]["classification"])
+            self.assertTrue(by_unit["unit/quit"]["selected_in_matrix"])
             self.assertEqual("diagnostic", by_unit["unit/type/hash"]["classification"])
             self.assertIn("DUMP/RESTORE", by_unit["unit/type/hash"]["reason"])
             self.assertEqual("excluded", by_unit["unit/protocol"]["classification"])
