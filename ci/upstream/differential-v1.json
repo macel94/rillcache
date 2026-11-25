@@ -9,6 +9,7 @@
     {"id": "wrong-type", "commands": [["SET", "wrong", "v"], ["LPUSH", "wrong", "x"]], "semantic": "error"},
     {"id": "transaction", "commands": [["MULTI"], ["SET", "tx", "v"], ["GET", "tx"], ["EXEC"]]},
     {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
-    {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"}
+    {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"},
+    {"id": "list-order", "commands": [["LPUSH", "list", "a", "b"], ["RPUSH", "list", "c"], ["LRANGE", "list", "0", "-1"]]}
   ]
 }
