@@ -96,6 +96,11 @@ jobs:
           REFERENCE: ${{ matrix.reference }}
           SUITE: ${{ matrix.suite.path }}
         run: python3 scripts/upstream/compatibility.py --reference "$REFERENCE" --suite "$SUITE"
+      - name: Run the original set suite in the required keyspace context
+        if: always() && matrix.suite.id == 'keyspace'
+        env:
+          REFERENCE: ${{ matrix.reference }}
+        run: python3 scripts/upstream/compatibility.py --reference "$REFERENCE" --suite unit/type/set
       - name: Preserve both endpoints, counts, prerequisites, exclusions and unreached tests
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

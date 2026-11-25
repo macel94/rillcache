@@ -27,7 +27,9 @@ an accepted delivery path.
 - **Container verification and both native builds**: `verify`,
   `build (amd64, ubuntu-24.04)` and `build (arm64, ubuntu-24.04-arm)` must all pass.
 - **Original Tcl compatibility**: the pinned tool build and every Redis/Valkey
-  string/incr/keyspace matrix check must pass; native-control/setup failures count.
+  string/incr/keyspace matrix check must pass; the keyspace context also runs the
+  original `unit/type/set` suite against each native control and candidate.
+  Native-control/setup failures count.
 - **PR policy self-tests**: `read-only-self-tests` must pass. The audit branch adds
   actual live-rule verification here; that source rollout requires its protected PR.
 
