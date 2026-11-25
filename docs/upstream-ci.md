@@ -70,11 +70,44 @@ GitHub's API. Every `uses:` is a full verified commit SHA; action identities are
 also recorded in `pins.json`. Preserve old run evidence and disclose changes.
 Never reuse compiled native sources with different make flags.
 
+## Opt-in deterministic differential corpus v1
+
+The initial command-group corpus compares binary strings, expiry, wrong-type errors,
+transaction execution/discard, integer counters, list ordering, set membership/cardinality, hash field access, key deletion and conditional SET options against the exact Redis/Valkey pins. It is not
+part of the required Tcl/performance gates and is not full compatibility evidence.
+The runner deliberately preserves error text, so Redis/Valkey dialect differences
+remain visible; expiry TTL timing is reduced to semantic validity/persistence checks rather than exact milliseconds.
+
+On a clean GitHub Actions `ubuntu-latest` checkout with native build prerequisites,
+provision candidate and references by running:
+
+```sh
+python3 scripts/upstream/prepare.py --bundle
+python3 scripts/upstream/differential.py \\
+  --candidate target/upstream/rillcache \\
+  --output target/upstream/evidence/differential-v1
+```
+
+`prepare.py` itself refuses to build outside Actions; it checksum-verifies the
+pinned source archives and builds the candidate plus pinned Redis 8.10.2 and
+Valkey 9.1.2 servers. Do not use binaries from another head/run or unverified
+source trees. The runner also defaults `--candidate` to that prepared candidate.
+The output directory retains `result.json`, each owned server's command identity
+and logs, candidate hash, reference versions, exact replies/errors, divergences
+and replay seeds. A divergence exits 1 after retaining evidence; provisioning or
+execution failures exit nonzero and leave partial result/logs. Do not rerun a
+failed candidate unchanged to seek a preferred outcome. This is an opt-in hosted
+study; existing required workflows remain unchanged and no differential pass is
+claimed until it executes on the exact candidate.
+
 ## Compatibility contract and exclusions
 
-Each independent matrix job selects one original upstream Tcl file:
-`unit/type/string`, `unit/type/incr`, or `unit/keyspace`, separately for Redis and
-Valkey. Matrix fail-fast is disabled. An original native control runs **first**
+The six required reference/row contexts run the original upstream Tcl files
+`unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
+Valkey. Each keyspace context additionally runs the original `unit/type/set` and
+`unit/bitfield` files as separate native-first child runs, so they add no matrix
+rows, optional checks or policy bypass. Matrix fail-fast is
+disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
 are loopback TCP, not linked libraries. Native results are saved before candidate
@@ -92,7 +125,23 @@ each pinned reference, using the same native-first runner and exclusions. Retain
 the `upstream-tcl-hash-diagnostic-*` archives even when a control or candidate
 fails. These jobs do not run on PRs or replace any of the six required Tcl rows.
 A passing diagnostic applies only to its tested revision and selection; it does
-not approve a release profile or establish full hash compatibility.
+not approve a release profile or establish full hash compatibility. The hash
+family remains diagnostic because its unchanged original suite exercises
+`DUMP`/`RESTORE` in `Hash ziplist of various encodings` and
+`Hash ziplist of various encodings - sanitize dump`, while those commands are
+explicitly excluded from the standalone profile. The tests are not filtered or
+rewritten, so this known unsupported surface remains a visible failure rather
+than a passing hash claim. This constraint is recorded in
+`ci/upstream/scope.json` under `diagnostic_suite_reasons`.
+
+The preserved diagnostic on head `a354626` (run
+[45153905180](https://github.com/macel94/rillcache/actions/runs/45153905180))
+confirms that both pinned native controls completed: Redis passed 87 tests and
+Valkey passed 84 tests, with no named test failures. Rillcache failed the same
+two named tests against each reference because `DUMP` is unsupported and the
+second test then lacks its dump input. This red result is diagnostic evidence,
+not an exclusion-adjusted pass or a basis to promote hash to the mandatory PR
+matrix. The original run artifacts retain both endpoint logs and counts.
 
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
@@ -108,8 +157,13 @@ These configured results are not proof that one unconfigured default returns
 both contradictory errors or that all other vendor divergences are supported.
 Performance runs retain the unchanged default configuration.
 
-`ci/upstream/scope.json` is the capability/exclusion manifest. There are no
-hand-copied or Rust-reimplemented upstream assertions and no test patches,
+`ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
+`unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
+and carries the manifest's reason (including the hash-suite blocker above).
+The set and bitfield files are additional mandatory original units embedded in
+each keyspace matrix context; their native and candidate artifacts are retained
+alongside that context's keyspace evidence. There are no hand-copied or Rust-reimplemented upstream
+assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and
 after execution. The original `tests/test_helper.tcl` coordinator and support

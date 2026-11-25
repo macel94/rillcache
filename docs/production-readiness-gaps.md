@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Only three upstream Tcl files, no fuzz/soak, stale/contradictory public claims |
+| Verification and documentation | Partial | Only five upstream Tcl files, no fuzz/soak, stale/contradictory public claims |
 
 ---
 
@@ -1029,9 +1029,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only three upstream Tcl files are exercised.** [P0]
+- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
   The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` only. Modules, cluster, integration,
+  `unit/type/incr`, `unit/keyspace`, `unit/type/set`, and `unit/bitfield` (the
+  set and bitfield files are embedded in each required keyspace context). Modules, cluster, integration,
   scripting, most data types and many protocol surfaces are outside it, and
   several tags/units are excluded.
   **Closes when:** the supported profile is covered by the upstream suite (or an

@@ -1353,3 +1353,74 @@ user bob on >bob-password ~* &* +@all\n",
     server.shutdown().unwrap();
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn acl_counted_set_cardinality_checks_only_counted_keys() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"SADD", b"app:a", b"x"], b":1\r\n");
+    send(&mut admin, &[b"SADD", b"app:b", b"x", b"y"], b":2\r\n");
+    send(&mut admin, &[b"SADD", b"private:s", b"secret"], b":1\r\n");
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"counter",
+            b"on",
+            b">pw",
+            b"-@all",
+            b"+sunioncard",
+            b"+sdiffcard",
+            b"~app:*",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SUNIONCARD",
+            b"2",
+            b"app:a",
+            b"app:b",
+            b"APPROX",
+            b"LIMIT",
+            b"1",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SDIFFCARD",
+            b"2",
+            b"app:a",
+            b"app:b",
+            b"LIMIT",
+            b"1",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SUNIONCARD",
+            b"2",
+            b"app:a",
+            b"private:s",
+            b"LIMIT",
+            b"1",
+        ],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    server.shutdown().unwrap();
+}

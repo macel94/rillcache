@@ -203,6 +203,19 @@ impl ShardExecutor {
             } else {
                 self.set_intercard(args, out);
             }
+        } else if command.eq_ignore_ascii_case(b"SUNIONCARD")
+            || command.eq_ignore_ascii_case(b"SDIFFCARD")
+        {
+            let operation = if command.eq_ignore_ascii_case(b"SUNIONCARD") {
+                "sunioncard"
+            } else {
+                "sdiffcard"
+            };
+            if args.len() < 3 {
+                arity(operation, out);
+            } else {
+                self.set_cardinality(args, operation, out);
+            }
         } else if command.eq_ignore_ascii_case(b"SINTERSTORE")
             || command.eq_ignore_ascii_case(b"SUNIONSTORE")
             || command.eq_ignore_ascii_case(b"SDIFFSTORE")
@@ -3576,6 +3589,18 @@ impl ShardExecutor {
         // leave the source and (unless already present) enter the destination,
         // so the payload cannot grow and no admission/eviction is needed. Packs
         // and missing destinations keep the general encode path below.
+        let source_is_wrong_type = data
+            .entries
+            .get(source)
+            .is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_set));
+        let destination_is_wrong_type = data
+            .entries
+            .get(destination)
+            .is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_set));
+        if source_is_wrong_type || destination_is_wrong_type {
+            wrong_type(out);
+            return;
+        }
         let source_collection = data
             .entries
             .get(source)
@@ -3584,12 +3609,6 @@ impl ShardExecutor {
             .entries
             .get(destination)
             .and_then(|entry| entry.collection.as_ref());
-        if source_collection.is_some_and(|collection| !collection.is_set())
-            || destination_collection.is_some_and(|collection| !collection.is_set())
-        {
-            wrong_type(out);
-            return;
-        }
         if let (Some(Collection::Set(source_values)), Some(Collection::Set(destination_values))) =
             (source_collection, destination_collection)
         {
@@ -3635,7 +3654,9 @@ impl ShardExecutor {
                     }
                     data.payload_bytes = total;
                     data.touch(source);
-                    data.touch(destination);
+                    if !already {
+                        data.touch(destination);
+                    }
                     integer(1, out);
                     return;
                 }
@@ -3676,14 +3697,18 @@ impl ShardExecutor {
             .get(destination)
             .and_then(|entry| entry.expires);
         let destination_previous = data.entries.get(destination).map(Entry::payload_len);
+        let already = destination_set.contains(member);
         source_set.remove(member);
-        destination_set.insert(member.to_vec());
+        if !already {
+            destination_set.insert(member.to_vec());
+        }
         let source_bytes = source_set.iter().map(Vec::len).sum::<usize>();
         let destination_bytes = destination_set.iter().map(Vec::len).sum::<usize>();
         let mut total = data.payload_bytes;
+        let affected_destination = if already { None } else { destination_previous };
         for (key, previous) in [
             (source, Some(source_previous)),
-            (destination, destination_previous),
+            (destination, affected_destination),
         ] {
             if let Some(previous) = previous {
                 let Some(next) = total.checked_sub(key.len() + previous) else {
@@ -3700,7 +3725,7 @@ impl ShardExecutor {
             };
             total = next;
         }
-        if !destination_set.is_empty() {
+        if !already && !destination_set.is_empty() {
             let Some(next) = total.checked_add(destination.len() + destination_bytes) else {
                 out.extend_from_slice(OOM);
                 return;
@@ -3721,11 +3746,13 @@ impl ShardExecutor {
             let encoded = encode_set(source_set, &config);
             data.put_collection(source, encoded, source_expires, total, now);
         }
-        if destination_set.is_empty() {
-            data.remove(destination);
-        } else {
-            let encoded = encode_set(destination_set, &config);
-            data.put_collection(destination, encoded, destination_expires, total, now);
+        if !already {
+            if destination_set.is_empty() {
+                data.remove(destination);
+            } else {
+                let encoded = encode_set(destination_set, &config);
+                data.put_collection(destination, encoded, destination_expires, total, now);
+            }
         }
         integer(1, out);
     }
@@ -3822,6 +3849,83 @@ impl ShardExecutor {
             result.len()
         } else {
             result.len().min(limit)
+        };
+        integer(cardinality as i64, out);
+    }
+
+    fn set_cardinality(&self, args: &[&[u8]], operation: &str, out: &mut Vec<u8>) {
+        let Some(numkeys) = parse_i64(args[1]).filter(|count| *count > 0) else {
+            out.extend_from_slice(b"-ERR numkeys should be greater than 0\r\n");
+            return;
+        };
+        let numkeys = usize::try_from(numkeys).unwrap_or(usize::MAX);
+        if numkeys > args.len().saturating_sub(2) {
+            out.extend_from_slice(b"-ERR Number of keys can't be greater than number of args\r\n");
+            return;
+        }
+        let keys_end = 2 + numkeys;
+        let is_union = operation == "sunioncard";
+        let mut limit = 0usize;
+        let mut index = keys_end;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"LIMIT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]).filter(|value| *value >= 0) else {
+                    out.extend_from_slice(b"-ERR LIMIT can't be negative\r\n");
+                    return;
+                };
+                limit = usize::try_from(value).unwrap_or(usize::MAX);
+                index += 2;
+            } else if is_union && args[index].eq_ignore_ascii_case(b"APPROX") {
+                // Exact counting is valid for APPROX and remains within its error bound.
+                index += 1;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+
+        let Ok(mut data) = self.data.try_borrow_mut() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(numkeys);
+        for key in &args[2..keys_end] {
+            match owned_set(&mut data, key, now) {
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(BTreeSet::new());
+                }
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+
+        let cardinality = if is_union {
+            let mut union = BTreeSet::new();
+            'sets: for set in &sets {
+                for member in set {
+                    union.insert(member);
+                    if limit > 0 && union.len() >= limit {
+                        break 'sets;
+                    }
+                }
+            }
+            union.len()
+        } else {
+            let mut count = 0usize;
+            for member in &sets[0] {
+                if sets[1..].iter().all(|set| !set.contains(member)) {
+                    count += 1;
+                    if limit > 0 && count >= limit {
+                        break;
+                    }
+                }
+            }
+            count
         };
         integer(cardinality as i64, out);
     }
@@ -3983,6 +4087,10 @@ impl ShardExecutor {
         } else {
             None
         };
+        if count == Some(i64::MIN) {
+            out.extend_from_slice(b"-ERR value is out of range\r\n");
+            return;
+        }
         let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
@@ -5739,8 +5847,50 @@ mod tests {
             run(&store, &[b"SINTERCARD", b"2", b"a", b"b", b"LIMIT", b"1"]),
             b":1\r\n"
         );
+        assert_eq!(run(&store, &[b"SUNIONCARD", b"2", b"a", b"b"]), b":4\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[b"SUNIONCARD", b"2", b"a", b"b", b"APPROX", b"LIMIT", b"3"]
+            ),
+            b":3\r\n"
+        );
+        assert_eq!(run(&store, &[b"SDIFFCARD", b"2", b"a", b"b"]), b":1\r\n");
+        assert_eq!(
+            run(&store, &[b"SDIFFCARD", b"2", b"a", b"b", b"LIMIT", b"0"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SDIFFCARD", b"2", b"a", b"missing"]),
+            b":3\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SUNIONCARD", b"0", b"a"]),
+            b"-ERR numkeys should be greater than 0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SUNIONCARD", b"2", b"a"]),
+            b"-ERR Number of keys can't be greater than number of args\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SUNIONCARD", b"1", b"a", b"unexpected"]),
+            b"-ERR syntax error\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SDIFFCARD", b"1", b"a", b"APPROX"]),
+            b"-ERR syntax error\r\n"
+        );
+        assert_eq!(run(&store, &[b"SET", b"wrong", b"type"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"SUNIONCARD", b"2", b"a", b"wrong"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
         assert_eq!(run(&store, &[b"SMOVE", b"a", b"b", b"1"]), b":1\r\n");
         assert_eq!(run(&store, &[b"SMOVE", b"a", b"b", b"1"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"SMOVE", b"absent", b"wrong", b"member"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
         assert_eq!(run(&store, &[b"SREM", b"a", b"2"]), b":1\r\n");
         assert_eq!(run(&store, &[b"SINTERSTORE", b"i", b"a", b"b"]), b":1\r\n");
         assert_eq!(run(&store, &[b"SCARD", b"i"]), b":1\r\n");
@@ -5824,6 +5974,11 @@ mod tests {
         assert!(random == b"$1\r\na\r\n" || random == b"$1\r\nb\r\n");
         let many = run(&store, &[b"SRANDMEMBER", b"s", b"-3"]);
         assert!(many.starts_with(b"*3\r\n"));
+        assert_eq!(
+            run(&store, &[b"SRANDMEMBER", b"s", b"-9223372036854775808"]),
+            b"-ERR value is out of range\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"s"]), b":2\r\n");
         assert!(run(&store, &[b"SPOP", b"s", b"1"]).starts_with(b"*1\r\n"));
         assert!(run(&store, &[b"SPOP", b"s", b"1"]).starts_with(b"*1\r\n"));
         assert_eq!(run(&store, &[b"EXISTS", b"s"]), b":0\r\n");

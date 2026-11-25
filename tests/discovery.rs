@@ -213,9 +213,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":245\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":247\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*245\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*247\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -380,6 +380,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"scard",
             b"script",
             b"sdiff",
+            b"sdiffcard",
             b"sdiffstore",
             b"select",
             b"set",
@@ -409,6 +410,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"subscribe",
             b"substr",
             b"sunion",
+            b"sunioncard",
             b"sunionstore",
             b"sunsubscribe",
             b"swapdb",
@@ -722,6 +724,39 @@ fn command_getkeys_reuses_acl_key_specs() {
                 &mut client,
                 &[
                     b"COMMAND", b"GETKEYS", b"ZUNION", b"2", b"a", b"b", b"WEIGHTS", b"1", b"2",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"GETKEYS",
+                    b"SUNIONCARD",
+                    b"2",
+                    b"a",
+                    b"b",
+                    b"APPROX",
+                    b"LIMIT",
+                    b"1",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"GETKEYS",
+                    b"SDIFFCARD",
+                    b"2",
+                    b"a",
+                    b"b",
+                    b"LIMIT",
+                    b"1",
                 ]
             ),
             b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"

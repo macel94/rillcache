@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "name": "rillcache-v1-core",
+  "seed": 477,
+  "references": ["redis", "valkey"],
+  "cases": [
+    {"id": "binary-set-get", "commands": [["SET", "bin", {"bytes_hex": "610062ff"}], ["GET", "bin"]]},
+    {"id": "expiry", "commands": [["SET", "expire", "v", "PX", "500"], ["PTTL", "expire"], ["EXISTS", "expire"]], "semantic": "expiry"},
+    {"id": "expiry-persist", "commands": [["SET", "persist-expire", "v", "PX", "500"], ["PERSIST", "persist-expire"], ["PTTL", "persist-expire"], ["GET", "persist-expire"]], "semantic": "expiry-persist"},
+    {"id": "wrong-type", "commands": [["SET", "wrong", "v"], ["LPUSH", "wrong", "x"]], "semantic": "error"},
+    {"id": "transaction", "commands": [["MULTI"], ["SET", "tx", "v"], ["GET", "tx"], ["EXEC"]]},
+    {"id": "transaction-discard", "commands": [["MULTI"], ["SET", "discard", "v"], ["DISCARD"], ["EXISTS", "discard"]]},
+    {"id": "set-membership", "commands": [["SADD", "members", "a", "b"], ["SISMEMBER", "members", "a"], ["SISMEMBER", "members", "missing"], ["SCARD", "members"]]},
+    {"id": "hash-field", "commands": [["HSET", "hash", "field", "value"], ["HGET", "hash", "field"], ["HEXISTS", "hash", "field"]]},
+    {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
+    {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"},
+    {"id": "list-order", "commands": [["LPUSH", "list", "a", "b"], ["RPUSH", "list", "c"], ["LRANGE", "list", "0", "-1"]]},
+    {"id": "delete-key", "commands": [["SET", "delete", "value"], ["DEL", "delete"], ["EXISTS", "delete"]]},
+    {"id": "conditional-set", "commands": [["SET", "conditional", "first", "NX"], ["SET", "conditional", "ignored", "NX"], ["SET", "conditional", "second", "XX"], ["GET", "conditional"]]}
+  ]
+}
