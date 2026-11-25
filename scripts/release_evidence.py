@@ -9,8 +9,17 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-STAGES = ("merge", "compatibility", "security", "load-soak", "recovery", "rollout-rollback", "distribution-signoff")
-REVIEW_STAGES = {"security", "distribution-signoff"}
+STAGES = (
+    "merge",
+    "scope",
+    "compatibility",
+    "security",
+    "load-soak",
+    "recovery",
+    "rollout-rollback",
+    "distribution-signoff",
+)
+REVIEW_STAGES = {"scope", "security", "distribution-signoff"}
 IDENTITY = {"candidate": r"[0-9a-f]{40}", "artifact": r"sha256:[0-9a-f]{64}", "profile": r"[0-9a-f]{40}"}
 MAX_BYTES = 256 * 1024
 
@@ -47,8 +56,8 @@ def is_https(value) -> bool:
 
 
 def assess(record: dict, expected: dict[str, str]) -> dict:
-    if not isinstance(record, dict) or set(record) != {"schema", "results"} or type(record["schema"]) is not int or record["schema"] != 1:
-        raise ValueError("expected only schema 1 and results")
+    if not isinstance(record, dict) or set(record) != {"schema", "results"} or type(record["schema"]) is not int or record["schema"] != 2:
+        raise ValueError("expected only schema 2 and results")
     results = record["results"]
     if not isinstance(results, dict) or results.keys() - set(STAGES):
         raise ValueError("expected an object keyed by known evidence stages")
@@ -58,7 +67,10 @@ def assess(record: dict, expected: dict[str, str]) -> dict:
             checks[stage] = ["missing stage"]
             continue
         row = results[stage]
-        names = set(IDENTITY) | {"result", "method", "environment", "observed", "evidence_url", "reviewer"}
+        names = set(IDENTITY) | {
+            "result", "method", "environment", "observed", "evidence_url", "reviewer",
+            "supported_topology", "exclusions",
+        }
         if not isinstance(row, dict) or row.keys() - names or row.get("result") not in ("pass", "fail", "not-run"):
             raise ValueError(f"invalid row: {stage}")
         problems = [f"{field} missing or does not match" for field, value in expected.items() if row.get(field) != value]
@@ -72,6 +84,12 @@ def assess(record: dict, expected: dict[str, str]) -> dict:
                 problems.append("missing or invalid HTTPS evidence URL")
             if stage in REVIEW_STAGES and not is_text(row.get("reviewer")):
                 problems.append("missing named reviewer")
+            if stage == "scope":
+                if not is_text(row.get("supported_topology")):
+                    problems.append("missing supported topology")
+                exclusions = row.get("exclusions")
+                if not isinstance(exclusions, list) or any(not is_text(item) for item in exclusions):
+                    problems.append("missing or invalid exclusions list")
         checks[stage] = problems
     return {
         "record_complete": not any(checks.values()),
