@@ -49,6 +49,36 @@ fn watch_detects_writes_deletes_expiry_and_flush() {
 }
 
 #[test]
+fn smove_to_existing_member_leaves_destination_watch_unchanged() {
+    for expanded in [false, true] {
+        let store = ShardExecutor::new(4096);
+        if expanded {
+            assert_eq!(
+                call(
+                    &store,
+                    &[b"CONFIG", b"SET", b"set-max-listpack-entries", b"0"],
+                ),
+                b"+OK\r\n"
+            );
+        }
+        assert_eq!(call(&store, &[b"SADD", b"src", b"a", b"b"]), b":2\r\n");
+        assert_eq!(call(&store, &[b"SADD", b"dst", b"a"]), b":1\r\n");
+        let watched = store.watch_snapshot(&[b"dst"]).unwrap();
+        assert_eq!(call(&store, &[b"SMOVE", b"src", b"dst", b"a"]), b":1\r\n");
+
+        let mut out = Vec::new();
+        let outcome = store.execute_transaction(
+            &[vec![b"SADD".to_vec(), b"dst".to_vec(), b"c".to_vec()]],
+            &watched,
+            &mut out,
+        );
+        assert_eq!(outcome, TransactionOutcome::Completed(Action::Continue));
+        assert_eq!(out, b"*1\r\n:1\r\n");
+        assert_eq!(call(&store, &[b"SCARD", b"dst"]), b":2\r\n");
+    }
+}
+
+#[test]
 fn aborted_transaction_emits_one_null_array_and_executes_nothing() {
     let store = ShardExecutor::new(1024);
     assert_eq!(call(&store, &[b"SET", b"k", b"before"]), b"+OK\r\n");

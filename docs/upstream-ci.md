@@ -102,9 +102,11 @@ claimed until it executes on the exact candidate.
 
 ## Compatibility contract and exclusions
 
-Each independent matrix job selects one original upstream Tcl file:
-`unit/type/string`, `unit/type/incr`, or `unit/keyspace`, separately for Redis and
-Valkey. Matrix fail-fast is disabled. An original native control runs **first**
+The six required reference/row contexts run the original upstream Tcl files
+`unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
+Valkey. Each keyspace context additionally runs the original `unit/type/set`
+file, so it adds no optional check or policy bypass. Matrix fail-fast is
+disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
 are loopback TCP, not linked libraries. Native results are saved before candidate
@@ -157,7 +159,10 @@ Performance runs retain the unchanged default configuration.
 `ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
 `unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
 and carries the manifest's reason (including the hash-suite blocker above).
-There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
+The set file is an additional mandatory original unit embedded in each keyspace
+matrix context; its native and candidate artifacts are retained alongside that
+context's keyspace evidence. There are no hand-copied or Rust-reimplemented upstream
+assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and
 after execution. The original `tests/test_helper.tcl` coordinator and support

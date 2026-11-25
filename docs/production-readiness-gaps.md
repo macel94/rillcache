@@ -1029,9 +1029,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only three upstream Tcl files are exercised.** [P0]
+- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
   The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` only. Modules, cluster, integration,
+  `unit/type/incr`, `unit/keyspace`, and `unit/type/set` (the set file is embedded
+  in each required keyspace context). Modules, cluster, integration,
   scripting, most data types and many protocol surfaces are outside it, and
   several tags/units are excluded.
   **Closes when:** the supported profile is covered by the upstream suite (or an
