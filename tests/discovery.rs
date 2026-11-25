@@ -380,6 +380,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"scard",
             b"script",
             b"sdiff",
+            b"sdiffcard",
             b"sdiffstore",
             b"select",
             b"set",
@@ -409,6 +410,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"subscribe",
             b"substr",
             b"sunion",
+            b"sunioncard",
             b"sunionstore",
             b"sunsubscribe",
             b"swapdb",
@@ -722,6 +724,25 @@ fn command_getkeys_reuses_acl_key_specs() {
                 &mut client,
                 &[
                     b"COMMAND", b"GETKEYS", b"ZUNION", b"2", b"a", b"b", b"WEIGHTS", b"1", b"2",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"SUNIONCARD", b"2", b"a", b"b", b"APPROX",
+                    b"LIMIT", b"1",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"SDIFFCARD", b"2", b"a", b"b", b"LIMIT", b"1",
                 ]
             ),
             b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"

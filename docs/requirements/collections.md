@@ -43,9 +43,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R147 (event-driven):** When set mutation or algebra commands run, the server
   shall treat members as binary values, suppress duplicates, count removals once,
   and make `SMOVE` and the `SINTERSTORE`/`SUNIONSTORE`/`SDIFFSTORE` replacements
-  atomic. Sources and existing destinations shall be unchanged on wrong type,
-  invalid options or admission failure; an empty store result shall delete the
-  destination and clear its TTL.
+  atomic. `SUNIONCARD` and `SDIFFCARD` shall count the corresponding union and
+  difference without mutating keys, accept a positive counted key list, and honor
+  non-negative `LIMIT` where zero means unbounded; Redis `SUNIONCARD APPROX` may
+  return an exact count, which is within the estimate contract. All source keys
+  shall be type-checked even when a limit can stop the count. `SRANDMEMBER` shall
+  reject the minimum signed 64-bit count as out of range before sampling or
+  allocating a reply. Sources and existing destinations shall be unchanged on
+  wrong type, invalid options or admission failure; an empty store result shall
+  delete the destination and clear its TTL.
 - **R148 (event-driven):** When sorted-set mutation or range commands run, the
   server shall preserve IEEE-754 score ordering (including `-inf`/`+inf`) with
   binary member tie-breaking, apply `NX`/`XX`/`GT`/`LT`/`CH`/`INCR`, exclusive

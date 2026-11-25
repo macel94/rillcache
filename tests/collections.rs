@@ -189,6 +189,16 @@ fn collection_mutations_work_over_tcp_in_all_execution_modes() {
         );
         command(&mut stream, &[b"SDIFF", b"s1", b"s2"], b"*1\r\n$1\r\na\r\n");
         command(&mut stream, &[b"SINTERCARD", b"2", b"s1", b"s2"], b":2\r\n");
+        command(
+            &mut stream,
+            &[b"SUNIONCARD", b"2", b"s1", b"s2", b"APPROX", b"LIMIT", b"3"],
+            b":3\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SDIFFCARD", b"2", b"s1", b"s2", b"LIMIT", b"0"],
+            b":1\r\n",
+        );
         command(&mut stream, &[b"SMOVE", b"s1", b"s2", b"a"], b":1\r\n");
         command(&mut stream, &[b"SREM", b"s2", b"d"], b":1\r\n");
         command(
