@@ -14,7 +14,7 @@ class DifferentialCorpusTests(unittest.TestCase):
         manifest = json.loads(diff.MANIFEST.read_text())
         self.assertEqual(1, manifest["schema"])
         self.assertEqual(["redis", "valkey"], manifest["references"])
-        self.assertEqual({"binary-set-get", "expiry", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid"},
+        self.assertEqual({"binary-set-get", "expiry", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid", "list-order", "delete-key"},
                          {case["id"] for case in manifest["cases"]})
 
     def test_seeded_commands_repeat_and_binary_is_exact(self):
@@ -48,7 +48,7 @@ class DifferentialCorpusTests(unittest.TestCase):
                     pass
 
                 def call(self, *args):
-                    if args[0] == "LPUSH":
+                    if args[0] == "LPUSH" and args[1].startswith("wrong:"):
                         raise RuntimeError("ERR wrong kind of value" if active["name"] == "redis"
                                            else "WRONGTYPE Operation against a key holding the wrong kind of value")
                     return b"OK"
