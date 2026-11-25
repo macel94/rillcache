@@ -53,68 +53,154 @@ fn array(values: &[&[u8]]) -> Vec<u8> {
     output
 }
 
-fn cursor_page(cursor: &str, values: &[&[u8]]) -> Vec<u8> {
-    let mut output = format!("*2\r\n${}\r\n{cursor}\r\n", cursor.len()).into_bytes();
-    output.extend_from_slice(&array(values));
-    output
+fn resp_line(stream: &mut TcpStream) -> String {
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        if byte[0] == b'\r' {
+            stream.read_exact(&mut byte).unwrap();
+            assert_eq!(byte[0], b'\n');
+            break;
+        }
+        bytes.push(byte[0]);
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
+fn resp_bulk(stream: &mut TcpStream) -> Vec<u8> {
+    let length: usize = resp_line(stream).strip_prefix('$').unwrap().parse().unwrap();
+    let mut value = vec![0; length];
+    stream.read_exact(&mut value).unwrap();
+    let mut crlf = [0; 2];
+    stream.read_exact(&mut crlf).unwrap();
+    assert_eq!(&crlf, b"\r\n");
+    value
+}
+
+fn scan_page(stream: &mut TcpStream, cursor: &str, options: &[&[u8]]) -> (String, Vec<Vec<u8>>) {
+    let mut arguments = vec![b"SCAN".as_slice(), cursor.as_bytes()];
+    arguments.extend_from_slice(options);
+    let mut request = Vec::new();
+    encode_request(&arguments, &mut request);
+    stream.write_all(&request).unwrap();
+    assert_eq!(resp_line(stream), "*2");
+    let next = String::from_utf8(resp_bulk(stream)).unwrap();
+    let length: usize = resp_line(stream).strip_prefix('*').unwrap().parse().unwrap();
+    let values = (0..length).map(|_| resp_bulk(stream)).collect();
+    (next, values)
 }
 
 #[test]
-fn scan_pages_sorted_keys_with_wrapping_cursor_and_filters() {
+fn scan_traversal_filters_and_write_stability() {
     let server = start();
     let mut stream = connect(&server);
+    let mut expected = Vec::new();
     for index in 0..25 {
         let key = format!("k{index:02}");
         send(&mut stream, &[b"SET", key.as_bytes(), b"v"], b"+OK\r\n");
+        expected.push(key.into_bytes());
         if index % 5 == 0 {
+            let hash = format!("h{index:02}");
             send(
                 &mut stream,
-                &[b"HSET", format!("h{index:02}").as_bytes(), b"f", b"v"],
+                &[b"HSET", hash.as_bytes(), b"f", b"v"],
                 b":1\r\n",
             );
+            expected.push(hash.into_bytes());
         }
     }
-    send(
-        &mut stream,
-        &[b"SCAN", b"0", b"COUNT", b"5"],
-        &cursor_page("5", &[b"h00", b"h05", b"h10", b"h15", b"h20"]),
+    let mut cursor = "0".to_owned();
+    let mut found = Vec::new();
+    loop {
+        let (next, values) = scan_page(&mut stream, &cursor, &[b"COUNT", b"5"]);
+        found.extend(values);
+        cursor = next;
+        if cursor == "0" {
+            break;
+        }
+    }
+    found.sort();
+    expected.sort();
+    assert_eq!(found, expected);
+
+    cursor = "0".to_owned();
+    let mut matching = Vec::new();
+    loop {
+        let (next, values) = scan_page(
+            &mut stream,
+            &cursor,
+            &[b"MATCH", b"k1*", b"COUNT", b"5"],
+        );
+        matching.extend(values);
+        cursor = next;
+        if cursor == "0" {
+            break;
+        }
+    }
+    matching.sort();
+    assert_eq!(
+        matching,
+        (10..20)
+            .map(|index| format!("k{index:02}").into_bytes())
+            .collect::<Vec<_>>()
     );
-    send(
-        &mut stream,
-        &[b"SCAN", b"20", b"COUNT", b"10"],
-        &cursor_page(
-            "0",
-            &[
-                b"k15", b"k16", b"k17", b"k18", b"k19", b"k20", b"k21", b"k22", b"k23", b"k24",
-            ],
-        ),
+
+    cursor = "0".to_owned();
+    let mut hashes = Vec::new();
+    loop {
+        let (next, values) = scan_page(
+            &mut stream,
+            &cursor,
+            &[b"TYPE", b"hash", b"COUNT", b"5"],
+        );
+        hashes.extend(values);
+        cursor = next;
+        if cursor == "0" {
+            break;
+        }
+    }
+    hashes.sort();
+    assert_eq!(
+        hashes,
+        vec![
+            b"h00".to_vec(),
+            b"h05".to_vec(),
+            b"h10".to_vec(),
+            b"h15".to_vec(),
+            b"h20".to_vec(),
+        ]
     );
-    send(
-        &mut stream,
-        &[b"SCAN", b"24", b"COUNT", b"10"],
-        &cursor_page("0", &[b"k19", b"k20", b"k21", b"k22", b"k23", b"k24"]),
-    );
-    send(
-        &mut stream,
-        &[b"SCAN", b"25"],
-        &cursor_page("0", &[b"k20", b"k21", b"k22", b"k23", b"k24"]),
-    );
-    send(&mut stream, &[b"SCAN", b"30"], &cursor_page("0", &[]));
-    send(
-        &mut stream,
-        &[b"SCAN", b"0", b"MATCH", b"k1*", b"COUNT", b"100"],
-        &cursor_page(
-            "0",
-            &[
-                b"k10", b"k11", b"k12", b"k13", b"k14", b"k15", b"k16", b"k17", b"k18", b"k19",
-            ],
-        ),
-    );
-    send(
-        &mut stream,
-        &[b"SCAN", b"0", b"TYPE", b"hash", b"COUNT", b"100"],
-        &cursor_page("0", &[b"h00", b"h05", b"h10", b"h15", b"h20"]),
-    );
+
+    send(&mut stream, &[b"FLUSHALL"], b"+OK\r\n");
+    let mut originals = Vec::new();
+    for index in 0..100 {
+        let key = format!("key:{index:03}");
+        send(&mut stream, &[b"SET", key.as_bytes(), b"v"], b"+OK\r\n");
+        originals.push(key.into_bytes());
+    }
+    cursor = "0".to_owned();
+    found.clear();
+    let mut round = 0;
+    loop {
+        let (next, values) = scan_page(&mut stream, &cursor, &[b"COUNT", b"10"]);
+        found.extend(values);
+        cursor = next;
+        if cursor == "0" {
+            break;
+        }
+        if round < 10 {
+            for index in 0..10 {
+                let key = format!("added:{round}:{index}");
+                send(&mut stream, &[b"SET", key.as_bytes(), b"v"], b"+OK\r\n");
+            }
+            round += 1;
+        }
+    }
+    for original in originals {
+        assert!(found.contains(&original), "SCAN missed stable key {original:?}");
+    }
+
     for arguments in [
         &[b"SCAN".as_slice(), b"not-a-cursor"][..],
         &[b"SCAN".as_slice(), b"0", b"COUNT", b"0"][..],
@@ -203,6 +289,21 @@ fn collection_scans_page_hash_set_and_zset_members() {
         &mut stream,
         &[b"ZSCAN", b"zset", b"0", b"COUNT", b"2"],
         page.as_bytes(),
+    );
+    send(
+        &mut stream,
+        &[b"ZSCAN", b"zset", b"0", b"COUNT", b"2", b"NOSCORES"],
+        &cursor_page("2", &[b"m00", b"m01"]),
+    );
+    send(
+        &mut stream,
+        &[b"ZSCAN", b"zset", b"0", b"NOSCORES", b"MATCH", b"m0?"],
+        &cursor_page("0", &[b"m00", b"m01", b"m02", b"m03", b"m04"]),
+    );
+    send(
+        &mut stream,
+        &[b"ZSCAN", b"zset", b"0", b"NOVALUES"],
+        b"-ERR syntax error or invalid cursor\r\n",
     );
 
     send(

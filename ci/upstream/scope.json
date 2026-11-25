@@ -2,8 +2,8 @@
   "schema": 1,
   "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
   "compatibility": {
-    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/type/set"],
-    "embedded_suites": {"unit/type/set": "unit/keyspace"},
+    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/type/set", "unit/scan"],
+    "embedded_suites": {"unit/type/set": "unit/keyspace", "unit/scan": "unit/keyspace"},
     "diagnostic_suites": ["unit/type/hash"],
     "diagnostic_suite_reasons": {
       "unit/type/hash": "Not mandatory: the original suite includes Hash ziplist of various encodings and Hash ziplist of various encodings - sanitize dump, which issue DUMP/RESTORE. Those commands are explicitly outside the standalone profile; preserving the full upstream suite means this native-first comparison currently reports the divergence rather than filtering either test."

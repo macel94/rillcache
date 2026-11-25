@@ -5,23 +5,28 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Cursor iteration (S30)
 
 - **R121 (event-driven):** When `SCAN cursor [MATCH pattern] [COUNT n] [TYPE type]`
-  is received, the server shall reap expired keys, take a sorted live-key
-  snapshot, return at most the requested examined positions of matching keys and
-  a decimal continuation cursor, using `0` only when the snapshot is exhausted.
-  Matching and type filtering shall not prevent cursor progress or termination.
+  is received, the server shall skip logically expired keys, traverse live keys
+  in stable hash order, return a page of matching keys and a decimal continuation
+  cursor, using `0` only when traversal is exhausted. `COUNT` bounds ordinary
+  pages (equal-hash groups are returned together); matching and type filtering
+  shall not prevent cursor progress or termination.
 - **R122 (event-driven):** When `HSCAN`/`SSCAN`/`ZSCAN key cursor [MATCH] [COUNT]
-  [NOVALUES]` is received on a matching collection, the server shall iterate a
-  deterministic sorted snapshot and return fields/values, members or member/score
-  pairs; missing keys shall return cursor `0` and an empty array.
+  [NOVALUES|NOSCORES]` is received on a matching collection, the server shall
+  iterate a deterministic sorted snapshot and return fields/values, members or
+  member/score pairs; missing keys shall return cursor `0` and an empty array.
 - **R123 (unwanted behavior):** If the cursor is not a nonnegative canonical
   decimal, `COUNT` is not positive, an option is incomplete/unsupported, or the
   key has the wrong type, then the server shall return one bounded error without
-  mutating state. `NOVALUES` shall be accepted only for HSCAN, and `TYPE` only for
-  SCAN.
+  mutating state. `NOVALUES` shall be accepted only for HSCAN, `NOSCORES` only
+  for ZSCAN, and `TYPE` only for SCAN.
 - **R124 (state-driven):** While cursors are used, the server shall retain no
-  per-cursor state, bound each page's examined positions and returned data, and
-  document that mutation during iteration may skip or duplicate elements even
-  though a stable keyspace is fully traversed.
+  per-cursor state, apply the configured `COUNT` cap to ordinary pages, and
+  document that each SCAN call enumerates/sorts the live keyspace while collection
+  scans snapshot their selected collection. During a full SCAN traversal, every
+  key that remains present from its start through its completion shall be returned
+  at least once despite concurrent insertions; keys added during traversal may or
+  may not appear, and deleted keys may be omitted. A stable keyspace shall be
+  fully traversed without duplicates.
 
 ## Publish/subscribe (S31)
 

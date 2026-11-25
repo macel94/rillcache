@@ -1,10 +1,9 @@
 //! Bounded cursor iteration for the keyspace and collection types.
 //!
-//! Cursors are decimal indexes into a freshly sorted snapshot per call. Like
-//! Redis SCAN, the iteration is only a bounded traversal hint: concurrent
-//! insertions/deletions can produce duplicates or misses. For a stable keyspace
-//! every element is returned exactly once. No cursor state is retained between
-//! calls.
+//! SCAN cursors are decimal lower bounds over a stable key hash, so insertions
+//! during a traversal cannot shift existing keys past the continuation point.
+//! A stable keyspace returns every key exactly once. Collection cursors remain
+//! decimal indexes into freshly sorted snapshots. No cursor state is retained.
 
 use super::data::Collection;
 use super::keyspace::glob_match;
@@ -20,6 +19,7 @@ struct Options {
     pattern: Option<Vec<u8>>,
     kind: Option<Vec<u8>>,
     no_values: bool,
+    no_scores: bool,
 }
 
 impl Options {
@@ -28,6 +28,7 @@ impl Options {
         start: usize,
         scan_type: bool,
         scan_hash: bool,
+        scan_zset: bool,
     ) -> Result<Self, ()> {
         let raw = arguments.get(start).ok_or(())?;
         let cursor = parse_cursor(raw).ok_or(())?;
@@ -37,6 +38,7 @@ impl Options {
             pattern: None,
             kind: None,
             no_values: false,
+            no_scores: false,
         };
         let mut index = start + 1;
         while index < arguments.len() {
@@ -52,6 +54,8 @@ impl Options {
                 options.kind = Some(arguments.get(index).ok_or(())?.to_vec());
             } else if scan_hash && option.eq_ignore_ascii_case(b"NOVALUES") {
                 options.no_values = true;
+            } else if scan_zset && option.eq_ignore_ascii_case(b"NOSCORES") {
+                options.no_scores = true;
             } else {
                 return Err(());
             }
@@ -77,6 +81,15 @@ pub(super) fn parse_cursor(raw: &[u8]) -> Option<usize> {
 fn parse_count(raw: &[u8]) -> Result<usize, ()> {
     let count = parse_cursor(raw).filter(|count| *count > 0).ok_or(())?;
     Ok(count.min(MAX_COUNT))
+}
+
+fn scan_key_hash(key: &[u8]) -> u64 {
+    let hash = key
+        .iter()
+        .fold(14_695_981_039_346_656_037u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        });
+    hash % u64::MAX
 }
 
 impl ShardExecutor {
@@ -110,7 +123,7 @@ impl ShardExecutor {
     }
 
     fn scan_keys(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
-        let Ok(options) = Options::parse(arguments, 1, true, false) else {
+        let Ok(options) = Options::parse(arguments, 1, true, false, false) else {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
@@ -121,17 +134,30 @@ impl ShardExecutor {
         let now = self.now(&data);
         // Skip logically expired keys per visited element rather than reaping
         // the whole keyspace before the cursor slice.
-        let mut keys: Vec<&[u8]> = data
+        let mut keys: Vec<(u64, &[u8])> = data
             .entries
             .iter()
             .filter(|(_, entry)| entry.alive(now))
-            .map(|(key, _)| key.as_slice())
+            .map(|(key, _)| (scan_key_hash(key), key.as_slice()))
             .collect();
         keys.sort_unstable();
-        let start = options.cursor.min(keys.len());
-        let end = start.saturating_add(options.count).min(keys.len());
+        let cursor = options.cursor as u64;
+        let start = keys.partition_point(|(hash, _)| *hash < cursor);
+        let mut end = start;
+        while end < keys.len() {
+            let hash = keys[end].0;
+            let group_end =
+                keys[end..].partition_point(|(candidate, _)| *candidate == hash) + end;
+            if end > start && group_end - start > options.count {
+                break;
+            }
+            end = group_end;
+            if end - start >= options.count {
+                break;
+            }
+        }
         let mut selected = Vec::new();
-        for key in &keys[start..end] {
+        for (_, key) in &keys[start..end] {
             if !options.wants(key) {
                 continue;
             }
@@ -143,13 +169,23 @@ impl ShardExecutor {
             }
             selected.push(*key);
         }
-        let next = if end >= keys.len() { 0 } else { end };
+        let next = if end >= keys.len() {
+            0
+        } else {
+            keys[end - 1].0 + 1
+        };
         write_cursor_array(next, &selected, output);
     }
 
     fn scan_collection(&self, arguments: &[&[u8]], kind: Kind, output: &mut Vec<u8>) {
         let name = kind.name();
-        let Ok(options) = Options::parse(arguments, 2, false, kind == Kind::Hash) else {
+        let Ok(options) = Options::parse(
+            arguments,
+            2,
+            false,
+            kind == Kind::Hash,
+            kind == Kind::ZSet,
+        ) else {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
@@ -231,7 +267,12 @@ impl ShardExecutor {
                     .map(|((member, _), score)| (member.as_slice(), Some(score.as_bytes())))
                     .collect();
                 let next = if end >= members.len() { 0 } else { end };
-                write_cursor_pairs(next, &selected, output);
+                if options.no_scores {
+                    let items: Vec<&[u8]> = selected.iter().map(|(member, _)| *member).collect();
+                    write_cursor_array(next, &items, output);
+                } else {
+                    write_cursor_pairs(next, &selected, output);
+                }
             }
         }
         let _ = name;
