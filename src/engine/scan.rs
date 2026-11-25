@@ -216,13 +216,9 @@ impl ShardExecutor {
                     .hash_items()
                     .expect("hash type checked")
                     .into_iter()
-                    .map(|(field, value)| {
-                        (scan_key_hash(field), (field.to_vec(), value.to_vec()))
-                    })
+                    .map(|(field, value)| (scan_key_hash(field), (field.to_vec(), value.to_vec())))
                     .collect::<Vec<_>>();
-                fields.sort_unstable_by(|a, b| {
-                    a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0))
-                });
+                fields.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
                 let (start, end) = hash_cursor_bounds(&fields, options.cursor, options.count);
                 let next = hash_cursor_next(&fields, end);
                 let mut selected = Vec::new();
@@ -261,13 +257,9 @@ impl ShardExecutor {
                     .zset_items()
                     .expect("zset type checked")
                     .into_iter()
-                    .map(|(member, score)| {
-                        (scan_key_hash(member), (member.to_vec(), score))
-                    })
+                    .map(|(member, score)| (scan_key_hash(member), (member.to_vec(), score)))
                     .collect::<Vec<_>>();
-                members.sort_unstable_by(|a, b| {
-                    a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0))
-                });
+                members.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
                 let (start, end) = hash_cursor_bounds(&members, options.cursor, options.count);
                 let next = hash_cursor_next(&members, end);
                 let scores: Vec<String> = members[start..end]

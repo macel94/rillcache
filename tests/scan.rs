@@ -420,32 +420,25 @@ fn sscan_cursor_keeps_remaining_members_after_set_shrinkage() {
     add.extend(added.iter().map(|value| value.as_bytes()));
     send(&mut stream, &add, b":201\r\n");
 
-    let (mut cursor, mut found) = collection_scan_page(
-        &mut stream,
-        b"SSCAN",
-        b"set",
-        "0",
-        &[b"COUNT", b"10"],
-    );
+    let (mut cursor, mut found) =
+        collection_scan_page(&mut stream, b"SSCAN", b"set", "0", &[b"COUNT", b"10"]);
     assert_ne!(cursor, "0");
     let removed: Vec<String> = (100..200).map(|index| index.to_string()).collect();
     let mut remove: Vec<&[u8]> = vec![b"SREM", b"set"];
     remove.extend(removed.iter().map(|value| value.as_bytes()));
     send(&mut stream, &remove, b":100\r\n");
     while cursor != "0" {
-        let (next, page) = collection_scan_page(
-            &mut stream,
-            b"SSCAN",
-            b"set",
-            &cursor,
-            &[b"COUNT", b"10"],
-        );
+        let (next, page) =
+            collection_scan_page(&mut stream, b"SSCAN", b"set", &cursor, &[b"COUNT", b"10"]);
         found.extend(page);
         cursor = next;
     }
     for index in 0..100 {
         let stable = index.to_string().into_bytes();
-        assert!(found.contains(&stable), "SSCAN missed stable member {index}");
+        assert!(
+            found.contains(&stable),
+            "SSCAN missed stable member {index}"
+        );
     }
     server.shutdown().unwrap();
 }
