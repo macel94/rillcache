@@ -32,12 +32,15 @@
 - When `RANDOMKEY` is received, the server shall return a live key or a null bulk
   reply for an empty database; it shall not consistently select the first key.
 - When `SCAN cursor [MATCH pattern] [COUNT n] [TYPE type]` is received, the server
-  shall return a bounded page of live keys and a decimal continuation cursor
-  (`0` at completion), filtering with glob matching and the actual live key type.
-- When `HSCAN`/`SSCAN`/`ZSCAN key cursor [MATCH pattern] [COUNT n] [NOVALUES]` is
-  received, the server shall iterate fields/members in deterministic order,
-  return field/value, member or member/score pairs, and use the wrong-type error
-  for a mismatched key.
+  shall return a bounded page of live keys in stable hash order and a decimal
+  continuation cursor (`0` at completion), filtering with glob matching and the
+  actual live key type. Insertions or deletions shall not shift keys that remain
+  present through the full traversal past its continuation point.
+- When `HSCAN`/`SSCAN`/`ZSCAN key cursor [MATCH pattern] [COUNT n]
+  [NOVALUES|NOSCORES]` is received, the server shall iterate fields/members in
+  stable hash order, return field/value, member or member/score pairs, and use
+  the wrong-type error for a mismatched key. Mutations shall not shift elements
+  that remain present through a full traversal past its continuation point.
 - If a cursor is not a nonnegative decimal, `COUNT` is not positive, an option is
   incomplete, or an unsupported option is supplied, then the server shall return
   one bounded error without mutation.
@@ -73,19 +76,24 @@ one in-memory database only; only SELECT 0 is supported. No last-access metadata
 or eviction policy is implemented, so TOUCH reports existence accurately without
 updating access metadata.
 
-SCAN and the collection scans take a sorted snapshot under the exclusive store
-lock, reap expired keys first, and use the decimal cursor as an index into that
-snapshot. `COUNT` is a bounded work hint (default 10, capped at 10,000), not a
-result-count guarantee: filtering can return fewer items, and the next cursor
-advances by examined positions so a scan always terminates. Cursors are stateless
-and may be used by any connection, but they refer to an index rather than stable
-identity. On a stable keyspace every element is returned exactly once; concurrent
-deletion/insertion can cause skips or duplicates, matching SCAN's traversal-hint
-contract rather than a snapshot guarantee. `TYPE` accepts `string`, `list`, `set`,
-`hash`, `zset` or `stream`; an unknown type simply matches nothing. `NOVALUES` is
-available only on HSCAN. Collection cursors iterate fields/members sorted by raw
-bytes (ZSCAN by member, returning the current score). SCAN does not replace KEYS
-for exact snapshots, and there is no SCAN guarantee across server restart.
+Each SCAN, HSCAN, SSCAN and ZSCAN call enumerates and sorts the current live
+keys or collection elements under the exclusive store lock in stable FNV-1a hash
+order (O(N log N) work per call). Its decimal cursor is the exclusive lower bound
+for the next page, so insertions and deletions cannot shift keys or elements that
+remain present for a full traversal past that cursor. `COUNT` is a page-size hint
+(default 10, capped at 10,000), not a strict result-count guarantee; hash
+collisions are returned together and filters can yield empty pages while the
+cursor advances. Cursors are stateless
+and may be used by any connection. A stable keyspace is returned exactly once;
+concurrent additions may or may not appear, while deletions may be omitted. This
+behavior is equivalent at the public guarantee level, not an internal Redis hash
+table or cluster implementation. Stable collections are returned exactly once;
+concurrent additions may or may not appear, while deleted elements may be omitted.
+`TYPE` accepts `string`, `list`, `set`, `hash`,
+`zset` or `stream`; an unknown type simply matches nothing. Collection scans use
+deterministic hash-sorted snapshots and visit a stable collection exactly once. `NOVALUES` is available only on HSCAN; Valkey's `NOSCORES` is available only
+on ZSCAN. SCAN does not replace KEYS for exact snapshots, and there is no SCAN
+guarantee across server restart.
 
 ## Evidence
 
@@ -97,8 +105,9 @@ keys, long/pathological glob inputs and untouched output for unknown commands.
 Additional tests verify retained string/nested-stream capacities across ownership
 transfer, exact-fit admission, NX/OOM rejection, expiry-index replacement and
 independent COPY mutation. `tests/scan.rs` pages the keyspace, hash, set and
-zset scans in every execution mode, checks MATCH/TYPE/NOVALUES, missing and
-wrong-type keys, binary-safe values and invalid cursor/option errors. Official
+zset scans in every execution mode, checks MATCH/TYPE/NOVALUES/NOSCORES, missing
+and wrong-type keys, binary-safe values, invalid cursor/option errors, stable key
+traversal under insertion, and SSCAN traversal through set shrinkage. Official
 Redis command references:
 [TYPE](https://redis.io/docs/latest/commands/type/),
 [RENAME](https://redis.io/docs/latest/commands/rename/),

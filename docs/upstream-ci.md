@@ -104,9 +104,9 @@ claimed until it executes on the exact candidate.
 
 The six required reference/row contexts run the original upstream Tcl files
 `unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
-Valkey. Each keyspace context additionally runs the original `unit/type/set` and
-`unit/bitfield` files as separate native-first child runs, so they add no matrix
-rows, optional checks or policy bypass. Matrix fail-fast is
+Valkey. Each keyspace context additionally runs the original `unit/type/set`,
+`unit/bitfield` and `unit/scan` files as separate native-first child runs, so they
+add no matrix rows, optional checks or policy bypass. Matrix fail-fast is
 disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
@@ -160,10 +160,12 @@ Performance runs retain the unchanged default configuration.
 `ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
 `unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
 and carries the manifest's reason (including the hash-suite blocker above).
-The set and bitfield files are additional mandatory original units embedded in
-each keyspace matrix context; their native and candidate artifacts are retained
-alongside that context's keyspace evidence. There are no hand-copied or Rust-reimplemented upstream
-assertions and no test patches,
+The set, bitfield and scan files are additional mandatory original units embedded
+in each keyspace matrix context; their native and candidate artifacts are retained
+alongside that context's keyspace evidence. The scan selection preserves the
+complete pinned files, including Redis/Valkey-specific scan options; the cursor
+implementation is not claimed to be an internal hash-table or cluster equivalent.
+There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and
 after execution. The original `tests/test_helper.tcl` coordinator and support
