@@ -28,8 +28,8 @@ an accepted delivery path.
   `build (amd64, ubuntu-24.04)` and `build (arm64, ubuntu-24.04-arm)` must all pass.
 - **Original Tcl compatibility**: the pinned tool build and every Redis/Valkey
   string/incr/keyspace matrix check must pass; each keyspace context also runs
-  the unchanged `unit/type/set`, `unit/bitfield`, `unit/scan` and `unit/quit`
-  files against native and candidate. Native-control and setup failures count.
+  the unchanged `unit/type/set`, `unit/type/zset`, `unit/bitfield`,
+  `unit/scan` and `unit/quit` files against native and candidate. Native-control and setup failures count.
 - **PR policy self-tests**: `read-only-self-tests` must pass. The audit branch adds
   actual live-rule verification here; that source rollout requires its protected PR.
 
