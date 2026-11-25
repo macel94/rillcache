@@ -146,8 +146,7 @@ impl ShardExecutor {
         let mut end = start;
         while end < keys.len() {
             let hash = keys[end].0;
-            let group_end =
-                keys[end..].partition_point(|(candidate, _)| *candidate == hash) + end;
+            let group_end = keys[end..].partition_point(|(candidate, _)| *candidate == hash) + end;
             if end > start && group_end - start > options.count {
                 break;
             }
@@ -179,13 +178,9 @@ impl ShardExecutor {
 
     fn scan_collection(&self, arguments: &[&[u8]], kind: Kind, output: &mut Vec<u8>) {
         let name = kind.name();
-        let Ok(options) = Options::parse(
-            arguments,
-            2,
-            false,
-            kind == Kind::Hash,
-            kind == Kind::ZSet,
-        ) else {
+        let Ok(options) =
+            Options::parse(arguments, 2, false, kind == Kind::Hash, kind == Kind::ZSet)
+        else {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
@@ -327,7 +322,7 @@ fn type_matches(entry: &super::data::Entry, kind: &[u8]) -> bool {
     }
 }
 
-fn write_cursor_array(next: usize, values: &[&[u8]], output: &mut Vec<u8>) {
+fn write_cursor_array(next: impl std::fmt::Display, values: &[&[u8]], output: &mut Vec<u8>) {
     write!(
         output,
         "*2\r\n${}\r\n{next}\r\n*{}\r\n",

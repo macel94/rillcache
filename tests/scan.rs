@@ -69,7 +69,11 @@ fn resp_line(stream: &mut TcpStream) -> String {
 }
 
 fn resp_bulk(stream: &mut TcpStream) -> Vec<u8> {
-    let length: usize = resp_line(stream).strip_prefix('$').unwrap().parse().unwrap();
+    let length: usize = resp_line(stream)
+        .strip_prefix('$')
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut value = vec![0; length];
     stream.read_exact(&mut value).unwrap();
     let mut crlf = [0; 2];
@@ -86,7 +90,11 @@ fn scan_page(stream: &mut TcpStream, cursor: &str, options: &[&[u8]]) -> (String
     stream.write_all(&request).unwrap();
     assert_eq!(resp_line(stream), "*2");
     let next = String::from_utf8(resp_bulk(stream)).unwrap();
-    let length: usize = resp_line(stream).strip_prefix('*').unwrap().parse().unwrap();
+    let length: usize = resp_line(stream)
+        .strip_prefix('*')
+        .unwrap()
+        .parse()
+        .unwrap();
     let values = (0..length).map(|_| resp_bulk(stream)).collect();
     (next, values)
 }
@@ -127,11 +135,7 @@ fn scan_traversal_filters_and_write_stability() {
     cursor = "0".to_owned();
     let mut matching = Vec::new();
     loop {
-        let (next, values) = scan_page(
-            &mut stream,
-            &cursor,
-            &[b"MATCH", b"k1*", b"COUNT", b"5"],
-        );
+        let (next, values) = scan_page(&mut stream, &cursor, &[b"MATCH", b"k1*", b"COUNT", b"5"]);
         matching.extend(values);
         cursor = next;
         if cursor == "0" {
@@ -149,11 +153,7 @@ fn scan_traversal_filters_and_write_stability() {
     cursor = "0".to_owned();
     let mut hashes = Vec::new();
     loop {
-        let (next, values) = scan_page(
-            &mut stream,
-            &cursor,
-            &[b"TYPE", b"hash", b"COUNT", b"5"],
-        );
+        let (next, values) = scan_page(&mut stream, &cursor, &[b"TYPE", b"hash", b"COUNT", b"5"]);
         hashes.extend(values);
         cursor = next;
         if cursor == "0" {
@@ -198,7 +198,10 @@ fn scan_traversal_filters_and_write_stability() {
         }
     }
     for original in originals {
-        assert!(found.contains(&original), "SCAN missed stable key {original:?}");
+        assert!(
+            found.contains(&original),
+            "SCAN missed stable key {original:?}"
+        );
     }
 
     for arguments in [
