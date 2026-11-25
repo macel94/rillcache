@@ -73,7 +73,7 @@ Never reuse compiled native sources with different make flags.
 ## Opt-in deterministic differential corpus v1
 
 The initial command-group corpus compares binary strings, expiry, wrong-type errors,
-transaction execution/discard, integer counters, list ordering, set membership/cardinality, hash field access, key deletion and conditional SET options against the exact Redis/Valkey pins. It is not
+transaction execution/discard, integer counters, list ordering, set membership/cardinality, hash field access/deletion, key deletion and conditional SET options against the exact Redis/Valkey pins. It is not
 part of the required Tcl/performance gates and is not full compatibility evidence.
 The runner deliberately preserves error text, so Redis/Valkey dialect differences
 remain visible; expiry TTL timing is reduced to semantic validity/persistence checks rather than exact milliseconds.
