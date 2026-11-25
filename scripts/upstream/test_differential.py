@@ -14,7 +14,7 @@ class DifferentialCorpusTests(unittest.TestCase):
         manifest = json.loads(diff.MANIFEST.read_text())
         self.assertEqual(1, manifest["schema"])
         self.assertEqual(["redis", "valkey"], manifest["references"])
-        self.assertEqual({"binary-set-get", "expiry", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid", "list-order", "delete-key", "conditional-set"},
+        self.assertEqual({"binary-set-get", "expiry", "expiry-persist", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid", "list-order", "delete-key", "conditional-set"},
                          {case["id"] for case in manifest["cases"]})
 
     def test_seeded_commands_repeat_and_binary_is_exact(self):
@@ -59,7 +59,9 @@ class DifferentialCorpusTests(unittest.TestCase):
             self.assertTrue(result["candidate"]["version"])
             self.assertEqual({"8.10.2", "9.1.2"}, {v["version"] for v in result["references"].values()})
             self.assertEqual(["wrong-type"], [d["case"] for d in result["divergences"]])
-            self.assertEqual([manifest["seed"] + 2], [d["seed"] for d in result["divergences"]])
+            wrong_type_seed = manifest["seed"] + next(
+                i for i, case in enumerate(manifest["cases"]) if case["id"] == "wrong-type")
+            self.assertEqual([wrong_type_seed], [d["seed"] for d in result["divergences"]])
             self.assertEqual("ERR wrong kind of value",
                              result["divergences"][0]["reference_result"][1]["error"])
             self.assertEqual("WRONGTYPE Operation against a key holding the wrong kind of value",
@@ -68,11 +70,15 @@ class DifferentialCorpusTests(unittest.TestCase):
                                 result["divergences"][0]["reference_result"])
 
     def test_expiry_comparison_discards_only_clock_value(self):
+        case = {"semantic": "expiry"}
         replies = [{"reply": b"OK"}, {"reply": 273}, {"reply": 0}]
-        replies[1] = {"reply": "valid-positive-ttl" if isinstance(replies[1]["reply"], int)
-                      and 0 < replies[1]["reply"] <= 500 else "invalid-ttl"}
-        self.assertEqual("valid-positive-ttl", replies[1]["reply"])
+        self.assertEqual("valid-positive-ttl", diff.normalize_replies(case, replies)[1]["reply"])
         self.assertEqual(0, replies[2]["reply"])
+        persisted = {"semantic": "expiry-persist"}
+        self.assertEqual("persistent", diff.normalize_replies(
+            persisted, [{"reply": b"OK"}, {"reply": 1}, {"reply": -1}, {"reply": b"v"}])[2]["reply"])
+        self.assertEqual("invalid-persistent-ttl", diff.normalize_replies(
+            persisted, [{"reply": b"OK"}, {"reply": 1}, {"reply": 10}, {"reply": b"v"}])[2]["reply"])
 
 
 if __name__ == "__main__":

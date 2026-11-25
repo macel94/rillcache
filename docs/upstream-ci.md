@@ -76,7 +76,7 @@ The initial command-group corpus compares binary strings, expiry, wrong-type err
 transactions, integer counters, list ordering, key deletion and conditional SET options against the exact Redis/Valkey pins. It is not
 part of the required Tcl/performance gates and is not full compatibility evidence.
 The runner deliberately preserves error text, so Redis/Valkey dialect differences
-remain visible; only expiry TTL timing is reduced to a semantic validity check.
+remain visible; expiry TTL timing is reduced to semantic validity/persistence checks rather than exact milliseconds.
 
 On a clean GitHub Actions `ubuntu-latest` checkout with native build prerequisites,
 provision candidate and references by running:

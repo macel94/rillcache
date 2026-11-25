@@ -6,6 +6,7 @@
   "cases": [
     {"id": "binary-set-get", "commands": [["SET", "bin", {"bytes_hex": "610062ff"}], ["GET", "bin"]]},
     {"id": "expiry", "commands": [["SET", "expire", "v", "PX", "500"], ["PTTL", "expire"], ["EXISTS", "expire"]], "semantic": "expiry"},
+    {"id": "expiry-persist", "commands": [["SET", "persist-expire", "v", "PX", "500"], ["PERSIST", "persist-expire"], ["PTTL", "persist-expire"], ["GET", "persist-expire"]], "semantic": "expiry-persist"},
     {"id": "wrong-type", "commands": [["SET", "wrong", "v"], ["LPUSH", "wrong", "x"]], "semantic": "error"},
     {"id": "transaction", "commands": [["MULTI"], ["SET", "tx", "v"], ["GET", "tx"], ["EXEC"]]},
     {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
