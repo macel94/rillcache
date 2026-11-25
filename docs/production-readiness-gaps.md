@@ -1031,8 +1031,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
   The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr`, `unit/keyspace`, `unit/type/set`, and `unit/bitfield` (the
-  set and bitfield files are embedded in each required keyspace context). Modules, cluster, integration,
+  `unit/type/incr`, `unit/keyspace`, `unit/type/set`, `unit/bitfield`,
+  `unit/scan` and `unit/quit` (the set, bitfield, scan and quit files are
+  embedded in each required keyspace context). Modules, cluster, integration,
   scripting, most data types and many protocol surfaces are outside it, and
   several tags/units are excluded.
   **Closes when:** the supported profile is covered by the upstream suite (or an
