@@ -11,6 +11,7 @@
     {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
     {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"},
     {"id": "list-order", "commands": [["LPUSH", "list", "a", "b"], ["RPUSH", "list", "c"], ["LRANGE", "list", "0", "-1"]]},
-    {"id": "delete-key", "commands": [["SET", "delete", "value"], ["DEL", "delete"], ["EXISTS", "delete"]]}
+    {"id": "delete-key", "commands": [["SET", "delete", "value"], ["DEL", "delete"], ["EXISTS", "delete"]]},
+    {"id": "conditional-set", "commands": [["SET", "conditional", "first", "NX"], ["SET", "conditional", "ignored", "NX"], ["SET", "conditional", "second", "XX"], ["GET", "conditional"]]}
   ]
 }
