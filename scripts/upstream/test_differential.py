@@ -14,7 +14,7 @@ class DifferentialCorpusTests(unittest.TestCase):
         manifest = json.loads(diff.MANIFEST.read_text())
         self.assertEqual(1, manifest["schema"])
         self.assertEqual(["redis", "valkey"], manifest["references"])
-        self.assertEqual({"binary-set-get", "expiry", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid", "list-order"},
+        self.assertEqual({"binary-set-get", "expiry", "wrong-type", "transaction", "integer-counter", "integer-counter-invalid", "list-order", "delete-key"},
                          {case["id"] for case in manifest["cases"]})
 
     def test_seeded_commands_repeat_and_binary_is_exact(self):
