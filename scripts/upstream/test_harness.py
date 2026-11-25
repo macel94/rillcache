@@ -48,8 +48,9 @@ class ScopeTests(unittest.TestCase):
             if suite not in embedded:
                 self.assertIn(f"path: {suite}}}", text)
         self.assertEqual(embedded, {"unit/type/set": "unit/keyspace"})
-        self.assertIn("if: always() && matrix.suite.id == 'keyspace'", text)
-        self.assertIn('--suite unit/type/set', text)
+        self.assertNotIn("Run original set suite in the required keyspace context", text)
+        self.assertEqual(["unit/type/set"], compat.embedded_suites("unit/keyspace"))
+        self.assertEqual([], compat.embedded_suites("unit/type/string"))
         self.assertGreaterEqual(perf.CONFIG["repetitions"], 5)
         self.assertEqual(common.SCOPE["compatibility"]["diagnostic_suites"], ["unit/type/hash"])
         hash_reason = common.SCOPE["compatibility"]["diagnostic_suite_reasons"]["unit/type/hash"]
@@ -75,6 +76,22 @@ class ScopeTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def test_embedded_suite_runs_as_child_and_propagates_failure(self):
+        child = type("Completed", (), {"returncode": 1})()
+        with patch.object(compat.subprocess, "run", return_value=child) as run:
+            self.assertEqual(1, compat.run_embedded_suites("unit/keyspace", "redis"))
+        argv = run.call_args.args[0]
+        self.assertEqual("--reference", argv[2])
+        self.assertEqual("redis", argv[3])
+        self.assertEqual("--suite", argv[4])
+        self.assertEqual("unit/type/set", argv[5])
+        run.assert_called_once_with(argv, check=False)
+
+    def test_embedded_suite_signal_exit_is_not_a_pass(self):
+        child = type("Completed", (), {"returncode": -9})()
+        with patch.object(compat.subprocess, "run", return_value=child):
+            self.assertEqual(2, compat.run_embedded_suites("unit/keyspace", "redis"))
+
     def test_preserves_true_child_status_and_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
