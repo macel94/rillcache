@@ -1,10 +1,8 @@
 //! Bounded cursor iteration for the keyspace and collection types.
 //!
-//! Cursors are decimal indexes into a freshly sorted snapshot per call. Like
-//! Redis SCAN, the iteration is only a bounded traversal hint: concurrent
-//! insertions/deletions can produce duplicates or misses. For a stable keyspace
-//! every element is returned exactly once. No cursor state is retained between
-//! calls.
+//! SCAN-family cursors are decimal lower bounds over stable item hashes, so
+//! mutations cannot shift remaining items past the continuation point. A stable
+//! collection or keyspace is returned exactly once. No cursor state is retained.
 
 use super::data::Collection;
 use super::keyspace::glob_match;
@@ -15,11 +13,12 @@ const DEFAULT_COUNT: usize = 10;
 const MAX_COUNT: usize = 10_000;
 
 struct Options {
-    cursor: usize,
+    cursor: u64,
     count: usize,
     pattern: Option<Vec<u8>>,
     kind: Option<Vec<u8>>,
     no_values: bool,
+    no_scores: bool,
 }
 
 impl Options {
@@ -28,6 +27,7 @@ impl Options {
         start: usize,
         scan_type: bool,
         scan_hash: bool,
+        scan_zset: bool,
     ) -> Result<Self, ()> {
         let raw = arguments.get(start).ok_or(())?;
         let cursor = parse_cursor(raw).ok_or(())?;
@@ -37,6 +37,7 @@ impl Options {
             pattern: None,
             kind: None,
             no_values: false,
+            no_scores: false,
         };
         let mut index = start + 1;
         while index < arguments.len() {
@@ -52,6 +53,8 @@ impl Options {
                 options.kind = Some(arguments.get(index).ok_or(())?.to_vec());
             } else if scan_hash && option.eq_ignore_ascii_case(b"NOVALUES") {
                 options.no_values = true;
+            } else if scan_zset && option.eq_ignore_ascii_case(b"NOSCORES") {
+                options.no_scores = true;
             } else {
                 return Err(());
             }
@@ -67,7 +70,7 @@ impl Options {
     }
 }
 
-pub(super) fn parse_cursor(raw: &[u8]) -> Option<usize> {
+pub(super) fn parse_cursor(raw: &[u8]) -> Option<u64> {
     if raw.is_empty() || !raw.iter().all(u8::is_ascii_digit) {
         return None;
     }
@@ -76,7 +79,41 @@ pub(super) fn parse_cursor(raw: &[u8]) -> Option<usize> {
 
 fn parse_count(raw: &[u8]) -> Result<usize, ()> {
     let count = parse_cursor(raw).filter(|count| *count > 0).ok_or(())?;
-    Ok(count.min(MAX_COUNT))
+    Ok(count.min(MAX_COUNT as u64) as usize)
+}
+
+fn scan_key_hash(key: &[u8]) -> u64 {
+    let hash = key
+        .iter()
+        .fold(14_695_981_039_346_656_037u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        });
+    hash % u64::MAX
+}
+
+fn hash_cursor_bounds<T>(items: &[(u64, T)], cursor: u64, count: usize) -> (usize, usize) {
+    let start = items.partition_point(|(hash, _)| *hash < cursor);
+    let mut end = start;
+    while end < items.len() {
+        let hash = items[end].0;
+        let group_end = items[end..].partition_point(|(candidate, _)| *candidate == hash) + end;
+        if end > start && group_end - start > count {
+            break;
+        }
+        end = group_end;
+        if end - start >= count {
+            break;
+        }
+    }
+    (start, end)
+}
+
+fn hash_cursor_next<T>(items: &[(u64, T)], end: usize) -> u64 {
+    if end >= items.len() {
+        0
+    } else {
+        items[end - 1].0 + 1
+    }
 }
 
 impl ShardExecutor {
@@ -110,7 +147,7 @@ impl ShardExecutor {
     }
 
     fn scan_keys(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
-        let Ok(options) = Options::parse(arguments, 1, true, false) else {
+        let Ok(options) = Options::parse(arguments, 1, true, false, false) else {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
@@ -121,17 +158,16 @@ impl ShardExecutor {
         let now = self.now(&data);
         // Skip logically expired keys per visited element rather than reaping
         // the whole keyspace before the cursor slice.
-        let mut keys: Vec<&[u8]> = data
+        let mut keys: Vec<(u64, &[u8])> = data
             .entries
             .iter()
             .filter(|(_, entry)| entry.alive(now))
-            .map(|(key, _)| key.as_slice())
+            .map(|(key, _)| (scan_key_hash(key), key.as_slice()))
             .collect();
         keys.sort_unstable();
-        let start = options.cursor.min(keys.len());
-        let end = start.saturating_add(options.count).min(keys.len());
+        let (start, end) = hash_cursor_bounds(&keys, options.cursor, options.count);
         let mut selected = Vec::new();
-        for key in &keys[start..end] {
+        for (_, key) in &keys[start..end] {
             if !options.wants(key) {
                 continue;
             }
@@ -143,13 +179,15 @@ impl ShardExecutor {
             }
             selected.push(*key);
         }
-        let next = if end >= keys.len() { 0 } else { end };
+        let next = hash_cursor_next(&keys, end);
         write_cursor_array(next, &selected, output);
     }
 
     fn scan_collection(&self, arguments: &[&[u8]], kind: Kind, output: &mut Vec<u8>) {
         let name = kind.name();
-        let Ok(options) = Options::parse(arguments, 2, false, kind == Kind::Hash) else {
+        let Ok(options) =
+            Options::parse(arguments, 2, false, kind == Kind::Hash, kind == Kind::ZSet)
+        else {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
@@ -178,18 +216,17 @@ impl ShardExecutor {
                     .hash_items()
                     .expect("hash type checked")
                     .into_iter()
-                    .map(|(field, value)| (field.to_vec(), value.to_vec()))
+                    .map(|(field, value)| (scan_key_hash(field), (field.to_vec(), value.to_vec())))
                     .collect::<Vec<_>>();
-                fields.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                let start = options.cursor.min(fields.len());
-                let end = start.saturating_add(options.count).min(fields.len());
+                fields.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
+                let (start, end) = hash_cursor_bounds(&fields, options.cursor, options.count);
+                let next = hash_cursor_next(&fields, end);
                 let mut selected = Vec::new();
-                for (field, value) in &fields[start..end] {
+                for (_, (field, value)) in &fields[start..end] {
                     if options.wants(field) {
                         selected.push((field.as_slice(), Some(value.as_slice())));
                     }
                 }
-                let next = if end >= fields.len() { 0 } else { end };
                 if options.no_values {
                     let items: Vec<&[u8]> = selected.iter().map(|(field, _)| *field).collect();
                     write_cursor_array(next, &items, output);
@@ -198,16 +235,21 @@ impl ShardExecutor {
                 }
             }
             Kind::Set => {
-                let mut members = collection.set_items().expect("set type checked");
+                let mut members: Vec<(u64, Vec<u8>)> = collection
+                    .set_items()
+                    .expect("set type checked")
+                    .into_iter()
+                    .map(|member| (scan_key_hash(&member), member))
+                    .collect();
                 members.sort_unstable();
-                let start = options.cursor.min(members.len());
-                let end = start.saturating_add(options.count).min(members.len());
+                let (start, end) = hash_cursor_bounds(&members, options.cursor, options.count);
+                let next = hash_cursor_next(&members, end);
                 let selected: Vec<&[u8]> = members[start..end]
                     .iter()
+                    .map(|(_, member)| member)
                     .filter(|member| options.wants(member))
                     .map(Vec::as_slice)
                     .collect();
-                let next = if end >= members.len() { 0 } else { end };
                 write_cursor_array(next, &selected, output);
             }
             Kind::ZSet => {
@@ -215,23 +257,27 @@ impl ShardExecutor {
                     .zset_items()
                     .expect("zset type checked")
                     .into_iter()
-                    .map(|(member, score)| (member.to_vec(), score))
+                    .map(|(member, score)| (scan_key_hash(member), (member.to_vec(), score)))
                     .collect::<Vec<_>>();
-                members.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                let start = options.cursor.min(members.len());
-                let end = start.saturating_add(options.count).min(members.len());
+                members.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
+                let (start, end) = hash_cursor_bounds(&members, options.cursor, options.count);
+                let next = hash_cursor_next(&members, end);
                 let scores: Vec<String> = members[start..end]
                     .iter()
-                    .map(|(_, score)| score.to_string())
+                    .map(|(_, (_, score))| score.to_string())
                     .collect();
                 let selected: Vec<(&[u8], Option<&[u8]>)> = members[start..end]
                     .iter()
                     .zip(&scores)
-                    .filter(|((member, _), _)| options.wants(member))
-                    .map(|((member, _), score)| (member.as_slice(), Some(score.as_bytes())))
+                    .filter(|((_, (member, _)), _)| options.wants(member))
+                    .map(|((_, (member, _)), score)| (member.as_slice(), Some(score.as_bytes())))
                     .collect();
-                let next = if end >= members.len() { 0 } else { end };
-                write_cursor_pairs(next, &selected, output);
+                if options.no_scores {
+                    let items: Vec<&[u8]> = selected.iter().map(|(member, _)| *member).collect();
+                    write_cursor_array(next, &items, output);
+                } else {
+                    write_cursor_pairs(next, &selected, output);
+                }
             }
         }
         let _ = name;
@@ -286,7 +332,7 @@ fn type_matches(entry: &super::data::Entry, kind: &[u8]) -> bool {
     }
 }
 
-fn write_cursor_array(next: usize, values: &[&[u8]], output: &mut Vec<u8>) {
+fn write_cursor_array(next: impl std::fmt::Display, values: &[&[u8]], output: &mut Vec<u8>) {
     write!(
         output,
         "*2\r\n${}\r\n{next}\r\n*{}\r\n",
@@ -299,7 +345,11 @@ fn write_cursor_array(next: usize, values: &[&[u8]], output: &mut Vec<u8>) {
     }
 }
 
-fn write_cursor_pairs(next: usize, values: &[(&[u8], Option<&[u8]>)], output: &mut Vec<u8>) {
+fn write_cursor_pairs(
+    next: impl std::fmt::Display,
+    values: &[(&[u8], Option<&[u8]>)],
+    output: &mut Vec<u8>,
+) {
     let length = values.len()
         * if values.iter().all(|(_, value)| value.is_some()) {
             2

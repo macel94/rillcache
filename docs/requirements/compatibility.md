@@ -29,7 +29,7 @@ documented
 in [typed collections](../collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](../geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
-iteration with MATCH/COUNT/TYPE/NOVALUES; PFADD/PFCOUNT/PFMERGE approximate
+iteration with MATCH/COUNT/TYPE/NOVALUES/NOSCORES; PFADD/PFCOUNT/PFMERGE approximate
 cardinality; PUBLISH/SPUBLISH, SUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE,
 UNSUBSCRIBE/PUNSUBSCRIBE/SUNSUBSCRIBE and PUBSUB introspection.
 See [string semantics](../strings.md), [string ranges](../string-ranges.md),
