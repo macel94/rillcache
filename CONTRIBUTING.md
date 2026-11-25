@@ -11,7 +11,8 @@ reports. Work on a branch and open a PR. Merge only after **Tests and offline CI
 **Valkey performance gate** and **Valkey 4-CPU performance gate** pass on an
 up-to-date head: all 20 original scoped median throughputs and all 10 official
 Valkey-benchmark four-CPU medians must strictly exceed Valkey. Container verify/
-both native builds, all six Tcl suites plus their build, and PR policy self-tests
+both native builds, all six Tcl reference/row contexts (including
+`unit/type/set` within keyspace) and their tool build, and PR policy self-tests
 are also mandatory: [14 app-pinned checks across six PR workflows](docs/actions-gate-audit.md).
 Ties, slower cases
 and invalid/incomplete evidence block merging. No administrator/bot bypass, fastest-sample selection or

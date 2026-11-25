@@ -191,9 +191,12 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         keys.extend_from_slice(&args[3..]);
         return keys;
     }
-    // SINTERCARD has a counted key list followed by optional LIMIT arguments.
-    // Its static `last_key` would otherwise include the LIMIT tokens as keys.
-    if name.eq_ignore_ascii_case(b"SINTERCARD") {
+    // Set cardinality commands have counted key lists followed by options.
+    // Their static `last_key` would otherwise include option tokens as keys.
+    if name.eq_ignore_ascii_case(b"SINTERCARD")
+        || name.eq_ignore_ascii_case(b"SUNIONCARD")
+        || name.eq_ignore_ascii_case(b"SDIFFCARD")
+    {
         let Some(count) = args
             .get(1)
             .and_then(|raw| std::str::from_utf8(raw).ok())
@@ -951,9 +954,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         "blmove" | "blmpop" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen"
         | "lmove" | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim"
         | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
-        "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
-        | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
-        | "sscan" | "sunion" | "sunionstore" => "set",
+        "sadd" | "scard" | "sdiff" | "sdiffcard" | "sdiffstore" | "sinter" | "sintercard"
+        | "sinterstore" | "sismember" | "smembers" | "smismember" | "smove" | "spop"
+        | "srandmember" | "srem" | "sscan" | "sunion" | "sunioncard" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
         | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
         | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" | "hexpire" | "hexpireat"
@@ -1625,6 +1628,8 @@ mod tests {
             ("linsert", "list"),
             ("ltrim", "list"),
             ("sintercard", "set"),
+            ("sdiffcard", "set"),
+            ("sunioncard", "set"),
             ("smove", "set"),
             ("zrangebyscore", "zset"),
             ("zrangestore", "zset"),
@@ -1677,6 +1682,20 @@ mod tests {
         assert_eq!(
             key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"1", b"a"]),
             vec![b"a".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"SUNIONCARD",
+                &[b"SUNIONCARD", b"2", b"a", b"b", b"APPROX", b"LIMIT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"SDIFFCARD",
+                &[b"SDIFFCARD", b"2", b"a", b"b", b"LIMIT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
         );
         assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
         assert_eq!(
