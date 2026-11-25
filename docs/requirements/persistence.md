@@ -174,7 +174,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   save exists. `SAVE` shall reject with an explicit RDB-unsupported error;
   `BGSAVE` shall accept the documented `SCHEDULE` token syntactically and reject
   with the same error, while malformed extra tokens and wrong arity shall keep
-  their syntax/arity errors. None shall mutate data or claim a successful save.
+  their syntax/arity errors. `CONFIG GET save` shall report an empty schedule,
+  and `CONFIG SET save ""` shall succeed as a no-op because RDB snapshots are
+  disabled; non-empty schedules shall be rejected as unsupported. None shall
+  mutate data or claim a successful save.
 - **R348 (event-driven):** `REPLICAOF NO ONE` and `SLAVEOF NO ONE` shall return
   `+OK` because the server is already a standalone master. A host/port form,
   `PSYNC`, `SYNC`, `REPLCONF` and `FAILOVER` shall return an explicit

@@ -20,8 +20,8 @@ ACL GENPASS/DRYRUN and a bounded denial log; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
 BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
-creation, mutation, removal, bounded random selection, set algebra/store
-commands, LPOS/LMPOP list position/multi-pop, score/rank/lex ranges, range storage,
+creation, mutation, removal, bounded random selection, set algebra/store and
+cardinality commands (`SUNIONCARD`/`SDIFFCARD`), LPOS/LMPOP list position/multi-pop, score/rank/lex ranges, range storage,
 random members, sorted-set
 algebra/cardinality/multi-pop, blocking multi-pop, pops, bounded
 `BLPOP`/`BRPOP`, stream `XSETID` metadata control and consumer history reads
