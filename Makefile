@@ -102,6 +102,7 @@ metadata:
 	} > target/benchmarks/environment.txt
 
 smoke: release metadata
+	python3 scripts/test_standalone_incident.py
 	mkdir -p target/benchmarks
 	./target/release/rillcache-bench --requests 2000 --clients 4 --pipeline 8 --keyspace 128 --warmup 32 --runs 1 > target/benchmarks/smoke.json
 	for workers in 1 4; do
