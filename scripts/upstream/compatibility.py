@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import sys
 
 from common import (Client, EVIDENCE, PINS, ROOT, SCOPE, WORK, command, environment,
                     save, server, source, summary)
@@ -129,6 +131,26 @@ def missing_native_passes(native, candidate):
     return list((Counter(native.get("ok", [])) - Counter(candidate.get("ok", []))).elements())
 
 
+def embedded_suites(parent):
+    return [suite for suite, context in SCOPE["compatibility"]["embedded_suites"].items()
+            if context == parent]
+
+
+def run_embedded_suites(parent, reference):
+    code = 0
+    for suite in embedded_suites(parent):
+        argv = [sys.executable, str(Path(__file__).resolve()),
+                "--reference", reference, "--suite", suite]
+        try:
+            result = subprocess.run(argv, check=False)
+        except OSError as error:
+            print(f"could not start embedded Tcl suite {suite}: {error}", file=sys.stderr)
+            return 2
+        child_code = result.returncode if result.returncode >= 0 else 2
+        code = max(code, child_code)
+    return code
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", choices=PINS["upstreams"], required=True)
@@ -205,6 +227,8 @@ def main():
             text += "Diagnostic only: this result is not an every-PR check or a supported-profile decision.\n\n"
         text += f"Redis `{PINS['upstreams']['redis']['revision']}`; Valkey `{PINS['upstreams']['valkey']['revision']}`.\n"
         summary(text, directory / "summary.md")
+    if not args.diagnostic:
+        code = max(code, run_embedded_suites(args.suite, args.reference))
     return code
 
 
