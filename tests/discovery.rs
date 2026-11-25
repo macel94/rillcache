@@ -732,8 +732,15 @@ fn command_getkeys_reuses_acl_key_specs() {
             request(
                 &mut client,
                 &[
-                    b"COMMAND", b"GETKEYS", b"SUNIONCARD", b"2", b"a", b"b", b"APPROX",
-                    b"LIMIT", b"1",
+                    b"COMMAND",
+                    b"GETKEYS",
+                    b"SUNIONCARD",
+                    b"2",
+                    b"a",
+                    b"b",
+                    b"APPROX",
+                    b"LIMIT",
+                    b"1",
                 ]
             ),
             b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
@@ -742,7 +749,14 @@ fn command_getkeys_reuses_acl_key_specs() {
             request(
                 &mut client,
                 &[
-                    b"COMMAND", b"GETKEYS", b"SDIFFCARD", b"2", b"a", b"b", b"LIMIT", b"1",
+                    b"COMMAND",
+                    b"GETKEYS",
+                    b"SDIFFCARD",
+                    b"2",
+                    b"a",
+                    b"b",
+                    b"LIMIT",
+                    b"1",
                 ]
             ),
             b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"

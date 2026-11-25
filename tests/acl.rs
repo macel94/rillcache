@@ -1364,8 +1364,15 @@ fn acl_counted_set_cardinality_checks_only_counted_keys() {
     send(
         &mut admin,
         &[
-            b"ACL", b"SETUSER", b"counter", b"on", b">pw", b"-@all", b"+sunioncard",
-            b"+sdiffcard", b"~app:*",
+            b"ACL",
+            b"SETUSER",
+            b"counter",
+            b"on",
+            b">pw",
+            b"-@all",
+            b"+sunioncard",
+            b"+sdiffcard",
+            b"~app:*",
         ],
         b"+OK\r\n",
     );
@@ -1374,24 +1381,46 @@ fn acl_counted_set_cardinality_checks_only_counted_keys() {
     send(
         &mut client,
         &[
-            b"ACL", b"DRYRUN", b"counter", b"SUNIONCARD", b"2", b"app:a", b"app:b",
-            b"APPROX", b"LIMIT", b"1",
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SUNIONCARD",
+            b"2",
+            b"app:a",
+            b"app:b",
+            b"APPROX",
+            b"LIMIT",
+            b"1",
         ],
         b"+OK\r\n",
     );
     send(
         &mut client,
         &[
-            b"ACL", b"DRYRUN", b"counter", b"SDIFFCARD", b"2", b"app:a", b"app:b",
-            b"LIMIT", b"1",
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SDIFFCARD",
+            b"2",
+            b"app:a",
+            b"app:b",
+            b"LIMIT",
+            b"1",
         ],
         b"+OK\r\n",
     );
     send(
         &mut client,
         &[
-            b"ACL", b"DRYRUN", b"counter", b"SUNIONCARD", b"2", b"app:a", b"private:s",
-            b"LIMIT", b"1",
+            b"ACL",
+            b"DRYRUN",
+            b"counter",
+            b"SUNIONCARD",
+            b"2",
+            b"app:a",
+            b"private:s",
+            b"LIMIT",
+            b"1",
         ],
         b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
     );

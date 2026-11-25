@@ -956,9 +956,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
         "sadd" | "scard" | "sdiff" | "sdiffcard" | "sdiffstore" | "sinter" | "sintercard"
         | "sinterstore" | "sismember" | "smembers" | "smismember" | "smove" | "spop"
-        | "srandmember" | "srem" | "sscan" | "sunion" | "sunioncard" | "sunionstore" => {
-            "set"
-        },
+        | "srandmember" | "srem" | "sscan" | "sunion" | "sunioncard" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
         | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
         | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" | "hexpire" | "hexpireat"

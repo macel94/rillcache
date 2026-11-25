@@ -5835,7 +5835,10 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"SUNIONCARD", b"2", b"a", b"b"]), b":4\r\n");
         assert_eq!(
-            run(&store, &[b"SUNIONCARD", b"2", b"a", b"b", b"APPROX", b"LIMIT", b"3"]),
+            run(
+                &store,
+                &[b"SUNIONCARD", b"2", b"a", b"b", b"APPROX", b"LIMIT", b"3"]
+            ),
             b":3\r\n"
         );
         assert_eq!(run(&store, &[b"SDIFFCARD", b"2", b"a", b"b"]), b":1\r\n");
@@ -5843,7 +5846,10 @@ mod tests {
             run(&store, &[b"SDIFFCARD", b"2", b"a", b"b", b"LIMIT", b"0"]),
             b":1\r\n"
         );
-        assert_eq!(run(&store, &[b"SDIFFCARD", b"2", b"a", b"missing"]), b":3\r\n");
+        assert_eq!(
+            run(&store, &[b"SDIFFCARD", b"2", b"a", b"missing"]),
+            b":3\r\n"
+        );
         assert_eq!(
             run(&store, &[b"SUNIONCARD", b"0", b"a"]),
             b"-ERR numkeys should be greater than 0\r\n"
