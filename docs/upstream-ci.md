@@ -105,8 +105,8 @@ claimed until it executes on the exact candidate.
 The six required reference/row contexts run the original upstream Tcl files
 `unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
 Valkey. Each keyspace context additionally runs the original `unit/type/set`,
-`unit/bitfield` and `unit/scan` files as separate native-first child runs, so they
-add no matrix rows, optional checks or policy bypass. Matrix fail-fast is
+`unit/bitfield`, `unit/scan` and `unit/quit` files as separate native-first child
+runs, so they add no matrix rows, optional checks or policy bypass. Matrix fail-fast is
 disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
