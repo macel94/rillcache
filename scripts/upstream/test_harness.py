@@ -47,6 +47,9 @@ class ScopeTests(unittest.TestCase):
             self.assertIn(f"path: {suite}}}", text)
         self.assertGreaterEqual(perf.CONFIG["repetitions"], 5)
         self.assertEqual(common.SCOPE["compatibility"]["diagnostic_suites"], ["unit/type/hash"])
+        hash_reason = common.SCOPE["compatibility"]["diagnostic_suite_reasons"]["unit/type/hash"]
+        self.assertIn("DUMP/RESTORE", hash_reason)
+        self.assertIn("Hash ziplist of various encodings", hash_reason)
         self.assertNotIn("path: unit/type/hash}", text)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hash_diagnostic", text)
         self.assertIn("--suite unit/type/hash --diagnostic", text)
@@ -239,14 +242,19 @@ class CompatibilityTests(unittest.TestCase):
     def test_inventory_lists_unselected_modules_and_protocol(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)
-            for unit in ("unit/type/string", "unit/moduleapi/a", "unit/protocol", "integration/repl"):
+            for unit in ("unit/type/string", "unit/type/hash", "unit/moduleapi/a", "unit/protocol", "integration/repl"):
                 file = tree / f"tests/{unit}.tcl"
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text("# original")
             inventory = compat.inventory(tree, "unit/type/string")
-            self.assertEqual(4, len(inventory))
+            self.assertEqual(5, len(inventory))
             self.assertEqual(1, sum(item["selected_in_this_job"] for item in inventory))
             self.assertTrue(all(item["reason"] for item in inventory))
+            by_unit = {item["unit"]: item for item in inventory}
+            self.assertEqual("mandatory", by_unit["unit/type/string"]["classification"])
+            self.assertEqual("diagnostic", by_unit["unit/type/hash"]["classification"])
+            self.assertIn("DUMP/RESTORE", by_unit["unit/type/hash"]["reason"])
+            self.assertEqual("excluded", by_unit["unit/protocol"]["classification"])
 
 
 class PerformanceTests(unittest.TestCase):
