@@ -2,8 +2,8 @@
   "schema": 1,
   "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
   "compatibility": {
-    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/type/set"],
-    "embedded_suites": {"unit/type/set": "unit/keyspace"},
+    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/type/set", "unit/type/list"],
+    "embedded_suites": {"unit/type/set": "unit/keyspace", "unit/type/list": "unit/keyspace"},
     "diagnostic_suites": ["unit/type/hash"],
     "diagnostic_suite_reasons": {
       "unit/type/hash": "Not mandatory: the original suite includes Hash ziplist of various encodings and Hash ziplist of various encodings - sanitize dump, which issue DUMP/RESTORE. Those commands are explicitly outside the standalone profile; preserving the full upstream suite means this native-first comparison currently reports the divergence rather than filtering either test."
@@ -32,7 +32,7 @@
       {"glob": "unit/moduleapi/*", "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."},
       {"glob": "unit/cluster/*", "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."},
       {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
-      {"glob": "*", "reason": "Not selected in the initial strings/integer/keyspace cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."}
+      {"glob": "*", "reason": "Not selected in the current mandatory Tcl cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."}
     ],
     "request_limits": {
       "candidate_max_bulk_bytes": 8388608,
