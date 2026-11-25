@@ -867,26 +867,20 @@ mod tests {
         let store = ShardExecutor::new(1024);
         let empty_save = b"*2\r\n$4\r\nsave\r\n$0\r\n\r\n";
         assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
-        assert_eq!(
-            run(&store, &[b"CONFIG", b"SET", b"save", b""]),
-            b"+OK\r\n"
+        assert_eq!(run(&store, &[b"CONFIG", b"SET", b"save", b""]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
+        assert!(
+            run(&store, &[b"CONFIG", b"SET", b"save", b"900 1"])
+                .starts_with(b"-ERR RDB snapshots are unsupported")
         );
         assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
-        assert!(run(&store, &[b"CONFIG", b"SET", b"save", b"900 1"])
-            .starts_with(b"-ERR RDB snapshots are unsupported"));
-        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"save"]), empty_save);
-        assert!(run(
-            &store,
-            &[
-                b"CONFIG",
-                b"SET",
-                b"maxclients",
-                b"20",
-                b"save",
-                b"900 1"
-            ]
-        )
-        .starts_with(b"-ERR"));
+        assert!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"maxclients", b"20", b"save", b"900 1"]
+            )
+            .starts_with(b"-ERR")
+        );
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"maxclients"]),
             b"*2\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n"
