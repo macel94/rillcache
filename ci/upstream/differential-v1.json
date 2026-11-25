@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "rillcache-v1-core",
+  "seed": 477,
+  "references": ["redis", "valkey"],
+  "cases": [
+    {"id": "binary-set-get", "commands": [["SET", "bin", {"bytes_hex": "610062ff"}], ["GET", "bin"]]},
+    {"id": "expiry", "commands": [["SET", "expire", "v", "PX", "500"], ["PTTL", "expire"], ["EXISTS", "expire"]], "semantic": "expiry"},
+    {"id": "wrong-type", "commands": [["SET", "wrong", "v"], ["LPUSH", "wrong", "x"]], "semantic": "error"},
+    {"id": "transaction", "commands": [["MULTI"], ["SET", "tx", "v"], ["GET", "tx"], ["EXEC"]]},
+    {"id": "integer-counter", "commands": [["SET", "counter", "41"], ["INCR", "counter"], ["GET", "counter"]]},
+    {"id": "integer-counter-invalid", "commands": [["SET", "counter-invalid", "four"], ["INCR", "counter-invalid"]], "semantic": "error"}
+  ]
+}
