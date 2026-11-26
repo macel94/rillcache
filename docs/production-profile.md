@@ -56,7 +56,14 @@ is evidence for the selected files and revision, not approval of the hash row.
 The following are **not** part of this draft profile and must not be inferred from
 a command returning a generic error:
 
-- Scripting, `EVAL`/`EVALSHA`, functions and `FCALL` (C2).
+- Scripting, `EVAL`/`EVALSHA` (including the `_RO` variants), functions and
+  `FCALL`/`FCALL_RO` (C2). No Lua runtime is linked. The exclusion is explicit
+  rather than silent: absent execution commands return the unknown-command error,
+  every unsupported `SCRIPT`/`FUNCTION` subcommand returns a deliberate
+  unsupported-subcommand error, a missing subcommand returns the arity error, and
+  only `SCRIPT FLUSH`/`FUNCTION FLUSH` acknowledge an empty registry. Clients that
+  require script or function execution are incompatible and must not be deployed
+  against this profile.
 - Loadable modules (C3); `MODULE LIST` is empty and loading is unsupported.
 - Multiple logical databases, `SELECT` other than `0`, `MOVE`, `SWAPDB` (C4).
   Clients that configure a nonzero database cannot use this profile: a pinned
