@@ -71,6 +71,7 @@ and checksum are also available under **Artifacts** in successful
 | Request argument / frame bound | 1 MiB / 2 MiB | `--max-bulk-bytes` / `--max-frame-bytes` |
 | Socket inactivity timeout | 30 seconds | `--idle-timeout-ms` |
 | Incomplete plaintext request assembly deadline | 60 seconds (`0` disables) | `--frame-assembly-timeout-ms` |
+| Signal-shutdown grace period before forced exit | 25 seconds | `--shutdown-deadline-ms` |
 | Authentication / persistence | Off | [Security](security.md) / [persistence](persistence.md) |
 
 The assembly deadline is independent of the inactivity timeout: once parsing has
@@ -81,6 +82,13 @@ a TLS peer that trickles encrypted records without producing plaintext. Complete
 buffered requests are not timed out while command work is paused or backpressured.
 Set the assembly deadline to `0` only when another layer supplies an equivalent
 bound.
+
+`--shutdown-deadline-ms` bounds how long a `SIGTERM`/`SIGINT` shutdown may wait to
+join workers before logging `forced termination: shutdown deadline exceeded` and
+exiting nonzero. It applies to every transport because it is enforced by the
+signal supervisor, not by a listener. Keep it below the orchestrator grace period
+(the bundled Kubernetes manifest allows 30 seconds). Setting it too low turns a
+slow-draining client into a forced exit, so lower it only for tested deployments.
 
 The payload budget is not a process-memory limit: metadata, indexes, buffers,
 threads and sockets also use memory. Start with the defaults, then measure your

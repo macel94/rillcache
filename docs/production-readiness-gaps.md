@@ -491,40 +491,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [ ] **D7. Signal-driven shutdown is partial.** [P0]
-  **Partial (2026-11-19):** the standalone binary handles Unix SIGINT/SIGTERM
-  and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
-  journal within a 25-second deadline; a second signal or expired deadline logs
-  forced termination and exits nonzero. Kubernetes now allows a 30-second grace
-  period. **Partial (2026-11-19):** shutdown stops listener admission and
-  half-closes client read sides; replies for already-dispatched commands are
-  written before those connections close, within the existing deadline.
-  Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
-  response and journal recovery in default and opt-in Tokio plain-TCP modes and
-  over TLS. All three transports also have a second-SIGTERM test that requires
-  a forced-termination log and nonzero exit while an admitted reply is unread.
-  On Linux, the Mio, Tokio and TLS forced-exit tests also restart from the
-  unchanged AOF directory and verify an acknowledged write under `appendfsync
-  always`. This does not cover unsynced writes or power loss. The 25-second
-  deadline outcome is separately unit-tested, not timed end-to-end for each
-  transport. A separate plain-TCP test in Mio and Tokio leaves the reply unread
-  past a single SIGTERM, verifies successful exit within five seconds and a
-  properly truncated reply, then checks on Linux that the acknowledged
-  `appendfsync always` value is intact after restarting. This exercises the
-  bounded client drain on working storage. The matching native TLS subprocess
-  test leaves its reply unread through one SIGTERM and verifies successful
-  exit within five seconds with only a valid reply prefix left to read. Neither
-  test exhausts the separate 25-second supervisor deadline.
-  Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
-  blocked clients connected through successful exit, then verify after restart
-  that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
-  **Retained gap:** this is not a full client drain; replies that exceed a
-  bounded transport write timeout or the shutdown deadline may be abandoned.
-  Client receipt is not acknowledged, and forced timeout cannot guarantee the
-  final journal flush. **Closes when:** all supported transports have verified
-  command-drain, cancellation, join and forced-timeout behavior within the
-  supervisor grace contract.
-
+- [x] **D7. Signal-driven shutdown is partial.** [P0]
+  **Complete (2026-11-26) for the standalone supervisor contract across plain
+  Mio, plain Tokio and native TLS.** The standalone binary handles Unix
+  SIGINT/SIGTERM and Windows Ctrl-C, stops admission, joins workers and flushes
+  the journal within a configurable grace period (`--shutdown-deadline-ms`,
+  default 25 s, max 600 s, documented in
+  [startup defaults](getting-started.md#configure-only-what-you-need)); a second
+  signal or an expired deadline logs `forced termination: <reason>` and exits
+  nonzero. Existing subprocess tests prove bounded command drain of a withheld
+  8 MiB reply, cancellation of idle/incomplete-frame/subscribed/blocked clients
+  with no replay of incomplete work, forced termination on a second signal,
+  restart from the unchanged AOF with `appendfsync always`, and TLS drain with a
+  valid reply prefix. The previously untested branch — **deadline exhaustion
+  end-to-end** — is now covered by `tests/shutdown_deadline.rs`: with a 300 ms
+  deadline and an unread admitted reply that keeps the worker blocked, each of
+  the three transports exits within the test bound, logs the deadline reason,
+  exits nonzero, and restarts with the acknowledged 1 MiB value intact.
+  Retained limits: client receipt is not acknowledged, a reply that exceeds the
+  deadline may be truncated, and a forced timeout cannot guarantee the final
+  journal flush beyond the acknowledged fsync policy.
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
   Startup claims `<journal>.lock` with an exclusive create recording PID and
