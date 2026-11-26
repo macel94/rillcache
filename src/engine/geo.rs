@@ -26,7 +26,7 @@ const MAX_ELEMENTS: usize = 1_000_000;
 const SYNTAX_ERROR: &[u8] = b"-ERR syntax error\r\n";
 const FLOAT_ERROR: &[u8] = b"-ERR value is not a valid float\r\n";
 const UNIT_ERROR: &[u8] = b"-ERR unsupported unit provided. please use M, KM, FT, MI\r\n";
-const MEMBER_ERROR: &[u8] = b"-ERR could not decode requested zset member\r\n";
+const REDIS_MEMBER_ERROR: &[u8] = b"-ERR could not decode requested zset member\r\n";
 const ANY_ERROR: &[u8] = b"-ERR the ANY argument requires COUNT argument\r\n";
 const COUNT_ERROR: &[u8] = b"-ERR COUNT must be > 0\r\n";
 const STORE_WITH_ERROR: &[u8] =
@@ -143,7 +143,8 @@ impl ShardExecutor {
                 arity(name, out);
             } else if let Some((search, destination)) = parse_legacy(args, by_member, readonly, out)
             {
-                self.run_search(args[1], destination, &search, out);
+                let dialect = *self.error_dialect.read().expect("error dialect lock");
+                self.run_search(args[1], destination, &search, dialect, out);
             }
         } else {
             return false;
@@ -350,9 +351,9 @@ impl ShardExecutor {
             return;
         };
         if store {
-            self.run_search(args[2], Some(args[1]), &search, out);
+            self.run_search(args[2], Some(args[1]), &search, dialect, out);
         } else {
-            self.run_search(args[1], None, &search, out);
+            self.run_search(args[1], None, &search, dialect, out);
         }
     }
 
@@ -361,6 +362,7 @@ impl ShardExecutor {
         source: &[u8],
         destination: Option<&[u8]>,
         search: &Search,
+        dialect: super::ErrorDialect,
         out: &mut Vec<u8>,
     ) {
         let Ok(mut data) = self.data.try_borrow_mut() else {
@@ -408,60 +410,19 @@ impl ShardExecutor {
                     .find(|(name, _)| *name == member.as_slice())
                     .map(|(_, score)| *score)
                 else {
-                    out.extend_from_slice(MEMBER_ERROR);
+                    missing_member_error(member, dialect, out);
                     return;
                 };
                 let Some(coordinates) = decode_geohash(score) else {
-                    out.extend_from_slice(MEMBER_ERROR);
+                    missing_member_error(member, dialect, out);
                     return;
                 };
                 coordinates
             }
         };
-        let mut hits = Vec::new();
-        for (member, score) in members {
-            let Some((lon, lat)) = decode_geohash(score) else {
-                continue;
-            };
-            let distance = haversine(center.0, center.1, lon, lat);
-            let inside = match &search.shape {
-                Shape::Radius(radius) => distance <= *radius,
-                Shape::Box { width, height } => {
-                    let latitude_distance = haversine(center.0, center.1, center.0, lat);
-                    latitude_distance <= *height / 2.0
-                        && haversine(center.0, lat, lon, lat) <= *width / 2.0
-                }
-                Shape::Polygon { vertices } => point_in_polygon(lon, lat, vertices),
-            };
-            if !inside {
-                continue;
-            }
-            hits.push(Hit {
-                member: member.to_vec(),
-                distance,
-                hash: score as u64,
-                lon,
-                lat,
-            });
-            if search.any && search.count.is_some_and(|count| hits.len() >= count) {
-                break;
-            }
-        }
-        if search.any {
-            if let Some(sort) = search.sort {
-                sort_hits(&mut hits, sort);
-            } else {
-                hits.sort_unstable_by(|a, b| {
-                    a.hash.cmp(&b.hash).then_with(|| a.member.cmp(&b.member))
-                });
-            }
-        } else {
-            match search.sort {
-                Some(sort) => sort_hits(&mut hits, sort),
-                None => hits.sort_unstable_by(|a, b| {
-                    a.hash.cmp(&b.hash).then_with(|| a.member.cmp(&b.member))
-                }),
-            }
+        let mut hits = collect_hits(&members, center, search);
+        if let Some(sort) = search.sort {
+            sort_hits(&mut hits, sort);
         }
         if let Some(count) = search.count {
             hits.truncate(count);
@@ -540,6 +501,286 @@ impl ShardExecutor {
         };
         data.put_collection(destination, encoded, None, payload, now);
         integer(stored as i64, out);
+    }
+}
+
+fn missing_member_error(member: &[u8], dialect: super::ErrorDialect, out: &mut Vec<u8>) {
+    match dialect {
+        super::ErrorDialect::Redis => out.extend_from_slice(REDIS_MEMBER_ERROR),
+        super::ErrorDialect::Valkey => {
+            out.extend_from_slice(b"-ERR member ");
+            out.extend_from_slice(member);
+            out.extend_from_slice(b" does not exist\r\n");
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GeoHashCell {
+    bits: u64,
+    step: u8,
+}
+
+#[derive(Clone, Copy)]
+struct GeoHashBounds {
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+}
+
+fn collect_hits(members: &[(Vec<u8>, f64)], center: (f64, f64), search: &Search) -> Vec<Hit> {
+    let cells = search_cells(center, &search.shape);
+    let mut hits = Vec::new();
+    'cells: for cell in cells {
+        let shift = 52 - u32::from(cell.step) * 2;
+        let min_score = cell.bits << shift;
+        let max_score = (cell.bits + 1) << shift;
+        for (member, score) in members {
+            let hash = *score as u64;
+            if hash < min_score {
+                continue;
+            }
+            if hash >= max_score {
+                break;
+            }
+            let Some((lon, lat)) = decode_geohash(*score) else {
+                continue;
+            };
+            let distance = haversine(center.0, center.1, lon, lat);
+            let inside = match &search.shape {
+                Shape::Radius(radius) => distance <= *radius,
+                Shape::Box { width, height } => {
+                    let latitude_distance = haversine(center.0, center.1, center.0, lat);
+                    latitude_distance <= *height / 2.0
+                        && haversine(center.0, lat, lon, lat) <= *width / 2.0
+                }
+                Shape::Polygon { vertices } => point_in_polygon(lon, lat, vertices),
+            };
+            if !inside {
+                continue;
+            }
+            hits.push(Hit {
+                member: member.clone(),
+                distance,
+                hash,
+                lon,
+                lat,
+            });
+            if search.any && search.count.is_some_and(|count| hits.len() >= count) {
+                break 'cells;
+            }
+        }
+    }
+    hits
+}
+
+fn search_cells(center: (f64, f64), shape: &Shape) -> Vec<GeoHashCell> {
+    let (bounds, radius) = shape_bounds_and_radius(center, shape);
+    let mut step = geohash_steps(radius, center.1);
+    let mut center_cell = geohash_cell(center.0, center.1, step);
+    let mut neighbors = geohash_neighbors(center_cell);
+    let mut area = decode_cell(center_cell);
+
+    let north_area = decode_cell(neighbors[0]);
+    let south_area = decode_cell(neighbors[1]);
+    let east_area = decode_cell(neighbors[2]);
+    let west_area = decode_cell(neighbors[3]);
+    let needs_finer = north_area.max_lat < bounds.max_lat
+        || south_area.min_lat > bounds.min_lat
+        || east_area.max_lon < bounds.max_lon
+        || west_area.min_lon > bounds.min_lon;
+    if step > 1 && needs_finer {
+        step -= 1;
+        center_cell = geohash_cell(center.0, center.1, step);
+        neighbors = geohash_neighbors(center_cell);
+        area = decode_cell(center_cell);
+    }
+
+    if step >= 2 {
+        if area.min_lat < bounds.min_lat {
+            neighbors[1].bits = 0;
+            neighbors[6].bits = 0;
+            neighbors[7].bits = 0;
+        }
+        if area.max_lat > bounds.max_lat {
+            neighbors[0].bits = 0;
+            neighbors[4].bits = 0;
+            neighbors[5].bits = 0;
+        }
+        if area.min_lon < bounds.min_lon {
+            neighbors[3].bits = 0;
+            neighbors[5].bits = 0;
+            neighbors[7].bits = 0;
+        }
+        if area.max_lon > bounds.max_lon {
+            neighbors[2].bits = 0;
+            neighbors[4].bits = 0;
+            neighbors[6].bits = 0;
+        }
+    }
+
+    let candidates = [
+        center_cell,
+        neighbors[0],
+        neighbors[1],
+        neighbors[2],
+        neighbors[3],
+        neighbors[4],
+        neighbors[5],
+        neighbors[6],
+        neighbors[7],
+    ];
+    let mut cells = Vec::with_capacity(candidates.len());
+    for cell in candidates {
+        if cell.bits == 0 || cells.last() == Some(&cell) {
+            continue;
+        }
+        cells.push(cell);
+    }
+    cells
+}
+
+fn shape_bounds_and_radius(center: (f64, f64), shape: &Shape) -> (GeoHashBounds, f64) {
+    match shape {
+        Shape::Polygon { vertices } => {
+            let mut bounds = GeoHashBounds {
+                min_lon: f64::INFINITY,
+                min_lat: f64::INFINITY,
+                max_lon: f64::NEG_INFINITY,
+                max_lat: f64::NEG_INFINITY,
+            };
+            for &(lon, lat) in vertices {
+                bounds.min_lon = bounds.min_lon.min(lon);
+                bounds.min_lat = bounds.min_lat.min(lat);
+                bounds.max_lon = bounds.max_lon.max(lon);
+                bounds.max_lat = bounds.max_lat.max(lat);
+            }
+            let radius = [
+                (bounds.min_lon, bounds.min_lat),
+                (bounds.min_lon, bounds.max_lat),
+                (bounds.max_lon, bounds.min_lat),
+                (bounds.max_lon, bounds.max_lat),
+            ]
+            .into_iter()
+            .map(|corner| haversine(center.0, center.1, corner.0, corner.1))
+            .fold(0.0, f64::max);
+            (bounds, radius)
+        }
+        Shape::Radius(radius) => {
+            let lat_delta = (radius / EARTH_RADIUS_METERS).to_degrees();
+            let lon_delta_top = (radius / EARTH_RADIUS_METERS
+                / (center.1 + lat_delta).to_radians().cos())
+                .to_degrees();
+            let lon_delta_bottom = (radius / EARTH_RADIUS_METERS
+                / (center.1 - lat_delta).to_radians().cos())
+                .to_degrees();
+            let lon_delta = if center.1 < 0.0 {
+                lon_delta_bottom
+            } else {
+                lon_delta_top
+            };
+            (
+                GeoHashBounds {
+                    min_lon: center.0 - lon_delta,
+                    min_lat: center.1 - lat_delta,
+                    max_lon: center.0 + lon_delta,
+                    max_lat: center.1 + lat_delta,
+                },
+                *radius,
+            )
+        }
+        Shape::Box { width, height } => {
+            let half_height = height / 2.0;
+            let lat_delta = (half_height / EARTH_RADIUS_METERS).to_degrees();
+            let lon_delta_top = (width / 2.0 / EARTH_RADIUS_METERS
+                / (center.1 + lat_delta).to_radians().cos())
+                .to_degrees();
+            let lon_delta_bottom = (width / 2.0 / EARTH_RADIUS_METERS
+                / (center.1 - lat_delta).to_radians().cos())
+                .to_degrees();
+            let lon_delta = if center.1 < 0.0 {
+                lon_delta_bottom
+            } else {
+                lon_delta_top
+            };
+            (
+                GeoHashBounds {
+                    min_lon: center.0 - lon_delta,
+                    min_lat: center.1 - lat_delta,
+                    max_lon: center.0 + lon_delta,
+                    max_lat: center.1 + lat_delta,
+                },
+                (width / 2.0).hypot(height / 2.0),
+            )
+        }
+    }
+}
+
+fn geohash_steps(radius: f64, latitude: f64) -> u8 {
+    if radius == 0.0 {
+        return 26;
+    }
+    let mut range = radius;
+    let mut step = 1_i32;
+    while range < 20_037_726.37 {
+        range *= 2.0;
+        step += 1;
+    }
+    step -= 2;
+    if latitude > 66.0 || latitude < -66.0 {
+        step -= 1;
+        if latitude > 80.0 || latitude < -80.0 {
+            step -= 1;
+        }
+    }
+    step.clamp(1, 26) as u8
+}
+
+fn geohash_cell(lon: f64, lat: f64, step: u8) -> GeoHashCell {
+    let scale = 1_u32 << step;
+    let lat_offset = (((lat - GEO_LAT_MIN) / (GEO_LAT_MAX - GEO_LAT_MIN)) * f64::from(scale))
+        as u32;
+    let lon_offset = (((lon - GEO_LONG_MIN) / (GEO_LONG_MAX - GEO_LONG_MIN)) * f64::from(scale))
+        as u32;
+    GeoHashCell {
+        bits: interleave(lat_offset, lon_offset),
+        step,
+    }
+}
+
+fn geohash_neighbors(cell: GeoHashCell) -> [GeoHashCell; 8] {
+    let scale = 1_i64 << cell.step;
+    let lat = i64::from(compact(cell.bits));
+    let lon = i64::from(compact(cell.bits >> 1));
+    let shifted = |dx: i64, dy: i64| GeoHashCell {
+        bits: interleave(
+            (lat + dy).rem_euclid(scale) as u32,
+            (lon + dx).rem_euclid(scale) as u32,
+        ),
+        step: cell.step,
+    };
+    [
+        shifted(0, 1),
+        shifted(0, -1),
+        shifted(1, 0),
+        shifted(-1, 0),
+        shifted(1, 1),
+        shifted(-1, 1),
+        shifted(1, -1),
+        shifted(-1, -1),
+    ]
+}
+
+fn decode_cell(cell: GeoHashCell) -> GeoHashBounds {
+    let scale = f64::from(1_u32 << cell.step);
+    let lat = f64::from(compact(cell.bits));
+    let lon = f64::from(compact(cell.bits >> 1));
+    GeoHashBounds {
+        min_lon: GEO_LONG_MIN + (lon / scale) * (GEO_LONG_MAX - GEO_LONG_MIN),
+        min_lat: GEO_LAT_MIN + (lat / scale) * (GEO_LAT_MAX - GEO_LAT_MIN),
+        max_lon: GEO_LONG_MIN + ((lon + 1.0) / scale) * (GEO_LONG_MAX - GEO_LONG_MIN),
+        max_lat: GEO_LAT_MIN + ((lat + 1.0) / scale) * (GEO_LAT_MAX - GEO_LAT_MIN),
     }
 }
 
@@ -1195,6 +1436,81 @@ mod tests {
     }
 
     #[test]
+    fn georadius_any_and_pole_search_preserve_geohash_cell_order() {
+        let store = ShardExecutor::new(4096);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOADD",
+                    b"nyc",
+                    b"-73.9733487",
+                    b"40.7648057",
+                    b"central park n/q/r",
+                    b"-73.9903085",
+                    b"40.7362513",
+                    b"union square",
+                    b"-74.0131604",
+                    b"40.7126674",
+                    b"wtc one",
+                    b"-73.7858139",
+                    b"40.6428986",
+                    b"jfk",
+                    b"-73.9375699",
+                    b"40.7498929",
+                    b"q4",
+                    b"-73.9564142",
+                    b"40.7480973",
+                    b"4545",
+                    b"-73.9454966",
+                    b"40.747533",
+                    b"lic market",
+                ],
+            ),
+            b":7\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEORADIUS",
+                    b"nyc",
+                    b"-73.9798091",
+                    b"40.7598464",
+                    b"10",
+                    b"km",
+                    b"COUNT",
+                    b"3",
+                    b"ANY",
+                ],
+            ),
+            b"*3\r\n$7\r\nwtc one\r\n$12\r\nunion square\r\n$18\r\ncentral park n/q/r\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOADD", b"pole", b"45", b"65", b"n1", b"-135", b"85.05", b"n2",
+                ],
+            ),
+            b":2\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEORADIUSBYMEMBER",
+                    b"pole",
+                    b"n1",
+                    b"5009431",
+                    b"m",
+                ],
+            ),
+            b"*2\r\n$2\r\nn1\r\n$2\r\nn2\r\n"
+        );
+    }
+
+    #[test]
     fn geoadd_options_errors_and_store_search_are_atomic() {
         let store = ShardExecutor::new(4096);
         assert_eq!(
@@ -1327,7 +1643,7 @@ mod tests {
                     b"ASC",
                 ],
             ),
-            b"*2\r\n$6\r\ncenter\r\n$5\r\ninside\r\n"
+            b"*2\r\n$6\r\ncenter\r\n$6\r\ninside\r\n"
         );
         assert_eq!(
             run(
@@ -1392,6 +1708,7 @@ mod tests {
                     b"1",
                     b"1",
                     b"0",
+                    b"1",
                     b"FROMLONLAT",
                     b"0",
                     b"0",

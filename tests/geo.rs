@@ -512,7 +512,7 @@ fn geospatial_commands_are_consistent_over_tcp_in_all_modes() {
                 b"1",
                 b"km",
             ],
-            b"-ERR could not decode requested zset member\r\n",
+            b"-ERR member missing does not exist\r\n",
         );
         command(
             &mut stream,
@@ -660,7 +660,7 @@ fn valkey_polygon_search_and_store_work_over_tcp_in_all_modes() {
                 b"1",
                 b"ASC",
             ],
-            b"*2\r\n$6\r\ncenter\r\n$5\r\ninside\r\n",
+            b"*2\r\n$6\r\ncenter\r\n$6\r\ninside\r\n",
         );
         command(
             &mut stream,
@@ -716,6 +716,7 @@ fn valkey_polygon_search_and_store_work_over_tcp_in_all_modes() {
                 b"1",
                 b"1",
                 b"0",
+                b"1",
                 b"FROMLONLAT",
                 b"0",
                 b"0",

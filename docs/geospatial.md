@@ -51,17 +51,18 @@ longitude is `-180..180`.
   `STOREDIST` stores the distance in the requested unit instead of the geohash
   score. `WITHCOORD`/`WITHDIST`/`WITHHASH` are rejected for the store variant.
 - `FROMMEMBER` on an existing source with a missing or non-decodable member
-  returns `could not decode requested zset member`. A missing source yields an
+  returns the selected vendor's pinned error wording. A missing source yields an
   empty reply, or deletes the store destination and returns zero.
 
-Searches scan the source sorted set linearly and apply the exact Redis haversine
-formula (`EARTH_RADIUS_IN_METERS = 6372797.560856`), rectangle checks, or polygon
-ray casting. Polygon search is the Valkey extension and is exercised against both
-pinned native controls; this does not imply complete vendor compatibility. This
-avoids nine-neighbour geohash traversal and keeps memory bounded by the existing
-one-million-element/payload limits, at the cost of O(N) work per search. Results
-without `ASC`/`DESC` are returned in deterministic score/member order, which is a
-stricter ordering than Redis promises.
+Searches derive the same center-plus-neighbor geohash cells used by the pinned
+servers, then scan the source's bounded sorted-set items in cell-prefix order.
+The implementation retains O(N) source-scan work (up to nine score ranges) rather
+than a native skiplist range index, and memory stays bounded by the existing
+one-million-element/payload limits. It applies the exact Redis haversine formula
+(`EARTH_RADIUS_IN_METERS = 6372797.560856`), rectangle checks, or polygon
+ray-casting. Unsorted results and `COUNT ... ANY` retain deterministic geohash-cell
+traversal order; sorted searches order by distance. Native-first `unit/geo` is the
+compatibility gate; a source change alone is not a compatibility claim.
 
 `GEOADD` changes publish a `zadd` keyspace event. `GEOSEARCHSTORE` publishes
 `geosearchstore` when it writes a destination and `del` when an empty result
@@ -71,9 +72,9 @@ no separate destination event, matching standalone Redis.
 ## Limits
 
 This is not full geospatial compatibility. The legacy `GEORADIUS` family is
-implemented as an adapter over the same linear search. The implementation does not
-use a native geohash neighbour index, so search complexity is linear in the source
-set.
+implemented as an adapter over the same bounded geohash-cell traversal. The
+candidate does not have the native sorted-set range index, so each search still
+scans source items and is O(N).
 Scores written by ordinary `ZADD` are decoded best-effort: non-finite or negative
 scores are treated as non-geographic, while arbitrary finite scores may map to
 clamped coordinates. Geo keys are still sorted sets, so `ZREM`/`ZADD` can change
