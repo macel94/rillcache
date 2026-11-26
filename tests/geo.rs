@@ -425,7 +425,7 @@ fn geospatial_commands_are_consistent_over_tcp_in_all_modes() {
                 b"ASC",
                 b"WITHDIST",
             ],
-            b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCH\r\n",
+            b"-ERR exactly one of BYRADIUS, BYBOX and BYPOLYGON can be specified for GEOSEARCH\r\n",
         );
         command(
             &mut stream,
@@ -627,5 +627,110 @@ fn geospatial_commands_are_consistent_over_tcp_in_all_modes() {
         );
         command(&mut limited, &[b"EXISTS", b"big"], b":0\r\n");
         small.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn valkey_polygon_search_and_store_work_over_tcp_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, Config::default().max_data_bytes);
+        let mut stream = connect(&server);
+        command(
+            &mut stream,
+            &[
+                b"GEOADD",
+                b"points",
+                b"0",
+                b"0",
+                b"center",
+                b"0.5",
+                b"0.5",
+                b"inside",
+                b"2",
+                b"0",
+                b"outside",
+            ],
+            b":3\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"GEOSEARCH",
+                b"points",
+                b"BYPOLYGON",
+                b"4",
+                b"-1",
+                b"-1",
+                b"1",
+                b"-1",
+                b"1",
+                b"1",
+                b"-1",
+                b"1",
+                b"ASC",
+            ],
+            b"*2\r\n$6\r\ncenter\r\n$5\r\ninside\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"GEOSEARCHSTORE",
+                b"selected",
+                b"points",
+                b"BYPOLYGON",
+                b"4",
+                b"-1",
+                b"-1",
+                b"1",
+                b"-1",
+                b"1",
+                b"1",
+                b"-1",
+                b"1",
+                b"ASC",
+                b"STOREDIST",
+                b"COUNT",
+                b"1",
+            ],
+            b":1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGE", b"selected", b"0", b"-1"],
+            b"*1\r\n$6\r\ncenter\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"GEOSEARCH",
+                b"points",
+                b"BYPOLYGON",
+                b"2",
+                b"0",
+                b"0",
+                b"1",
+                b"1",
+            ],
+            b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"GEOSEARCH",
+                b"points",
+                b"BYPOLYGON",
+                b"3",
+                b"0",
+                b"0",
+                b"1",
+                b"1",
+                b"0",
+                b"FROMLONLAT",
+                b"0",
+                b"0",
+            ],
+            b"-ERR syntax error\r\n",
+        );
+        server.shutdown().unwrap();
     }
 }

@@ -24,12 +24,16 @@ longitude is `-180..180`.
 - `GEODIST key member1 member2 [M|KM|FT|MI]` returns the great-circle distance in
   the requested unit (metres by default) with exactly four fractional digits, or
   null if either member is missing. Units are case-insensitive.
-- `GEOSEARCH key (FROMMEMBER member | FROMLONLAT longitude latitude)
-  (BYRADIUS radius unit | BYBOX width height unit)
+- `GEOSEARCH key ((FROMMEMBER member | FROMLONLAT longitude latitude)
+  (BYRADIUS radius unit | BYBOX width height unit) | BYPOLYGON vertex-count
+  longitude latitude ...)
   [ASC|DESC] [COUNT count [ANY]] [WITHCOORD] [WITHDIST] [WITHHASH]` returns
-  matching members. Exactly one origin and one shape are required. Radius/box
-  dimensions must be non-negative; `COUNT` must be positive and `ANY` requires
-  `COUNT`. `COUNT` without an order implies ascending distance. `WITHDIST`
+  matching members. Radius/box searches require one origin and one shape;
+  polygon searches take at least three coordinate pairs and reject an origin.
+  Polygon membership uses the pinned Valkey ray-casting rule in longitude/latitude
+  space; its spherical Cartesian vertex centroid supplies the distance/sort origin.
+  Radius/box dimensions must be non-negative; `COUNT` must be positive and `ANY`
+  requires `COUNT`. `COUNT` without an order implies ascending distance. `WITHDIST`
   reports the distance in the search unit, `WITHHASH` the stored 52-bit score and
   `WITHCOORD` the decoded `[longitude, latitude]` pair.
 - `GEORADIUS key longitude latitude radius unit [options]` and
@@ -51,7 +55,9 @@ longitude is `-180..180`.
   empty reply, or deletes the store destination and returns zero.
 
 Searches scan the source sorted set linearly and apply the exact Redis haversine
-formula (`EARTH_RADIUS_IN_METERS = 6372797.560856`) and rectangle checks. This
+formula (`EARTH_RADIUS_IN_METERS = 6372797.560856`), rectangle checks, or polygon
+ray casting. Polygon search is the Valkey extension and is exercised against both
+pinned native controls; this does not imply complete vendor compatibility. This
 avoids nine-neighbour geohash traversal and keeps memory bounded by the existing
 one-million-element/payload limits, at the cost of O(N) work per search. Results
 without `ASC`/`DESC` are returned in deterministic score/member order, which is a

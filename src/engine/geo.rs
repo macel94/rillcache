@@ -48,6 +48,7 @@ enum FromSpec {
 enum Shape {
     Radius(f64),
     Box { width: f64, height: f64 },
+    Polygon { vertices: Vec<(f64, f64)> },
 }
 
 struct Search {
@@ -344,7 +345,8 @@ impl ShardExecutor {
     }
 
     fn geosearch(&self, args: &[&[u8]], store: bool, out: &mut Vec<u8>) {
-        let Some(search) = parse_search(args, store, out) else {
+        let dialect = *self.error_dialect.read().expect("error dialect lock");
+        let Some(search) = parse_search(args, store, dialect, out) else {
             return;
         };
         if store {
@@ -422,13 +424,14 @@ impl ShardExecutor {
                 continue;
             };
             let distance = haversine(center.0, center.1, lon, lat);
-            let inside = match search.shape {
-                Shape::Radius(radius) => distance <= radius,
+            let inside = match &search.shape {
+                Shape::Radius(radius) => distance <= *radius,
                 Shape::Box { width, height } => {
                     let latitude_distance = haversine(center.0, center.1, center.0, lat);
-                    latitude_distance <= height / 2.0
-                        && haversine(center.0, lat, lon, lat) <= width / 2.0
+                    latitude_distance <= *height / 2.0
+                        && haversine(center.0, lat, lon, lat) <= *width / 2.0
                 }
+                Shape::Polygon { vertices } => point_in_polygon(lon, lat, vertices),
             };
             if !inside {
                 continue;
@@ -699,7 +702,12 @@ fn parse_legacy<'a>(
     ))
 }
 
-fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search> {
+fn parse_search(
+    args: &[&[u8]],
+    store: bool,
+    dialect: super::ErrorDialect,
+    out: &mut Vec<u8>,
+) -> Option<Search> {
     let mut from = None;
     let mut shape = None;
     let mut sort = None;
@@ -714,7 +722,7 @@ fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search
     while index < args.len() {
         let token = args[index];
         if token.eq_ignore_ascii_case(b"FROMMEMBER") {
-            if from.is_some() {
+            if from.is_some() || matches!(shape.as_ref(), Some(Shape::Polygon { .. })) {
                 out.extend_from_slice(SYNTAX_ERROR);
                 return None;
             }
@@ -725,7 +733,7 @@ fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search
             from = Some(FromSpec::Member(member.to_vec()));
             index += 2;
         } else if token.eq_ignore_ascii_case(b"FROMLONLAT") {
-            if from.is_some() {
+            if from.is_some() || matches!(shape.as_ref(), Some(Shape::Polygon { .. })) {
                 out.extend_from_slice(SYNTAX_ERROR);
                 return None;
             }
@@ -802,6 +810,65 @@ fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search
                 height: height * factor,
             });
             index += 4;
+        } else if token.eq_ignore_ascii_case(b"BYPOLYGON") {
+            if shape.is_some() || from.is_some() {
+                out.extend_from_slice(SYNTAX_ERROR);
+                return None;
+            }
+            let Some(raw_count) = args.get(index + 1) else {
+                out.extend_from_slice(SYNTAX_ERROR);
+                return None;
+            };
+            let Some(vertex_count) = parse_integer(raw_count) else {
+                out.extend_from_slice(b"-ERR invalid number of vertices\r\n");
+                return None;
+            };
+            let Some(vertex_count) = usize::try_from(vertex_count)
+                .ok()
+                .filter(|count| *count >= 3)
+            else {
+                out.extend_from_slice(
+                    b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n",
+                );
+                return None;
+            };
+            let Some(coordinate_count) = vertex_count.checked_mul(2) else {
+                out.extend_from_slice(
+                    b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n",
+                );
+                return None;
+            };
+            let Some(end) = index
+                .checked_add(2)
+                .and_then(|start| start.checked_add(coordinate_count))
+            else {
+                out.extend_from_slice(
+                    b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n",
+                );
+                return None;
+            };
+            if end > args.len() {
+                out.extend_from_slice(
+                    b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n",
+                );
+                return None;
+            }
+            let mut vertices = Vec::with_capacity(vertex_count);
+            for pair in args[index + 2..end].chunks_exact(2) {
+                let Some((lon, lat)) = parse_lonlat(pair[0], pair[1]) else {
+                    out.extend_from_slice(FLOAT_ERROR);
+                    return None;
+                };
+                if !valid_lonlat(lon, lat) {
+                    coordinate_error(lon, lat, out);
+                    return None;
+                }
+                vertices.push((lon, lat));
+            }
+            let centroid = polygon_centroid(&vertices);
+            from = Some(FromSpec::LonLat(centroid.0, centroid.1));
+            shape = Some(Shape::Polygon { vertices });
+            index = end;
         } else if token.eq_ignore_ascii_case(b"ASC") {
             sort = Some(Sort::Asc);
             index += 1;
@@ -852,11 +919,7 @@ fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search
         return None;
     };
     let Some(shape) = shape else {
-        out.extend_from_slice(if store {
-            b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCHSTORE\r\n"
-        } else {
-            b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCH\r\n"
-        });
+        out.extend_from_slice(dialect.geo_shape_required(store));
         return None;
     };
     if any && count.is_none() {
@@ -882,6 +945,37 @@ fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search
         storedist,
         conversion,
     })
+}
+
+fn polygon_centroid(vertices: &[(f64, f64)]) -> (f64, f64) {
+    let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+    for (lon, lat) in vertices {
+        let lon = lon.to_radians();
+        let lat = lat.to_radians();
+        x += lat.cos() * lon.cos();
+        y += lat.cos() * lon.sin();
+        z += lat.sin();
+    }
+    (y.atan2(x).to_degrees(), z.atan2(x.hypot(y)).to_degrees())
+}
+
+fn point_in_polygon(lon: f64, lat: f64, vertices: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let mut previous = vertices.len() - 1;
+    for current in 0..vertices.len() {
+        let (current_lon, current_lat) = vertices[current];
+        let (previous_lon, previous_lat) = vertices[previous];
+        if (current_lat > lat) != (previous_lat > lat)
+            && lon
+                < (previous_lon - current_lon) * (lat - current_lat)
+                    / (previous_lat - current_lat)
+                    + current_lon
+        {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
 }
 
 fn valid_lonlat(lon: f64, lat: f64) -> bool {
@@ -1199,6 +1293,121 @@ mod tests {
                 ]
             )
             .starts_with(b"*1\r\n*4\r\n$7\r\nPalermo\r\n")
+        );
+    }
+
+    #[test]
+    fn polygon_search_and_store_match_inside_points_without_an_origin() {
+        let store = ShardExecutor::new(4096);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOADD",
+                    b"points",
+                    b"0",
+                    b"0",
+                    b"center",
+                    b"0.5",
+                    b"0.5",
+                    b"inside",
+                    b"2",
+                    b"0",
+                    b"outside",
+                ],
+            ),
+            b":3\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOSEARCH",
+                    b"points",
+                    b"BYPOLYGON",
+                    b"4",
+                    b"-1",
+                    b"-1",
+                    b"1",
+                    b"-1",
+                    b"1",
+                    b"1",
+                    b"-1",
+                    b"1",
+                    b"ASC",
+                ],
+            ),
+            b"*2\r\n$6\r\ncenter\r\n$5\r\ninside\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOSEARCHSTORE",
+                    b"selected",
+                    b"points",
+                    b"BYPOLYGON",
+                    b"4",
+                    b"-1",
+                    b"-1",
+                    b"1",
+                    b"-1",
+                    b"1",
+                    b"1",
+                    b"-1",
+                    b"1",
+                    b"ASC",
+                    b"STOREDIST",
+                    b"COUNT",
+                    b"1",
+                ],
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZRANGE", b"selected", b"0", b"-1"]),
+            b"*1\r\n$6\r\ncenter\r\n"
+        );
+    }
+
+    #[test]
+    fn polygon_search_rejects_short_polygons_and_conflicting_origins() {
+        let store = ShardExecutor::new(4096);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOSEARCH",
+                    b"points",
+                    b"BYPOLYGON",
+                    b"2",
+                    b"0",
+                    b"0",
+                    b"1",
+                    b"1",
+                ],
+            ),
+            b"-ERR GEOSEARCH BYPOLYGON must have at least 3 vertices\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"GEOSEARCH",
+                    b"points",
+                    b"BYPOLYGON",
+                    b"3",
+                    b"0",
+                    b"0",
+                    b"1",
+                    b"1",
+                    b"0",
+                    b"FROMLONLAT",
+                    b"0",
+                    b"0",
+                ],
+            ),
+            SYNTAX_ERROR
         );
     }
 }
