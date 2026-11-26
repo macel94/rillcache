@@ -220,6 +220,9 @@ pub struct Config {
     pub max_data_bytes: usize,
     pub limits: Limits,
     pub idle_timeout: Duration,
+    /// Supervisor grace period for a signal-driven shutdown to join workers
+    /// before forcing termination. Defaults to 25 seconds.
+    pub shutdown_deadline: Duration,
     /// Monotonic deadline for assembling an incomplete plaintext request; None disables it.
     pub frame_assembly_timeout: Option<Duration>,
     /// Default-user password. `None` or empty disables authentication.
@@ -370,6 +373,7 @@ impl Default for Config {
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
+            shutdown_deadline: Duration::from_secs(25),
             frame_assembly_timeout: Some(Duration::from_secs(60)),
             requirepass: None,
             requirepass_file: None,
@@ -441,6 +445,8 @@ impl Config {
             || self.limits.max_bulk_bytes > self.limits.max_frame_bytes
             || self.limits.max_frame_bytes > 512 * 1024 * 1024
             || self.idle_timeout.is_zero()
+            || self.shutdown_deadline.is_zero()
+            || self.shutdown_deadline > Duration::from_secs(600)
             || self
                 .frame_assembly_timeout
                 .is_some_and(|timeout| timeout.is_zero() || timeout > Duration::from_secs(600))
