@@ -19,6 +19,7 @@ P0 gates are closed or explicitly excluded by a reviewed profile decision.
 | Logical databases | Database `0` only |
 | Persistence mode | Optional private append-only journal; RDB excluded |
 | Transport | Plain TCP, optional native TLS 1.3 |
+| Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
 | Platforms | Linux x86_64 (development/CI); other platforms unverified |
 
 ## Supported surface

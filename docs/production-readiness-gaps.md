@@ -256,13 +256,28 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** complexity and memory are documented and benchmarked at the
   target scale, with a native index or an accepted latency limit.
 
-- [ ] **C12. Pub/Sub is deliberately non-durable.** [P1]
-  Delivery is in-process, at-most-once, unordered across publishers, bounded by
-  per-client queues and not persisted or replicated. Sharded channels are a
-  separate standalone namespace with no cluster hash-slot routing.
-  **Closes when:** the profile documents this boundary and uses Streams or an
-  external transport for reliable delivery; or durable/replicated delivery is
-  implemented and tested.
+- [x] **C12. Pub/Sub is deliberately non-durable.** [P1]
+  **Complete (2026-11-26) as an explicit boundary with a validated alternative.**
+  Pub/Sub delivery remains in-process, at-most-once, unordered across
+  publishers, bounded by per-client queues and neither persisted nor
+  replicated; sharded channels stay a standalone namespace with no cluster
+  hash-slot routing. The profile now states that boundary in client terms and
+  names the supported reliable alternative: a stream consumer group
+  (`XREADGROUP`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XACK`), whose pending state
+  survives a client disconnect and is recorded in the journal but is not
+  validated across a server restart, or an external durable transport for
+  recovery beyond the process or host. Evidence: `tests/stream_claim.rs`
+  `stream_group_redelivers_pending_entries_after_consumer_disconnect` closes the
+  delivering connection, then redelivers the exact binary payload to fresh
+  connections through `XCLAIM` and `XAUTOCLAIM` before `XACK` clears the set, in
+  default, fixed-one and four-worker modes; the merged RESP2
+  `disconnected_subscriber_does_not_receive_gap_messages_after_resubscribing`
+  keeps the Pub/Sub half of the boundary honest (publish in the gap returns
+  zero and is never replayed). This is at-least-once redelivery with duplicates,
+  not exactly-once, not replication, not a restart-recovery claim and not a
+  durability claim for host loss.
+  See [Pub/Sub](pubsub.md), [streams](streams.md) and
+  [compatibility boundaries](compatibility.md#important-boundaries).
 
 - [ ] **C13. Configuration compatibility is missing.** [P1]
   There is no full `redis.conf` parser, `CONFIG REWRITE` or complete runtime

@@ -59,6 +59,15 @@ show what has actually been checked, including exclusions and failures.
   or loadable modules are incompatible. `SCRIPT FLUSH` and `FUNCTION FLUSH`
   acknowledge an empty registry; neither indicates execution support.
   `COMMAND INFO` returns no metadata for the execution commands.
+- **Pub/Sub is at-most-once; stream groups are the redelivery alternative.**
+  Pub/Sub delivery is process-local, bounded per client and lost on disconnect,
+  queue pressure, restart or crash, with no replay, acknowledgment or
+  replication. For acknowledged redelivery use a stream consumer group
+  (`XREADGROUP`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XACK`); pending entries survive
+  a client disconnect and are recorded in the journal, but consumer pending
+  state does not survive a server restart. Recovery beyond the process or host
+  needs an external durable transport. Neither path is replicated.
+  See [Pub/Sub](pubsub.md) and [streams](streams.md#reliable-delivery-across-client-disconnects).
 - **Rebuildable data, not a system of record.** The journal supports replay and
   synchronous compaction, but there is no Redis RDB interoperability,
   background/incremental rewrite or validated crash/backup/restore guarantee.
