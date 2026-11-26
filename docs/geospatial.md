@@ -56,12 +56,14 @@ longitude is `-180..180`.
 
 Searches derive the same center-plus-neighbor geohash cells used by the pinned
 servers, then scan the source's bounded sorted-set items in cell-prefix order.
-The implementation retains O(N) source-scan work (up to nine score ranges) rather
-than a native skiplist range index, and memory stays bounded by the existing
-one-million-element/payload limits. It applies the exact Redis haversine formula
+The implementation sorts a bounded list of source references by score/member, then
+scans up to nine score ranges; without a native skiplist range index, searches are
+O(N log N) in the worst case with O(N) temporary references, bounded by the
+existing one-million-element/payload limits. It applies the exact Redis haversine formula
 (`EARTH_RADIUS_IN_METERS = 6372797.560856`), rectangle checks, or polygon
-ray-casting. Unsorted results and `COUNT ... ANY` retain deterministic geohash-cell
-traversal order; sorted searches order by distance. Native-first `unit/geo` is the
+ray-casting. Unsorted results and `COUNT ... ANY` retain geohash-cell traversal
+order, with members within each cell ordered by score/member; sorted searches order
+by distance. Native-first `unit/geo` is the
 compatibility gate; a source change alone is not a compatibility claim.
 
 `GEOADD` changes publish a `zadd` keyspace event. `GEOSEARCHSTORE` publishes
@@ -73,8 +75,8 @@ no separate destination event, matching standalone Redis.
 
 This is not full geospatial compatibility. The legacy `GEORADIUS` family is
 implemented as an adapter over the same bounded geohash-cell traversal. The
-candidate does not have the native sorted-set range index, so each search still
-scans source items and is O(N).
+candidate does not have the native sorted-set range index, so each search sorts
+source references and scans up to nine ranges (O(N log N) worst-case).
 Scores written by ordinary `ZADD` are decoded best-effort: non-finite or negative
 scores are treated as non-geographic, while arbitrary finite scores may map to
 clamped coordinates. Geo keys are still sorted sets, so `ZREM`/`ZADD` can change

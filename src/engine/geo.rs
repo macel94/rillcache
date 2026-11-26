@@ -531,12 +531,18 @@ struct GeoHashBounds {
 
 fn collect_hits(members: &[(&[u8], f64)], center: (f64, f64), search: &Search) -> Vec<Hit> {
     let cells = search_cells(center, &search.shape);
+    let mut ordered = members.to_vec();
+    ordered.sort_unstable_by(|left, right| {
+        left.1
+            .total_cmp(&right.1)
+            .then_with(|| left.0.cmp(right.0))
+    });
     let mut hits = Vec::new();
     'cells: for cell in cells {
         let shift = 52 - u32::from(cell.step) * 2;
         let min_score = cell.bits << shift;
         let max_score = (cell.bits + 1) << shift;
-        for (member, score) in members {
+        for (member, score) in &ordered {
             let hash = *score as u64;
             if hash < min_score {
                 continue;
