@@ -304,6 +304,11 @@ class CompatibilityTests(unittest.TestCase):
             self.assertEqual("diagnostic", by_unit["unit/type/hash"]["classification"])
             self.assertIn("DUMP/RESTORE", by_unit["unit/type/hash"]["reason"])
             self.assertEqual("excluded", by_unit["unit/protocol"]["classification"])
+            protocol_reason = by_unit["unit/protocol"]["reason"]
+            self.assertIn("not a zero-test unit", protocol_reason)
+            self.assertIn("availability-zone", protocol_reason)
+            self.assertIn("CLIENT LIST qbuf", protocol_reason)
+            self.assertNotIn("zero executed tests", protocol_reason)
 
 
 class PerformanceTests(unittest.TestCase):
