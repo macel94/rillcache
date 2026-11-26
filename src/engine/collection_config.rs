@@ -817,10 +817,7 @@ mod tests {
             b"*2\r\n$17\r\navailability-zone\r\n$6\r\nmyzone\r\n"
         );
         assert_eq!(
-            run(
-                &store,
-                &[b"CONFIG", b"SET", b"availability-zone", b""]
-            ),
+            run(&store, &[b"CONFIG", b"SET", b"availability-zone", b""]),
             b"+OK\r\n"
         );
         assert_eq!(
