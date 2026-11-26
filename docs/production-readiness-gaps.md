@@ -59,7 +59,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
+| Compatibility and command surface | Partial | Command/subcommand inventory (C5), RESP3/session features (C6), language-client matrix (C7), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
