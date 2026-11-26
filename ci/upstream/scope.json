@@ -28,7 +28,7 @@
       "external mode": "Upstream automatically skips external:skip blocks (process restarts, persistence, multiple servers). Conditions can omit tests without emitting skip events."
     },
     "excluded_units": [
-      {"glob": "unit/protocol", "reason": "Upstream marks its main protocol block external:skip; zero executed tests must not appear green."},
+      {"glob": "unit/protocol", "reason": "Excluded from the standalone profile, not a zero-test unit: external mode does not skip its protocol/network tags. The unchanged Valkey unit includes untagged HELLO/availability-zone CONFIG behavior and partial-command-after-BLPOP CLIENT LIST qbuf assertions outside this candidate profile; preserve the whole unit rather than filtering tests."},
       {"glob": "unit/moduleapi/*", "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."},
       {"glob": "unit/cluster/*", "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."},
       {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
