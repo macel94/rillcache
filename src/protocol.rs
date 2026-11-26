@@ -268,7 +268,7 @@ fn decode<'a, S: ArgumentStorage<'a>, T>(
         0,
         b'*',
         limits.max_arguments,
-        ProtocolError::InvalidArrayLength,
+        ProtocolError::TooManyArguments,
     )?
     else {
         return incomplete(input, limits);
