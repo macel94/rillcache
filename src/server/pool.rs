@@ -179,7 +179,7 @@ impl Client {
         if self.shutdown_drain && (self.session.is_blocked() || self.session.is_paused()) {
             self.closing = true;
         }
-        self.publish_qbuf(&**store);
+        self.publish_qbuf(store);
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None
@@ -218,7 +218,7 @@ impl Client {
                     return Ok(None);
                 }
                 if self.input.is_empty() {
-                    let received = self.receive(config.limits, chunk, &**store)?;
+                    let received = self.receive(config.limits, chunk, store)?;
                     progress |= received;
                     if self.eof {
                         return Ok(None);
@@ -240,7 +240,7 @@ impl Client {
                     return Ok(None);
                 }
                 if self.input.is_empty() {
-                    let received = self.receive(config.limits, chunk, &**store)?;
+                    let received = self.receive(config.limits, chunk, store)?;
                     progress |= received;
                     if self.eof {
                         return Ok(None);
@@ -257,7 +257,7 @@ impl Client {
         }
         let read_first = self.input.is_empty() && !self.eof;
         if read_first {
-            progress |= self.receive(config.limits, chunk, &**store)?;
+            progress |= self.receive(config.limits, chunk, store)?;
             if self.input.is_empty() || self.closing {
                 return Ok(if self.eof && self.output.is_empty() {
                     None
@@ -320,7 +320,7 @@ impl Client {
         } else if consumed > 0 {
             self.input.drain(..consumed);
         }
-        self.publish_qbuf(&**store);
+        self.publish_qbuf(store);
         progress |= self.flush()?;
         if self.closing || !self.output.is_empty() || !need_input {
             return Ok(self.open(progress, config.idle_timeout));
@@ -336,7 +336,7 @@ impl Client {
             return Ok(Some(true));
         }
         if !read_first {
-            progress |= self.receive(config.limits, chunk, &**store)?;
+            progress |= self.receive(config.limits, chunk, store)?;
         }
         Ok(self.open(progress, config.idle_timeout))
     }
@@ -359,7 +359,7 @@ impl Client {
             return Ok(LocalPoll::Closed);
         }
         let mut progress = self.flush()?;
-        self.publish_qbuf(&**store);
+        self.publish_qbuf(store);
         if self.closing {
             return Ok(if self.output.is_empty() {
                 LocalPoll::Closed
@@ -386,7 +386,7 @@ impl Client {
         }
         let read_first = self.input.is_empty() && !self.eof;
         if read_first {
-            progress |= self.receive(config.limits, chunk, &**store)?;
+            progress |= self.receive(config.limits, chunk, store)?;
             if self.input.is_empty() || self.closing {
                 return Ok(match self.open(progress, config.idle_timeout) {
                     Some(progress) => LocalPoll::Progress(progress),
@@ -451,7 +451,7 @@ impl Client {
         } else if consumed > 0 {
             self.input.drain(..consumed);
         }
-        self.publish_qbuf(&**store);
+        self.publish_qbuf(store);
         progress |= self.flush()?;
         if migrate {
             return Ok(if self.output.is_empty() {
@@ -481,7 +481,7 @@ impl Client {
             return Ok(LocalPoll::Progress(true));
         }
         if !read_first {
-            progress |= self.receive(config.limits, chunk, &**store)?;
+            progress |= self.receive(config.limits, chunk, store)?;
         }
         Ok(match self.open(progress, config.idle_timeout) {
             Some(progress) => LocalPoll::Progress(progress),

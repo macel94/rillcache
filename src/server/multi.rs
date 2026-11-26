@@ -328,7 +328,7 @@ impl Reactor {
         }
         let read_first = client.input.is_empty() && !client.eof;
         if read_first {
-            progress |= client.receive(config.limits, chunk, &**router)?;
+            progress |= client.receive(config.limits, chunk, router)?;
             if client.input.is_empty() || client.closing {
                 return Ok(client.open(progress, config.idle_timeout));
             }
@@ -450,7 +450,7 @@ impl Reactor {
         } else if consumed > 0 {
             client.input.drain(..consumed);
         }
-        client.publish_qbuf(&**router);
+        client.publish_qbuf(router);
         if let Some(batch) = run.as_mut()
             && batch.is_empty()
         {
@@ -471,7 +471,7 @@ impl Reactor {
             return Ok(Some(true));
         }
         if !read_first {
-            progress |= client.receive(config.limits, chunk, &**router)?;
+            progress |= client.receive(config.limits, chunk, router)?;
         }
         Ok(client.open(progress, config.idle_timeout))
     }
