@@ -5,8 +5,9 @@ use std::net::{Shutdown, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rillcache::engine::ErrorDialect;
 use rillcache::protocol::{Limits, encode_request};
-use rillcache::{Config, ErrorDialect, Server, ServerHandle};
+use rillcache::{Config, Server, ServerHandle};
 
 fn start(mut config: Config) -> ServerHandle {
     config.bind_addr = "127.0.0.1:0".parse().unwrap();
