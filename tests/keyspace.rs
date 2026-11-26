@@ -36,6 +36,39 @@ fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
     assert_eq!(reply, expected, "{args:?}");
 }
 
+fn bulk_payload(stream: &mut TcpStream) -> String {
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte).unwrap();
+        header.push(byte[0]);
+        if header.ends_with(b"\r\n") {
+            break;
+        }
+    }
+    assert_eq!(
+        header.first(),
+        Some(&b'$'),
+        "expected a bulk reply: {header:?}"
+    );
+    let size: usize = std::str::from_utf8(&header[1..header.len() - 2])
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut payload = vec![0; size + 2];
+    stream.read_exact(&mut payload).unwrap();
+    assert_eq!(&payload[size..], b"\r\n");
+    payload.truncate(size);
+    String::from_utf8(payload).unwrap()
+}
+
+fn info_keyspace(stream: &mut TcpStream) -> String {
+    let mut request = Vec::new();
+    encode_request(&[b"INFO", b"keyspace"], &mut request);
+    stream.write_all(&request).unwrap();
+    bulk_payload(stream)
+}
+
 #[test]
 fn database_zero_rejections_leave_the_shared_keyspace_unchanged() {
     for workers in [None, Some(1), Some(4)] {
@@ -77,6 +110,13 @@ fn database_zero_rejections_leave_the_shared_keyspace_unchanged() {
                 command(client, &[b"DBSIZE"], b":2\r\n");
             }
         }
+        // Only one logical database exists, so INFO exposes db0 and never a
+        // second database section, even after every multi-database rejection.
+        for client in [&mut selecting_client, &mut default_client] {
+            let keyspace = info_keyspace(client);
+            assert!(keyspace.contains("db0:keys=2,"), "{keyspace}");
+            assert!(!keyspace.contains("db1:"), "{keyspace}");
+        }
 
         command(
             &mut selecting_client,
@@ -90,6 +130,9 @@ fn database_zero_rejections_leave_the_shared_keyspace_unchanged() {
         );
         command(&mut selecting_client, &[b"FLUSHDB", b"SYNC"], b"+OK\r\n");
         command(&mut default_client, &[b"DBSIZE"], b":0\r\n");
+        let keyspace = info_keyspace(&mut default_client);
+        assert!(keyspace.contains("db0:keys=0,"), "{keyspace}");
+        assert!(!keyspace.contains("db1:"), "{keyspace}");
         server.shutdown().unwrap();
     }
 }
