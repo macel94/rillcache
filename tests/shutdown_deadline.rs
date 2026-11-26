@@ -161,7 +161,7 @@ fn read_listener(stderr: &mut BufReader<ChildStderr>, tls: bool) -> String {
 
 enum Connection {
     Tcp(TcpStream),
-    Tls(StreamOwned<ClientConnection, TcpStream>),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
 }
 
 impl Read for Connection {
@@ -226,7 +226,7 @@ fn exercise(transport: Transport) {
     encode_request(&[b"SET", b"payload", &value], &mut request);
 
     let mut stream = match transport {
-        Transport::Tls => Connection::Tls(tls_stream(&address)),
+        Transport::Tls => Connection::Tls(Box::new(tls_stream(&address))),
         _ => {
             let socket = TcpStream::connect(&address).unwrap();
             socket.set_nodelay(true).unwrap();
