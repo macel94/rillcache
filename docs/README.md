@@ -15,6 +15,7 @@ project's front page.
 | See the draft supported deployment profile | [Production profile](production-profile.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
+| Understand the persistent readiness-loop controller | [Readiness-loop controller](readiness-loop-controller.md) |
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) or its [published wiki](https://macel94.github.io/rillcache/) |
 
@@ -51,6 +52,7 @@ configure for the ordinary offline development loop.
 - [Reference conformance](reference-conformance.md) and [original upstream evidence](upstream-ci.md): what has actually been tested.
 - [Benchmark methodology](benchmarks.md), [dashboard](../benchmarks/README.md) and [reporting](benchmark-reports.md): measurements and publication.
 - [Protected delivery](pr-quality-gate.md), [check inventory](actions-gate-audit.md), [independent PR delivery](parallel-pr-delivery.md) and [parallel work lanes](parallel-work-lanes.md): repository governance.
+- [Readiness-loop controller](readiness-loop-controller.md): versioned prompt, idle wake suppression and timer behavior.
 
 ### Architecture and research
 
