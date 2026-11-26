@@ -26,10 +26,25 @@ P0 gates are closed or explicitly excluded by a reviewed profile decision.
 
 ## Supported surface
 
-- The command names returned by `COMMAND LIST` on the tested head. The
+- The command names returned by `COMMAND LIST` on the tested head, enumerated
+  with arity and flags in the
+  [command matrix](production-readiness/command-matrix.md). The
   [compatibility guide](compatibility.md) describes command-family behavior and
   the [area references](README.md) carry option-level limits. This profile does
   not silently add commands that `COMMAND LIST` does not report.
+- The reverse direction is enumerated as well: every command and subcommand name
+  reported by the pinned references and not advertised by the head is listed in
+  the [command matrix](production-readiness/command-matrix.md) with its exact
+  wire reply. Those names are not part of this profile. A top-level command the
+  head does not advertise is never accepted silently: it returns either the
+  standard `ERR unknown command` or the named capability error recorded in
+  [unsupported surfaces](unsupported.md), so a client that needs Redis 8
+  vector-set (`V*`) or array (`ar*`) commands, Valkey 9
+  `BACKUP`/`COMMANDLOG`/`HOTKEYS`/`HIMPORT`/`TRIMSLOTS`, `DEBUG`, `LOLWUT` or
+  scripting entry points fails on the first command rather than at a later
+  semantic divergence. A subcommand of an advertised container is answered or
+  rejected by that container; the matrix records which, and the area documents
+  define how far that answer goes.
 - Strings, bitmaps, lists, sets, hashes, sorted sets, HyperLogLog (private
   representation), geospatial commands over sorted sets, and streams as described
   in [collections](collections.md), [string algorithms](string-algorithms.md),
@@ -106,8 +121,11 @@ types and other databases are not supported.
 
 ## Explicit exclusions
 
-The following are **not** part of this draft profile and must not be inferred from
-a command returning a generic error:
+The following are **not** part of this draft profile and must not be inferred
+from a command returning a generic error. The
+[command matrix](production-readiness/command-matrix.md) is the exact,
+machine-checked enumeration of every excluded name and its reply; this list names
+only the capability families.
 
 - Scripting, `EVAL`/`EVALSHA` (including the `_RO` variants), functions and
   `FCALL`/`FCALL_RO` (C2). No Lua runtime is linked. The exclusion is explicit
@@ -139,6 +157,13 @@ a command returning a generic error:
   attributes/push tracking and `LATENCY GRAPH` (C5, C6, O2, O3). `LATENCY
   HISTOGRAM` exists only as the documented bounded 32-bucket approximation.
 - Redis-compatible HyperLogLog payload interchange and diagnostics (C10).
+- Redis 8 vector-set commands (`VADD`, `VCARD`, `VDIM`, `VEMB`, `VGETATTR`,
+  `VINFO`, `VISMEMBER`, `VLINKS`, `VRANDMEMBER`, `VRANGE`, `VREM`, `VSETATTR`,
+  `VSIM`), Redis 8 array commands (`ar*`) and the Valkey 9 `BACKUP`,
+  `COMMANDLOG`, `HOTKEYS`, `HIMPORT`, `TRIMSLOTS` and stream extension commands
+  (`XACKDEL`, `XCFGSET`, `XDELEX`, `XIDMPRECORD`, `XNACK`) (C5). `DEBUG` and
+  `LOLWUT` are also absent. All of them return `ERR unknown command`; none of the
+  advertised commands depends on them.
 - A full `redis.conf` language, `CONFIG REWRITE`, includes and live reload (C13,
   O5).
 - `redis-py`, node-redis, go-redis and other language-client conformance (C7).

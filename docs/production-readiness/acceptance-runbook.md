@@ -33,7 +33,7 @@ A suggested order:
 | --- | --- |
 | Merge gate | All exact-head protected contexts, raw Valkey cohorts, and failed attempts; passing this merge gate does not substitute for any release-acceptance stage. |
 | Scope | The approved profile, supported topology, explicit reviewed deployment exclusions (use an empty list when none apply), and the named scope reviewer’s candidate-specific decision. |
-| Compatibility | Pinned Redis/Valkey and language-client versions; supported command/feature rows, exact replies and compatibility-specific exclusions. |
+| Compatibility | Pinned Redis/Valkey and language-client versions; supported command/feature rows, exact replies and compatibility-specific exclusions. Reproduce the command-surface record for the exact artifact with `python3 scripts/command_matrix.py --spawn <artifact-binary>`; it needs a disposable instance because a few probes change ACL, script and statistic state. |
 | Security | Independent review of the actual profile and artifact, disposition of findings, verified secret/ACL/TLS/audit controls, and named approval. |
 | Load and soak | Controlled hardware, offered and completed workload, expected SLOs, measured request tails and resource bounds; retain overload, dropped work and failed samples. |
 | Recovery | From a disposable staging journal, record acknowledged writes and timestamps before each fault. Restore into an empty isolated directory, verify data and TTLs before allowing traffic, and compare measured loss and recovery time with the profile's RPO/RTO. Follow the [offline backup procedure](../persistence.md#offline-backup-and-restore). |
