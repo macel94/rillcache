@@ -350,14 +350,19 @@ impl Reactor {
                     break;
                 }
                 let started = Instant::now();
-                let outcome = dispatch_request(&client.input[consumed..], config.limits, |args| {
-                    if args.is_empty() {
-                        return crate::session::DeferredOutcome::Complete(Action::Continue);
-                    }
-                    client
-                        .session
-                        .execute_deferred_on(router, args, &mut client.output)
-                });
+                let outcome = crate::protocol::dispatch_request_with_inline_quote_concatenation(
+                    &client.input[consumed..],
+                    config.limits,
+                    || router.allow_inline_quote_concatenation(),
+                    |args| {
+                        if args.is_empty() {
+                            return crate::session::DeferredOutcome::Complete(Action::Continue);
+                        }
+                        client
+                            .session
+                            .execute_deferred_on(router, args, &mut client.output)
+                    },
+                );
                 match outcome {
                     Ok(Some((outcome, used))) => {
                         consumed += used;

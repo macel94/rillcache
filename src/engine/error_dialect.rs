@@ -1,4 +1,4 @@
-//! Explicit selection for verified Redis/Valkey error-text divergences.
+//! Explicit selection for verified Redis/Valkey protocol and error divergences.
 //! This is not a general server-identity or command-semantics compatibility mode.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

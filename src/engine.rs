@@ -394,6 +394,10 @@ impl std::ops::Deref for ShardExecutor {
 }
 
 impl ServerServices {
+    pub(crate) fn allow_inline_quote_concatenation(&self) -> bool {
+        *self.error_dialect.read().expect("error dialect lock") != ErrorDialect::Redis
+    }
+
     pub(crate) fn availability_zone(&self) -> Option<Vec<u8>> {
         self.availability_zone
             .read()

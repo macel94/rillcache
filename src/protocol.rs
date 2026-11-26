@@ -100,6 +100,15 @@ pub fn dispatch_request<'a, T>(
     limits: Limits,
     execute: impl FnOnce(&[&[u8]]) -> T,
 ) -> Result<Option<(T, usize)>, ProtocolError> {
+    dispatch_request_with_inline_quote_concatenation(input, limits, || true, execute)
+}
+
+pub(crate) fn dispatch_request_with_inline_quote_concatenation<'a, T>(
+    input: &'a [u8],
+    limits: Limits,
+    allow_concatenation: impl FnOnce() -> bool,
+    execute: impl FnOnce(&[&[u8]]) -> T,
+) -> Result<Option<(T, usize)>, ProtocolError> {
     // The canonical one-argument PING frame is the hottest request in every
     // benchmark and health probe. Skip generic array/length parsing when the
     // complete exact frame is already available; fragmented or non-canonical
@@ -115,7 +124,7 @@ pub fn dispatch_request<'a, T>(
         return Ok(Some((execute(&[b"PING"]), 14)));
     }
     if input.first().is_some_and(|&byte| byte != b'*') {
-        let Some((owned, consumed)) = parse_inline(input, limits)? else {
+        let Some((owned, consumed)) = parse_inline(input, limits, allow_concatenation())? else {
             return Ok(None);
         };
         let arguments: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
@@ -126,11 +135,15 @@ pub fn dispatch_request<'a, T>(
     })
 }
 
-/// Parse a single inline command line using Redis's quote and escape rules.
+/// Parse one inline command line using the selected quote-concatenation policy.
 /// The returned arguments own decoded escape bytes; raw RESP remains borrowed.
 type InlineRequest = (Vec<Vec<u8>>, usize);
 
-fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, ProtocolError> {
+fn parse_inline(
+    input: &[u8],
+    limits: Limits,
+    allow_concatenation: bool,
+) -> Result<Option<InlineRequest>, ProtocolError> {
     let Some(newline) = input.iter().position(|&byte| byte == b'\n') else {
         return if input.len() >= limits.max_frame_bytes.min(MAX_INLINE_BYTES) {
             Err(ProtocolError::FrameTooLarge)
@@ -168,6 +181,12 @@ fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, P
                 if byte == active_quote {
                     quote = None;
                     index += 1;
+                    if !allow_concatenation
+                        && index < line.len()
+                        && !line[index].is_ascii_whitespace()
+                    {
+                        return Err(ProtocolError::UnbalancedQuotes);
+                    }
                     continue;
                 }
                 if byte == b'\\' && index + 1 < line.len() {
@@ -207,6 +226,9 @@ fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, P
             } else if byte.is_ascii_whitespace() {
                 break;
             } else if matches!(byte, b'"' | b'\'') {
+                if !allow_concatenation && !token.is_empty() {
+                    return Err(ProtocolError::UnbalancedQuotes);
+                }
                 quote = Some(byte);
                 index += 1;
             } else {
@@ -522,10 +544,16 @@ mod tests {
             dispatch_request(b"SET \"closed\"suffix\r\n", Limits::default(), |args| {
                 args.iter().map(|arg| arg.to_vec()).collect::<Vec<_>>()
             }),
-            Ok(Some((
-                vec![b"SET".to_vec(), b"closedsuffix".to_vec()],
-                20
-            )))
+            Ok(Some((vec![b"SET".to_vec(), b"closedsuffix".to_vec()], 20)))
+        );
+        assert_eq!(
+            dispatch_request_with_inline_quote_concatenation(
+                b"set \"\"\"test-key\"\"\" test-value\r\n",
+                Limits::default(),
+                || false,
+                |_| panic!("unbalanced Redis inline command executed")
+            ),
+            Err(ProtocolError::UnbalancedQuotes)
         );
         assert_eq!(
             dispatch_request(
@@ -534,7 +562,11 @@ mod tests {
                 |args| args.iter().map(|arg| arg.to_vec()).collect::<Vec<_>>()
             ),
             Ok(Some((
-                vec![b"set".to_vec(), b"test-key".to_vec(), b"test-value".to_vec()],
+                vec![
+                    b"set".to_vec(),
+                    b"test-key".to_vec(),
+                    b"test-value".to_vec()
+                ],
                 37
             )))
         );

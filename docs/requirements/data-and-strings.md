@@ -65,9 +65,12 @@ and the offline upstream harness tests.
 - **When** a valid positive MSETEX count exceeds the available key/value pairs,
   the server **shall** return Redis's key/value-pair error or Valkey's syntax
   error according to the selected dialect, including protected large counts.
-- **If** the setting is malformed, startup **shall** fail; other command,
-  option, arity and numeric errors **shall** remain unchanged, and rejected
-  writes **shall** preserve values, TTLs and WATCH state in every worker mode.
+- **When** an inline request contains quoted and unquoted segments in one
+  token, Redis mode **shall** reject the concatenation and Valkey mode **shall**
+  accept it; RESP framing behavior is identical in both modes.
+- **If** the setting is malformed, startup **shall** fail; command validation
+  order and numeric semantics **shall** remain unchanged, and rejected writes
+  **shall** preserve values, TTLs and WATCH state in every worker mode.
 - **When** the original upstream suites run, the runner **shall** explicitly
   record the candidate's public reference-matched dialect without modifying
   Tcl assertions, exclusions, failure classification or performance settings.

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use crate::engine::{
     Action, Auth, ErrorDialect, EvictionPolicy, FsyncPolicy, JournalAuth, NotifyFlags, Store,
 };
-use crate::protocol::{Limits, dispatch_request};
+use crate::protocol::{
+    Limits, dispatch_request, dispatch_request_with_inline_quote_concatenation,
+};
 use crate::session::Session;
 use std::path::PathBuf;
 
@@ -258,7 +260,7 @@ pub struct Config {
     pub maxmemory_policy: EvictionPolicy,
     /// Keyspace/keyevent notification classes; empty disables publication.
     pub notify_keyspace_events: NotifyFlags,
-    /// Verified vendor-specific error wording; defaults to Valkey for compatibility.
+    /// Verified vendor-specific protocol/error behavior; defaults to Valkey.
     pub error_dialect: ErrorDialect,
     /// Optional native TLS 1.3 listener. Plaintext remains on `bind_addr`.
     pub tls_bind_addr: Option<SocketAddr>,
@@ -1411,13 +1413,18 @@ fn serve_client(
             let mut consumed = 0;
             let mut commands = 0;
             loop {
-                let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
-                    if args.is_empty() {
-                        Action::Continue // Redis ignores an empty inline line.
-                    } else {
-                        session.execute(store, args, &mut output)
-                    }
-                }) {
+                let (action, used) = match dispatch_request_with_inline_quote_concatenation(
+                    &input[consumed..],
+                    limits,
+                    || store.allow_inline_quote_concatenation(),
+                    |args| {
+                        if args.is_empty() {
+                            Action::Continue // Redis ignores an empty inline line.
+                        } else {
+                            session.execute(store, args, &mut output)
+                        }
+                    },
+                ) {
                     Ok(Some(result)) => result,
                     Ok(None) => break,
                     Err(error) => {

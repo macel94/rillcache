@@ -269,13 +269,18 @@ impl Client {
         let mut consumed = 0;
         let mut need_input = false;
         for _ in 0..QUANTUM {
-            match dispatch_request(&self.input[consumed..], config.limits, |args| {
-                if args.is_empty() {
-                    Action::Continue // Redis ignores an empty inline line.
-                } else {
-                    self.session.execute_on(store, args, &mut self.output)
-                }
-            }) {
+            match crate::protocol::dispatch_request_with_inline_quote_concatenation(
+                &self.input[consumed..],
+                config.limits,
+                || store.allow_inline_quote_concatenation(),
+                |args| {
+                    if args.is_empty() {
+                        Action::Continue // Redis ignores an empty inline line.
+                    } else {
+                        self.session.execute_on(store, args, &mut self.output)
+                    }
+                },
+            ) {
                 Ok(Some((action, used))) => {
                     consumed += used;
                     progress = true;
@@ -398,16 +403,21 @@ impl Client {
         let mut migrate = false;
         let mut need_input = false;
         for _ in 0..QUANTUM {
-            match dispatch_request(&self.input[consumed..], config.limits, |args| {
-                if args.is_empty() {
-                    return Action::Continue;
-                }
-                if !self.session.is_local_command(store, args) {
-                    migrate = true;
-                    return Action::Continue;
-                }
-                self.session.execute_on(store, args, &mut self.output)
-            }) {
+            match crate::protocol::dispatch_request_with_inline_quote_concatenation(
+                &self.input[consumed..],
+                config.limits,
+                || store.allow_inline_quote_concatenation(),
+                |args| {
+                    if args.is_empty() {
+                        return Action::Continue;
+                    }
+                    if !self.session.is_local_command(store, args) {
+                        migrate = true;
+                        return Action::Continue;
+                    }
+                    self.session.execute_on(store, args, &mut self.output)
+                },
+            ) {
                 Ok(Some((action, used))) => {
                     if migrate {
                         break;

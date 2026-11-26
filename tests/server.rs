@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rillcache::protocol::{Limits, encode_request};
-use rillcache::{Config, Server, ServerHandle};
+use rillcache::{Config, ErrorDialect, Server, ServerHandle};
 
 fn start(mut config: Config) -> ServerHandle {
     config.bind_addr = "127.0.0.1:0".parse().unwrap();
@@ -243,7 +243,29 @@ fn inline_commands_are_quoted_binary_safe_fragmented_and_pipeline_ordered() {
     malformed.write_all(b"SET \"unterminated\r\n").unwrap();
     let mut output = Vec::new();
     malformed.read_to_end(&mut output).unwrap();
-    assert_eq!(output, b"-ERR Protocol error: unbalanced quotes in request\r\n");
+    assert_eq!(
+        output,
+        b"-ERR Protocol error: unbalanced quotes in request\r\n"
+    );
+    send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
+}
+
+#[test]
+fn redis_dialect_rejects_inline_quote_concatenation() {
+    let server = start(Config {
+        error_dialect: ErrorDialect::Redis,
+        ..Config::default()
+    });
+    let mut stream = connect(&server);
+    stream
+        .write_all(b"set \"\"\"test-key\"\"\" test-value\r\n")
+        .unwrap();
+    let mut output = Vec::new();
+    stream.read_to_end(&mut output).unwrap();
+    assert_eq!(
+        output,
+        b"-ERR Protocol error: unbalanced quotes in request\r\n"
+    );
     send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
 }
 
@@ -275,7 +297,10 @@ fn malformed_input_closes_only_the_offending_connection() {
         .unwrap();
     let mut output = Vec::new();
     broken.read_to_end(&mut output).unwrap();
-    assert_eq!(output, b"+PONG\r\n-ERR Protocol error: invalid bulk length\r\n");
+    assert_eq!(
+        output,
+        b"+PONG\r\n-ERR Protocol error: invalid bulk length\r\n"
+    );
     send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
 }
 

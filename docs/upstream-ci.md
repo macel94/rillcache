@@ -150,9 +150,10 @@ The candidate is started with the public `--error-dialect redis` or
 For `MSETEX` short pairs, pinned Redis expects `ERR wrong number of key-value
 pairs`, while pinned Valkey expects `ERR syntax error`. The setting also
 selects `HGETDEL` wording for an incorrect `FIELDS` token, a malformed count,
-or a nonpositive or mismatched count. It does not change validation order,
-data handling, or other command behavior. The default application
-setting remains Valkey. The runner records the dialect in result JSON, the
+or a nonpositive or mismatched count. For inline protocol input, Redis rejects
+quoted/unquoted token concatenation while Valkey accepts it. It does not change
+validation order or data handling. The default application setting remains
+Valkey. The runner records the dialect in result JSON, the
 summary and `server.json` alongside the exact argv; no test name, command input,
 assertion or exclusion controls this choice. The original Tcl is unchanged.
 These configured results are not proof that one unconfigured default returns

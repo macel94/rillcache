@@ -219,9 +219,12 @@ impl ColdExecutor {
         let job = Box::new(move || {
             let _permit = permit;
             let action = if let Some(frame) = frame {
-                dispatch_request(&frame, limits, |args| {
-                    owned_session.execute(&store, args, &mut owned_output)
-                })
+                crate::protocol::dispatch_request_with_inline_quote_concatenation(
+                    &frame,
+                    limits,
+                    || store.allow_inline_quote_concatenation(),
+                    |args| owned_session.execute(&store, args, &mut owned_output),
+                )
                 .expect("previously validated cold frame")
                 .map(|(action, _)| action)
             } else if maintenance {
@@ -751,18 +754,23 @@ async fn serve_connection(
             let mut need_input = false;
             for _ in 0..COMMAND_QUANTUM {
                 let mut cold = false;
-                match dispatch_request(&input[consumed..], config.limits, |args| {
-                    cold = executor.is_none() || cold_command(args);
-                    if cold || args.is_empty() {
-                        Action::Continue
-                    } else {
-                        session.execute_on(
-                            executor.as_ref().expect("local executor").as_ref(),
-                            args,
-                            &mut output,
-                        )
-                    }
-                }) {
+                match crate::protocol::dispatch_request_with_inline_quote_concatenation(
+                    &input[consumed..],
+                    config.limits,
+                    || context.store.allow_inline_quote_concatenation(),
+                    |args| {
+                        cold = executor.is_none() || cold_command(args);
+                        if cold || args.is_empty() {
+                            Action::Continue
+                        } else {
+                            session.execute_on(
+                                executor.as_ref().expect("local executor").as_ref(),
+                                args,
+                                &mut output,
+                            )
+                        }
+                    },
+                ) {
                     Ok(Some((mut action, used))) => {
                         if cold {
                             action = context
