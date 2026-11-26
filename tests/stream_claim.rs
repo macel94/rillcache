@@ -368,3 +368,88 @@ fn stream_claim_and_introspection_work_over_tcp_in_all_modes() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn stream_group_redelivers_pending_entries_after_consumer_disconnect() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut producer = connect(&server);
+        let payload = b"\x00job\xff";
+        command(
+            &mut producer,
+            &[b"XADD", b"jobs", b"1-0", b"f", payload],
+            b"$3\r\n1-0\r\n",
+        );
+        command(
+            &mut producer,
+            &[b"XADD", b"jobs", b"2-0", b"f", b"second"],
+            b"$3\r\n2-0\r\n",
+        );
+        command(
+            &mut producer,
+            &[b"XGROUP", b"CREATE", b"jobs", b"g", b"0"],
+            b"+OK\r\n",
+        );
+
+        // A consumer takes both entries and vanishes without acknowledging them.
+        let mut consumer = connect(&server);
+        let delivered = reply(
+            &mut consumer,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"alice",
+                b"COUNT",
+                b"10",
+                b"STREAMS",
+                b"jobs",
+                b">",
+            ],
+        );
+        assert!(contains(&delivered, b"1-0"), "{delivered:?}");
+        assert!(contains(&delivered, payload), "{delivered:?}");
+        assert!(contains(&delivered, b"2-0"), "{delivered:?}");
+        drop(consumer);
+
+        // A new connection still observes the unacknowledged set.
+        let mut recovery = connect(&server);
+        let pending = reply(&mut recovery, &[b"XPENDING", b"jobs", b"g"]);
+        assert!(pending.starts_with(b"*4\r\n"), "{pending:?}");
+        assert!(contains(&pending, b":2\r\n"), "{pending:?}");
+        assert!(contains(&pending, b"1-0"), "{pending:?}");
+        assert!(contains(&pending, b"2-0"), "{pending:?}");
+
+        // XCLAIM redelivers the exact binary payload; XAUTOCLAIM recovers the rest.
+        let claimed = reply(
+            &mut recovery,
+            &[b"XCLAIM", b"jobs", b"g", b"bob", b"0", b"1-0"],
+        );
+        assert!(contains(&claimed, b"1-0"), "{claimed:?}");
+        assert!(contains(&claimed, payload), "{claimed:?}");
+        let autoclaimed = reply(
+            &mut recovery,
+            &[
+                b"XAUTOCLAIM",
+                b"jobs",
+                b"g",
+                b"carol",
+                b"0",
+                b"0-0",
+                b"JUSTID",
+            ],
+        );
+        assert!(autoclaimed.starts_with(b"*3\r\n"), "{autoclaimed:?}");
+        assert!(contains(&autoclaimed, b"2-0"), "{autoclaimed:?}");
+
+        // Acknowledgment clears the set that survived the disconnect.
+        command(
+            &mut recovery,
+            &[b"XACK", b"jobs", b"g", b"1-0", b"2-0"],
+            b":2\r\n",
+        );
+        let empty = reply(&mut recovery, &[b"XPENDING", b"jobs", b"g"]);
+        assert!(empty.starts_with(b"*4\r\n:0\r\n"), "{empty:?}");
+        server.shutdown().unwrap();
+    }
+}

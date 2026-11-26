@@ -49,7 +49,10 @@ and socket write failures. It is not a count of distinct clients or undelivered
 messages after enqueue. Delivery is
 at-most-once: messages can be lost on disconnect, backpressure, process restart
 or crash. There is no replay, acknowledgment, durability or ordering guarantee
-across different publishers beyond the order their frames were enqueued.
+across different publishers beyond the order their frames were enqueued. For
+acknowledged redelivery, use a [stream consumer group](streams.md#reliable-delivery-across-client-disconnects)
+(`XREADGROUP`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XACK`); Pub/Sub is not upgraded
+by that alternative, and neither option is replicated.
 
 After reconnecting, clients must subscribe again. Once the old registration
 is removed, a publish to an otherwise unsubscribed channel returns zero and

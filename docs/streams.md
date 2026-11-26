@@ -96,6 +96,33 @@ pending count, `idle` and `inactive`.
 - `COPY source destination [DB 0] [REPLACE]` creates an independent copy of
   string or stream state. Other database numbers/options are rejected.
 
+## Reliable delivery across client disconnects
+
+Pub/Sub itself stays at-most-once; see [pub/sub](pubsub.md). When a workload
+needs an unacknowledged message to survive a client disconnect, the supported
+alternative is a stream consumer group rather than a subscriber socket:
+
+1. Append with `XADD`, create the group once with `XGROUP CREATE key group 0`.
+2. Read with `XREADGROUP GROUP group consumer COUNT n STREAMS key >`; each
+   returned entry becomes pending for that group/consumer.
+3. If the consumer disconnects, pending state remains server-side. A new
+   connection inspects it with `XPENDING`, then takes ownership with `XCLAIM` or
+   `XAUTOCLAIM`; the entry payload is returned byte-for-byte.
+4. `XACK` after successful processing removes the pending reference.
+
+`tests/stream_claim.rs`
+`stream_group_redelivers_pending_entries_after_consumer_disconnect` exercises
+that sequence over TCP after closing the original consumer connection, in
+default, fixed-one and four-worker modes.
+
+Limits: this is at-least-once redelivery with application-visible duplicates, not
+exactly-once processing. Pending/group state is held by the server process and
+recorded in the journal, but recovery of consumer pending state across a server
+restart is **not** validated; [compatibility](compatibility.md#important-boundaries)
+states that it does not survive restart. There is no replication or failover.
+Workloads that must survive loss of the whole process or host need the external
+transport option in [the production profile](production-profile.md).
+
 ## Limits
 
 This is not Redis Streams feature completeness. Multi-stream history reads and
