@@ -211,6 +211,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--max-bulk-bytes"
             | "--max-frame-bytes"
             | "--idle-timeout-ms"
+            | "--shutdown-deadline-ms"
             | "--frame-assembly-timeout-ms"
             | "--requirepass"
             | "--requirepass-file"
