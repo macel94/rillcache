@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 use crate::engine::{
     Action, Auth, ErrorDialect, EvictionPolicy, FsyncPolicy, JournalAuth, NotifyFlags, Store,
 };
-use crate::protocol::{
-    Limits, dispatch_request, dispatch_request_with_inline_quote_concatenation,
-};
+use crate::protocol::{Limits, dispatch_request, dispatch_request_with_inline_quote_concatenation};
 use crate::session::Session;
 use std::path::PathBuf;
 
