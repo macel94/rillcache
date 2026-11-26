@@ -140,6 +140,32 @@ front of it. The required external behaviour is:
 requirement necessary: two real server processes with identical limits do not
 share lockout state.
 
+## Migration and interchange
+
+There is **no RDB or native multipart-AOF interchange**: `SAVE`/`BGSAVE` return
+an RDB-unsupported error, `LASTSAVE` reports `0`, and `DUMP`/`RESTORE`/`MIGRATE`
+return one explicit capability error that names the supported alternatives. Do
+not point a Redis/Valkey `DUMP` payload or an RDB file at this profile.
+
+The supported migration path is a bounded **offline** conversion of an exported
+DB 0 string dataset, followed by a verified checkpoint before first start:
+
+1. export one RESP `SET key value` (or `SET key value PXAT unix-ms`) record per
+   value, with absolute expirations and binary bulk strings;
+2. run `scripts/import_string_journal.py snapshot.resp /isolated/appendonly.aof`
+   on a stopped, empty, trusted staging directory (limits: 16 MiB total, 2 MiB
+   per frame, 1 MiB per bulk argument; only `SET` records; an existing journal is
+   never overwritten and a rejected record publishes nothing);
+3. run `rillcache-backup create --dir ... --output ...` and
+   `rillcache-backup verify --input ...`, then start the server on the verified
+   journal and compare strings, expirations and counts with the source.
+
+`tests/migration_path.rs` executes that documented sequence with the real tools
+and boots the resulting journal, asserting binary values, absolute expiry and
+key count, plus fail-closed rejection of a non-`SET` record and an occupied
+target. Live cutover from a running source, native AOF/RDB conversion, non-string
+types and other databases are not supported.
+
 ## Explicit exclusions
 
 The following are **not** part of this draft profile. Each exclusion is executed
@@ -153,7 +179,7 @@ inferred from a generic error:
 | Multiple logical databases, `SELECT n≠0`, `MOVE`, `SWAPDB`, `COPY ... DB n` | C4 | Rejected without mutating the DB 0 value or creating the destination; a pinned redis-py client started with `db=1` fails during connection setup with `DB index is out of range`, so addressed databases must be chosen at the application layer |
 | Deployment-wide or cross-process rate limiting | S4 | Server budgets are per process; use the external control plane described above |
 | RDB snapshots: `SAVE`, `BGSAVE` | C5 | Explicit unsupported-persistence error |
-| `DUMP`/`RESTORE`/`MIGRATE` payloads, online backup, PITR | D1, D5 | Explicit unsupported-serialization error; no private blob is emitted |
+| `DUMP`/`RESTORE`/`MIGRATE` payloads, online backup, PITR | D1, D5 | Explicit unsupported-serialization error; no private blob is emitted. Migration is the bounded offline import in [migration and interchange](#migration-and-interchange), not wire interchange |
 | Replication, Sentinel, cluster routing, failover (A1–A5) | A1 | `REPLICAOF`/`FAILOVER` error; the `SLAVEOF NO ONE` no-op is declared above |
 | `CLIENT TRACKING`/client-side caching | C6 | Rejected |
 | `OBJECT IDLETIME`/`OBJECT FREQ` | O2 | Rejected instead of fabricating values |
