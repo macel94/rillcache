@@ -669,12 +669,12 @@ fn shape_bounds_and_radius(center: (f64, f64), shape: &Shape) -> (GeoHashBounds,
         }
         Shape::Radius(radius) => {
             let lat_delta = (radius / EARTH_RADIUS_METERS).to_degrees();
-            let lon_delta_top = (radius / EARTH_RADIUS_METERS
-                / (center.1 + lat_delta).to_radians().cos())
-                .to_degrees();
-            let lon_delta_bottom = (radius / EARTH_RADIUS_METERS
-                / (center.1 - lat_delta).to_radians().cos())
-                .to_degrees();
+            let lon_delta_top =
+                (radius / EARTH_RADIUS_METERS / (center.1 + lat_delta).to_radians().cos())
+                    .to_degrees();
+            let lon_delta_bottom =
+                (radius / EARTH_RADIUS_METERS / (center.1 - lat_delta).to_radians().cos())
+                    .to_degrees();
             let lon_delta = if center.1 < 0.0 {
                 lon_delta_bottom
             } else {
@@ -693,12 +693,12 @@ fn shape_bounds_and_radius(center: (f64, f64), shape: &Shape) -> (GeoHashBounds,
         Shape::Box { width, height } => {
             let half_height = height / 2.0;
             let lat_delta = (half_height / EARTH_RADIUS_METERS).to_degrees();
-            let lon_delta_top = (width / 2.0 / EARTH_RADIUS_METERS
-                / (center.1 + lat_delta).to_radians().cos())
-                .to_degrees();
-            let lon_delta_bottom = (width / 2.0 / EARTH_RADIUS_METERS
-                / (center.1 - lat_delta).to_radians().cos())
-                .to_degrees();
+            let lon_delta_top =
+                (width / 2.0 / EARTH_RADIUS_METERS / (center.1 + lat_delta).to_radians().cos())
+                    .to_degrees();
+            let lon_delta_bottom =
+                (width / 2.0 / EARTH_RADIUS_METERS / (center.1 - lat_delta).to_radians().cos())
+                    .to_degrees();
             let lon_delta = if center.1 < 0.0 {
                 lon_delta_bottom
             } else {
@@ -739,10 +739,10 @@ fn geohash_steps(radius: f64, latitude: f64) -> u8 {
 
 fn geohash_cell(lon: f64, lat: f64, step: u8) -> GeoHashCell {
     let scale = 1_u32 << step;
-    let lat_offset = (((lat - GEO_LAT_MIN) / (GEO_LAT_MAX - GEO_LAT_MIN)) * f64::from(scale))
-        as u32;
-    let lon_offset = (((lon - GEO_LONG_MIN) / (GEO_LONG_MAX - GEO_LONG_MIN)) * f64::from(scale))
-        as u32;
+    let lat_offset =
+        (((lat - GEO_LAT_MIN) / (GEO_LAT_MAX - GEO_LAT_MIN)) * f64::from(scale)) as u32;
+    let lon_offset =
+        (((lon - GEO_LONG_MIN) / (GEO_LONG_MAX - GEO_LONG_MIN)) * f64::from(scale)) as u32;
     GeoHashCell {
         bits: interleave(lat_offset, lon_offset),
         step,
@@ -1498,13 +1498,7 @@ mod tests {
         assert_eq!(
             run(
                 &store,
-                &[
-                    b"GEORADIUSBYMEMBER",
-                    b"pole",
-                    b"n1",
-                    b"5009431",
-                    b"m",
-                ],
+                &[b"GEORADIUSBYMEMBER", b"pole", b"n1", b"5009431", b"m",],
             ),
             b"*2\r\n$2\r\nn1\r\n$2\r\nn2\r\n"
         );
