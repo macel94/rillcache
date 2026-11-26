@@ -95,16 +95,16 @@ pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>
 /// references; larger RESP commands use a bounded-growing vector. Inline command
 /// tokens are owned only while the callback runs. The callback cannot retain a
 /// reference to the temporary argument container.
-pub fn dispatch_request<'a, T>(
-    input: &'a [u8],
+pub fn dispatch_request<T>(
+    input: &[u8],
     limits: Limits,
     execute: impl FnOnce(&[&[u8]]) -> T,
 ) -> Result<Option<(T, usize)>, ProtocolError> {
     dispatch_request_with_inline_quote_concatenation(input, limits, || true, execute)
 }
 
-pub(crate) fn dispatch_request_with_inline_quote_concatenation<'a, T>(
-    input: &'a [u8],
+pub(crate) fn dispatch_request_with_inline_quote_concatenation<T>(
+    input: &[u8],
     limits: Limits,
     allow_concatenation: impl FnOnce() -> bool,
     execute: impl FnOnce(&[&[u8]]) -> T,
@@ -130,7 +130,7 @@ pub(crate) fn dispatch_request_with_inline_quote_concatenation<'a, T>(
         let arguments: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
         return Ok(Some((execute(&arguments), consumed)));
     }
-    decode::<StackArguments<'a>, _>(input, limits, |arguments, consumed| {
+    decode::<StackArguments<'_>, _>(input, limits, |arguments, consumed| {
         (execute(arguments.as_slice()), consumed)
     })
 }
