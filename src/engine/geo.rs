@@ -854,7 +854,7 @@ fn parse_search(
                 return None;
             }
             let mut vertices = Vec::with_capacity(vertex_count);
-            for pair in args[index + 2..end].chunks_exact(2) {
+            for pair in args[index + 2..end].as_chunks::<2>().0 {
                 let Some((lon, lat)) = parse_lonlat(pair[0], pair[1]) else {
                     out.extend_from_slice(FLOAT_ERROR);
                     return None;
