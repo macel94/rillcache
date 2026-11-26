@@ -116,5 +116,49 @@ class ManagedServerTests(unittest.TestCase):
                 HARNESS.require_client()
 
 
+class DatabaseStartupTests(unittest.TestCase):
+    class ResponseError(Exception):
+        pass
+
+    def setUp(self):
+        self.redis = MagicMock()
+        self.redis.exceptions.ResponseError = self.ResponseError
+        self.db_one = self.redis.Redis.return_value.__enter__.return_value
+        self.db_zero = Mock()
+        self.db_zero.get.return_value = b"sentinel"
+        self.address = HARNESS.client_options(10000, tls=True)
+
+    def check_startup(self, protocol=3):
+        HARNESS.check_db_startup(self.redis, self.address, protocol, self.db_zero,
+                                 b"key", b"sentinel")
+
+    def test_requires_db_range_error_and_unchanged_db_zero(self):
+        self.db_one.set.side_effect = self.ResponseError("DB index is out of range")
+        self.check_startup(protocol=2)
+        self.redis.Redis.assert_called_once_with(**self.address, protocol=2, db=1)
+        self.db_one.set.assert_called_once_with(b"key", b"unexpected-db-one-write")
+        self.redis.Redis.return_value.__exit__.assert_called_once()
+        self.db_zero.get.assert_called_once_with(b"key")
+
+    def test_rejects_unexpected_success(self):
+        self.db_one.set.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "did not reject the write"):
+            self.check_startup()
+
+    def test_rejects_unrelated_error(self):
+        self.db_one.set.side_effect = self.ResponseError("NOPERM this user has no permissions")
+        with self.assertRaisesRegex(RuntimeError, "wrong error"):
+            self.check_startup()
+        self.db_one.set.side_effect = ConnectionError("connection refused")
+        with self.assertRaisesRegex(ConnectionError, "connection refused"):
+            self.check_startup()
+
+    def test_rejects_changed_db_zero_value(self):
+        self.db_one.set.side_effect = self.ResponseError("DB index is out of range")
+        self.db_zero.get.return_value = b"changed"
+        with self.assertRaisesRegex(RuntimeError, "DB 0 value after rejected DB 1 startup"):
+            self.check_startup()
+
+
 if __name__ == "__main__":
     unittest.main()

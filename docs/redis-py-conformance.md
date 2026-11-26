@@ -25,8 +25,14 @@ synchronous modes: default Mio readiness, fixed one-worker mode, and Tokio
 plain-TCP mode. The harness creates a per-run ACL file with a named user,
 checks RESP2 and RESP3 handshakes/authentication, binary string round trips,
 non-transactional pipelines, MULTI/EXEC transaction pipelines, binary Pub/Sub,
-and redis-py's connection-pool disconnect/reconnect. Each network operation has
-a two-second timeout; readiness is bounded to eight seconds. Processes are
+and redis-py's connection-pool disconnect/reconnect. For each protocol, a
+client configured with `db=0` writes a sentinel. A separate `db=1` client must
+receive `DB index is out of range` from its startup `SELECT` before its first
+write, and the DB 0 sentinel must remain unchanged. The JSON names this check
+separately for RESP2 and RESP3. The pinned client omits `SELECT` for `db=0`;
+this case validates client startup, not an explicit `SELECT 0` command.
+
+Each network operation has a two-second timeout; readiness is bounded to eight seconds. Processes are
 terminated and waited, escalating to kill and wait on timeout. Per-mode server
 stderr and the JSON result are written under
 `target/upstream/redis-py-conformance/` by default. Each invocation creates a
