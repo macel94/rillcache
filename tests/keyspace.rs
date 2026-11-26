@@ -46,7 +46,11 @@ fn bulk_payload(stream: &mut TcpStream) -> String {
             break;
         }
     }
-    assert_eq!(header.first(), Some(&b'$'), "expected a bulk reply: {header:?}");
+    assert_eq!(
+        header.first(),
+        Some(&b'$'),
+        "expected a bulk reply: {header:?}"
+    );
     let size: usize = std::str::from_utf8(&header[1..header.len() - 2])
         .unwrap()
         .parse()
