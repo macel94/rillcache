@@ -137,19 +137,34 @@ def client_options(port: int, tls: bool) -> dict:
     return options
 
 
+def check_db_startup(redis, address: dict, protocol: int, db_zero, key: bytes, value: bytes) -> None:
+    # redis-py selects a nonzero database during connect, before the first command.
+    with redis.Redis(**address, protocol=protocol, db=1) as db_one:
+        try:
+            db_one.set(key, b"unexpected-db-one-write")
+        except redis.exceptions.ResponseError as error:
+            if str(error) != "DB index is out of range":
+                raise RuntimeError(f"RESP{protocol} DB 1 startup returned the wrong error") from error
+        else:
+            raise RuntimeError(f"RESP{protocol} DB 1 startup did not reject the write")
+    check(db_zero.get(key) == value, f"RESP{protocol} DB 0 value after rejected DB 1 startup")
+
+
 def exercise(redis, mode: str, port: int, *, tls: bool = False) -> dict:
     address = client_options(port, tls)
     outcomes = []
     for protocol in (2, 3):
-        client = redis.Redis(**address, protocol=protocol)
+        client = redis.Redis(**address, protocol=protocol, db=0)
         try:
             check(client.ping() is True, f"RESP{protocol} PING with named ACL authentication")
             outcomes.append(f"resp{protocol}-named-acl-auth")
             key = f"conformance:{mode}:{protocol}:binary".encode()
             value = b"\\x00\xffredis-py\x00binary"
-            client.set(key, value)
+            check(client.set(key, value) is True, f"RESP{protocol} DB 0 SET succeeds")
             check(client.get(key) == value, "binary GET equals SET value")
             outcomes.append("binary-string-roundtrip")
+            check_db_startup(redis, address, protocol, client, key, value)
+            outcomes.append(f"resp{protocol}-db-one-startup-rejected-db-zero-unchanged")
             with client.pipeline(transaction=False) as pipeline:
                 pipeline.set(key + b":p1", b"one")
                 pipeline.set(key + b":p2", b"two")
@@ -210,7 +225,7 @@ def run(binary: Path, output: Path, *, tls: bool = False) -> dict:
             records.append(record)
     result = {"schema_version": 1, "status": "passed", "client": "redis-py",
               "client_version": CLIENT_VERSION, "server_binary": str(binary),
-              "modes": records, "checks_per_mode": 10}
+              "modes": records, "checks_per_mode": 12}
     if tls:
         try:
             with ManagedServer(binary, "mio", directory, certificate="server") as server:
