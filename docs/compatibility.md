@@ -86,6 +86,14 @@ show what has actually been checked, including exclusions and failures.
 - **Explicit resource bounds.** Payload budgets are not RSS limits; large atomic
   replies and process overhead have separate costs. See [startup defaults](getting-started.md#configure-only-what-you-need)
   and each command's limits. `MGET` replies are capped to prevent duplicate-key amplification.
+- **Rate limits are per process, not deployment-wide.** `--auth-failure-limit`
+  bounds consecutive failures per connection; `--auth-source-limit` and
+  `--auth-global-limit` add opt-in per-IP and process-wide lockouts over a fixed
+  window. No counter is shared between server processes, so replicas and
+  shared-NAT clients are throttled independently. A deployment with more than
+  one process must front it with an authoritative, fail-closed rate limiter
+  that runs before `AUTH`; the server budgets stay as defence in depth.
+  See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
 - **Security features are not a production certification.** Authentication and
   TLS must be configured; independent hardening and operational validation are
   still needed. See [security](security.md) and the
