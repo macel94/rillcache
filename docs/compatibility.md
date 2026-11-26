@@ -59,6 +59,10 @@ show what has actually been checked, including exclusions and failures.
   check that `COMMAND COUNT`, `COMMAND LIST` and `COMMAND INFO` agree for the
   complete advertised registry, including targeted case-insensitive lookups.
   A metadata entry does not mean every option or subcommand is implemented.
+  The exact name-level inventory is the generated
+  [command matrix](production-readiness/command-matrix.md): it records every
+  pinned-upstream name this server advertises, and the exact wire reply for every
+  name it does not. Option-level limits still live in the area documents.
 - **No scripts or functions.** Clients that require Lua-backed operations
   (including script registration and `EVALSHA` fallback), server-side functions,
   or loadable modules are incompatible. `SCRIPT FLUSH` and `FUNCTION FLUSH`
