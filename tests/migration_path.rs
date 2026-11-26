@@ -22,7 +22,7 @@ use rillcache::{Config, Server, ServerHandle};
 
 fn unique_dir() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "rillcache-migration-{}-{}",
+        "rillcache-migration-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
