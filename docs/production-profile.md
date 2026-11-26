@@ -78,6 +78,32 @@ front of it. The required external behaviour is:
 requirement necessary: two real server processes with identical limits do not
 share lockout state.
 
+## Migration and interchange
+
+There is **no RDB or native multipart-AOF interchange**: `SAVE`/`BGSAVE` return
+an RDB-unsupported error, `LASTSAVE` reports `0`, and `DUMP`/`RESTORE`/`MIGRATE`
+return one explicit capability error that names the supported alternatives. Do
+not point a Redis/Valkey `DUMP` payload or an RDB file at this profile.
+
+The supported migration path is a bounded **offline** conversion of an exported
+DB 0 string dataset, followed by a verified checkpoint before first start:
+
+1. export one RESP `SET key value` (or `SET key value PXAT unix-ms`) record per
+   value, with absolute expirations and binary bulk strings;
+2. run `scripts/import_string_journal.py snapshot.resp /isolated/appendonly.aof`
+   on a stopped, empty, trusted staging directory (limits: 16 MiB total, 2 MiB
+   per frame, 1 MiB per bulk argument; only `SET` records; an existing journal is
+   never overwritten and a rejected record publishes nothing);
+3. run `rillcache-backup create --dir ... --output ...` and
+   `rillcache-backup verify --input ...`, then start the server on the verified
+   journal and compare strings, expirations and counts with the source.
+
+`tests/migration_path.rs` executes that documented sequence with the real tools
+and boots the resulting journal, asserting binary values, absolute expiry and
+key count, plus fail-closed rejection of a non-`SET` record and an occupied
+target. Live cutover from a running source, native AOF/RDB conversion, non-string
+types and other databases are not supported.
+
 ## Explicit exclusions
 
 The following are **not** part of this draft profile and must not be inferred from
@@ -104,7 +130,9 @@ a command returning a generic error:
 - Deployment-wide or cross-process rate limiting (S4). The server's budgets are
   per process; use the external control plane described above.
 - RDB, `SAVE`/`BGSAVE`, `DUMP`/`RESTORE`/`MIGRATE`, online backup and PITR
-  (C5, D1, D5).
+  (C5, D1, D5). Migration means the bounded offline import in
+  [migration and interchange](#migration-and-interchange), not interchange
+  formats.
 - Replication, Sentinel, cluster routing, failover and multi-node topologies
   (A1–A5).
 - `CLIENT TRACKING`/client-side caching, `OBJECT IDLETIME`/`FREQ`, full RESP3

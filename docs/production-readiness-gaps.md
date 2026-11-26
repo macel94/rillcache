@@ -332,14 +332,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 2. Durability and recovery
 
-- [ ] **D1. RDB, DUMP/RESTORE and migration interoperability are missing.** [P0]
-  `SAVE`/`BGSAVE` return explicit RDB-unsupported errors, `LASTSAVE` reports 0,
-  and `DUMP`/`RESTORE`/`MIGRATE` are absent. The append-only journal is a private
-  RESP command stream, not multipart AOF or RDB.
-  **Closes when:** pinned Redis/Valkey RDB import/export and `DUMP`/`RESTORE` work
-  for the declared types/versions with checksums, fail-closed behavior and
-  bidirectional native tests; or the profile explicitly excludes RDB/AOF
-  interchange and provides a supported migration tool.
+- [x] **D1. RDB, DUMP/RESTORE and migration interoperability are missing.** [P0]
+  **Complete (2026-11-26) by the exclusion branch: the profile excludes RDB/AOF
+  interchange and specifies a supported migration tool, which is now exercised
+  end-to-end.** `SAVE`/`BGSAVE` return explicit RDB-unsupported errors,
+  `LASTSAVE` is `0`, and `DUMP`/`RESTORE`/`MIGRATE` return one capability error
+  naming the journal/backup alternatives; these are asserted in default,
+  fixed-one and four-worker modes by `tests/boundaries.rs` and
+  `tests/unsupported_surface.rs`. The supported migration path is the bounded
+  offline DB 0 string import documented in
+  [persistence](persistence.md#import-a-bounded-offline-string-journal) and
+  [the profile](production-profile.md#migration-and-interchange):
+  `scripts/import_string_journal.py`, then `rillcache-backup create`/`verify`,
+  then a controlled first start. Evidence: `tests/migration_path.rs`
+  `documented_import_verify_and_start_path_preserves_strings_and_expiry` runs
+  that exact sequence with the real tools and asserts a binary value, an absolute
+  expiry and the key count on the booted server, while
+  `unsupported_records_and_existing_targets_fail_closed` proves a non-`SET`
+  record and an occupied target are refused without publishing. Not claimed:
+  native RDB/multipart-AOF conversion, live cutover, non-string or non-DB-0
+  data.
 
 - [ ] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
   **Partial (2026-11-05): cooperative rewrite implemented.** `BGREWRITEAOF` now

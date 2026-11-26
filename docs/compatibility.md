@@ -79,6 +79,13 @@ show what has actually been checked, including exclusions and failures.
   state does not survive a server restart. Recovery beyond the process or host
   needs an external durable transport. Neither path is replicated.
   See [Pub/Sub](pubsub.md) and [streams](streams.md#reliable-delivery-across-client-disconnects).
+- **No RDB/DUMP interchange; migrate offline.** `SAVE`/`BGSAVE` are explicit RDB
+  errors, `DUMP`/`RESTORE`/`MIGRATE` return one capability error, and `LASTSAVE`
+  is `0`. Use the bounded offline DB 0 string import, backup create/verify and a
+  controlled first start described in
+  [migration and interchange](production-profile.md#migration-and-interchange)
+  before allowing traffic. Live cutover and native format conversion are not
+  supported.
 - **Rebuildable data, not a system of record.** The journal supports replay and
   synchronous compaction, but there is no Redis RDB interoperability,
   background/incremental rewrite or validated crash/backup/restore guarantee.
