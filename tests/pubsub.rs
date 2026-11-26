@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
@@ -222,6 +222,55 @@ fn resp2_subscriber_mode_rejects_data_commands_but_allows_ping_and_quit() {
     );
     send(&mut subscriber, &[b"QUIT"], b"+OK\r\n");
     assert_eq!(subscriber.read(&mut [0]).unwrap(), 0);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn disconnected_subscriber_does_not_receive_gap_messages_after_resubscribing() {
+    const ABSENT: &[u8] = b"*2\r\n$6\r\nevents\r\n:0\r\n";
+    let server = start();
+    let mut publisher = connect(&server);
+    let mut subscriber = connect(&server);
+    let subscribed = b"*3\r\n$9\r\nsubscribe\r\n$6\r\nevents\r\n:1\r\n";
+    let count: [&[u8]; 3] = [b"PUBSUB", b"NUMSUB", b"events"];
+    let present = b"*2\r\n$6\r\nevents\r\n:1\r\n";
+    send(&mut subscriber, &[b"SUBSCRIBE", b"events"], subscribed);
+    send(&mut publisher, &count, present);
+    drop(subscriber);
+
+    // Observe server-side cleanup before publishing rather than guessing when
+    // the server will process EOF on a different connection.
+    let mut query = Vec::new();
+    encode_request(&count, &mut query);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        publisher.write_all(&query).unwrap();
+        let mut reply = [0; ABSENT.len()];
+        publisher.read_exact(&mut reply).unwrap();
+        if reply.as_slice() == ABSENT {
+            break;
+        }
+        assert_eq!(&reply, present);
+        assert!(Instant::now() < deadline, "subscriber cleanup timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    send(&mut publisher, &[b"PUBLISH", b"events", b"gap"], b":0\r\n");
+
+    let mut reconnected = connect(&server);
+    send(&mut reconnected, &[b"PING"], b"+PONG\r\n");
+    send(&mut reconnected, &[b"SUBSCRIBE", b"events"], subscribed);
+    let live = b"live\x00\xff";
+    send(&mut publisher, &[b"PUBLISH", b"events", live], b":1\r\n");
+    let expected = message(b"events", live);
+    let mut actual = vec![0; expected.len()];
+    reconnected.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    // Check the next frame without relying on a negative read timeout.
+    send(
+        &mut reconnected,
+        &[b"PING"],
+        b"*2\r\n$4\r\npong\r\n$0\r\n\r\n",
+    );
     server.shutdown().unwrap();
 }
 
