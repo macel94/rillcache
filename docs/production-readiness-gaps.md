@@ -59,7 +59,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | Command/subcommand inventory (C5), RESP3/session features (C6), language-client matrix (C7), notification coverage (C8) |
+| Compatibility and command surface | Partial | RESP3/session features (C6), language-client matrix (C7), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
@@ -146,28 +146,41 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   [profile exclusions](production-profile.md#explicit-exclusions) and
   [compatibility boundaries](compatibility.md#important-boundaries).
 
-- [ ] **C5. The command and subcommand surface is incomplete.** [P0]
-  The registry contains 245 commands, but common surfaces are absent or bounded:
-  `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
-  `CLIENT TRACKING|NO-TOUCH`; `COMMAND DOCS`; `CONFIG REWRITE`;
-  `LATENCY GRAPH`; and Redis 8+ command extensions. Some return explicit
-  errors, others are unknown commands.
-  **Partial (2026-11-14): named exclusions for common surfaces.**
-  `DUMP`/`RESTORE`/`MIGRATE`, `COMMAND DOCS`,
-  `CONFIG REWRITE` now returns a specific
-  capability error with normal arity validation, documented in
-  [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
-  `LATENCY GRAPH` was already explicit; `LATENCY HISTOGRAM` is now backed by the
-  bounded per-command histogram (see O3). `CLIENT REPLY ON|OFF|SKIP`
-  now suppresses immediate, paused and blocked-completion replies (RESET
-  restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
-  clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
-  report the disabled tracking state. `CLIENT TRACKING|NO-TOUCH`; `MEMORY PURGE` is an accepted
-  no-op and `MEMORY MALLOC-STATS` reports the system-allocator boundary; Redis 8+
-  extensions and the command-by-command differential matrix remain missing.
-  **Closes when:** a command-by-command differential matrix exists for supported
-  data types and admin surfaces; every absent command is either implemented or
-  explicitly excluded with a client-facing error and profile entry.
+- [x] **C5. The command and subcommand surface is incomplete.** [P0]
+  **Complete (2026-11-26) by a pinned command-by-subcommand differential
+  matrix; this evidence adds no command and implements no missing surface.**
+  [The command matrix](production-readiness/command-matrix.md) records all 463
+  names reported by the pinned Redis `8.10.2` and Valkey `9.1.2` `COMMAND`
+  replies. It lists the 247 names the tested head advertises with their arity and
+  flags, and for each of the 216 names it does not advertise the exact wire reply
+  to a minimal-arity request. Every absent top-level command fails explicitly:
+  54 return the standard `ERR unknown command` and `DUMP`/`RESTORE`/`MIGRATE`
+  return the named serialization capability error documented in
+  [unsupported surfaces](unsupported.md). The 159 absent subcommands are recorded
+  the same way: 20 belong to containers the head does not advertise at all, and
+  of the 139 subcommands of advertised containers 53 answer the container's
+  bounded behavior, 42 are rejected with a named capability error and 44 with
+  their recorded argument or subcommand error. Named capability errors must also
+  be recorded in [unsupported surfaces](unsupported.md) or the
+  [profile](production-profile.md).
+  Machine checks: `tests/command_matrix.rs` runs the check in default, fixed-one
+  and four-worker modes and fails when the advertised set differs from `COMMAND`,
+  when an absent command answers successfully, when `COMMAND INFO` describes an
+  absent name, when a named capability error is undocumented, when the probe pass
+  leaves keyspace data or an unusable session, or when the committed matrix does
+  not match the tested head byte for byte. The upstream inventory is generated
+  from the checksum-verified archives pinned in `benchmarks/targets.mk` by
+  `scripts/upstream_command_inventory.py`; the check itself is offline.
+  Limits that remain open elsewhere: the 57 absent top-level commands (Redis 8
+  vector-set and array commands, Valkey 9 `BACKUP`/`COMMANDLOG`/`HOTKEYS`/
+  `HIMPORT`/`TRIMSLOTS`/stream extensions, `DEBUG`, `LOLWUT`, scripting
+  entry points, `DUMP`/`RESTORE`/`MIGRATE`) are excluded from the draft profile
+  rather than implemented, the 53 answered subcommands are bounded by their area
+  documents, and option-level, protocol-version and language-client coverage stay
+  with C1, C6 and C7. **Closes when (criterion):** a command-by-command
+  differential matrix exists for supported data types and admin surfaces; every
+  absent command is either implemented or explicitly excluded with a
+  client-facing error and profile entry.
 
 - [ ] **C6. RESP3 and session behavior are a bounded subset.** [P1]
   RESP3 is limited to the current commands' simple strings, errors, integers,

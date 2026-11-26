@@ -34,6 +34,45 @@ per-row evidence for that head; it is never release acceptance.
 | Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
 | Platforms | Linux x86_64 (development/CI); other platforms unverified |
 
+## Supported surface
+
+- The command names returned by `COMMAND LIST` on the tested head, enumerated
+  with arity and flags in the
+  [command matrix](production-readiness/command-matrix.md). The
+  [compatibility guide](compatibility.md) describes command-family behavior and
+  the [area references](README.md) carry option-level limits. This profile does
+  not silently add commands that `COMMAND LIST` does not report.
+- The reverse direction is enumerated as well: every command and subcommand name
+  reported by the pinned references and not advertised by the head is listed in
+  the [command matrix](production-readiness/command-matrix.md) with its exact
+  wire reply. Those names are not part of this profile. A top-level command the
+  head does not advertise is never accepted silently: it returns either the
+  standard `ERR unknown command` or the named capability error recorded in
+  [unsupported surfaces](unsupported.md), so a client that needs Redis 8
+  vector-set (`V*`) or array (`ar*`) commands, Valkey 9
+  `BACKUP`/`COMMANDLOG`/`HOTKEYS`/`HIMPORT`/`TRIMSLOTS`, `DEBUG`, `LOLWUT` or
+  scripting entry points fails on the first command rather than at a later
+  semantic divergence. A subcommand of an advertised container is answered or
+  rejected by that container; the matrix records which, and the area documents
+  define how far that answer goes.
+- Strings, bitmaps, lists, sets, hashes, sorted sets, HyperLogLog (private
+  representation), geospatial commands over sorted sets, and streams as described
+  in [collections](collections.md), [string algorithms](string-algorithms.md),
+  [HyperLogLog](hyperloglog.md), [geospatial](geospatial.md) and
+  [streams](streams.md).
+- `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` with the documented standalone
+  contract in [transactions](transactions.md).
+- Pub/Sub and keyspace notifications with the bounded, at-most-once,
+  process-local delivery described in [pub/sub](pubsub.md) and
+  [notifications](notifications.md).
+- Password or ACL-file authentication, the bounded command/key/channel ACL
+  model, optional audit logging, and TLS 1.3 as described in
+  [security](security.md) and [TLS](tls.md).
+- A private append-only journal with `always`/`everysec`/`no` fsync policies,
+  cooperative rewrite, bounded startup replay, optional CRC32/HMAC framing, and
+  the offline `rillcache-backup` archive described in [persistence](persistence.md).
+- Bounded startup files through `--config` (where available on the tested head).
+
 ## How the profile is executed
 
 `scripts/upstream/profile_matrix.py` is the C1 matrix runner. For the exact
@@ -67,13 +106,10 @@ python3 scripts/upstream/profile_matrix.py --check
 python3 scripts/upstream/profile_matrix.py --output target/upstream/evidence/profile-matrix
 ```
 
-## Command surface
+## Executed command rows
 
-The supported surface is exactly the command names returned by `COMMAND LIST` on
-the tested head, with the matrix below as behavior evidence. The
-[compatibility guide](compatibility.md) describes command-family behavior and the
-[area references](README.md) carry option-level limits. This profile does not
-silently add commands that `COMMAND LIST` does not report.
+The [supported surface](#supported-surface) above is the name set; the rows below
+are the behavior evidence for it, one row per family in the manifest.
 
 | Family | Executed rows (declared in the manifest) |
 | --- | --- |
@@ -168,26 +204,57 @@ types and other databases are not supported.
 
 ## Explicit exclusions
 
-The following are **not** part of this draft profile. Each exclusion is executed
-by the matrix as a fail-closed check, so it can be re-verified rather than
-inferred from a generic error:
+The following are **not** part of this draft profile and must not be inferred
+from a command returning a generic error. The
+[command matrix](production-readiness/command-matrix.md) is the exact,
+machine-checked enumeration of every excluded name and its reply; this list names
+the capability families. The `exclusions` block of
+[`ci/upstream/profile-v1.json`](../ci/upstream/profile-v1.json) executes a
+representative fail-closed check per family on the candidate and both pinned
+references, so an excluded capability cannot silently start succeeding.
 
-| Exclusion | Gap | Executed check |
-| --- | --- | --- |
-| Scripting execution: `EVAL`/`EVALSHA` (including `_RO`), `SCRIPT LOAD`, `FCALL`/`FCALL_RO`, `FUNCTION LOAD` | C2 | Every execution entry point errors; only `SCRIPT FLUSH`/`FUNCTION FLUSH` acknowledge an empty registry |
-| Loadable modules, `MODULE LOAD` | C3 | Loading errors; `MODULE LIST` is empty |
-| Multiple logical databases, `SELECT n≠0`, `MOVE`, `SWAPDB`, `COPY ... DB n` | C4 | Rejected without mutating the DB 0 value or creating the destination; a pinned redis-py client started with `db=1` fails during connection setup with `DB index is out of range`, so addressed databases must be chosen at the application layer |
-| Deployment-wide or cross-process rate limiting | S4 | Server budgets are per process; use the external control plane described above |
-| RDB snapshots: `SAVE`, `BGSAVE` | C5 | Explicit unsupported-persistence error |
-| `DUMP`/`RESTORE`/`MIGRATE` payloads, online backup, PITR | D1, D5 | Explicit unsupported-serialization error; no private blob is emitted. Migration is the bounded offline import in [migration and interchange](#migration-and-interchange), not wire interchange |
-| Replication, Sentinel, cluster routing, failover (A1–A5) | A1 | `REPLICAOF`/`FAILOVER` error; the `SLAVEOF NO ONE` no-op is declared above |
-| `CLIENT TRACKING`/client-side caching | C6 | Rejected |
-| `OBJECT IDLETIME`/`OBJECT FREQ` | O2 | Rejected instead of fabricating values |
-| `LATENCY GRAPH` (`HISTOGRAM` remains a bounded 32-bucket approximation) | C5, O3 | Rejected; `LATENCY HISTORY` is the supported diagnostic |
-| `redis.conf` language, `CONFIG REWRITE`, includes, live reload | C13, O5 | Startup configuration is read-only |
-| Redis-compatible HyperLogLog payload interchange and diagnostics | C10 | Private representation only |
-| Language-client conformance beyond the matrix below | C7 | Declared unsupported |
-| Any durability RPO/RTO, independent security review, true RSS enforcement, cross-process observability or production SLO | D1–D11, S1–S9, O1–O9 | Outside this profile |
+- Scripting, `EVAL`/`EVALSHA` (including the `_RO` variants), functions and
+  `FCALL`/`FCALL_RO` (C2). No Lua runtime is linked. The exclusion is explicit
+  rather than silent: absent execution commands return the unknown-command error,
+  every unsupported `SCRIPT`/`FUNCTION` subcommand returns a deliberate
+  unsupported-subcommand error, a missing subcommand returns the arity error, and
+  only `SCRIPT FLUSH`/`FUNCTION FLUSH` acknowledge an empty registry. Clients that
+  require script or function execution are incompatible and must not be deployed
+  against this profile.
+- Loadable modules (C3); `MODULE LIST` is empty and loading is unsupported.
+- Multiple logical databases, `SELECT` other than `0`, `MOVE`, `SWAPDB` (C4).
+  Clients that configure a nonzero database cannot use this profile: a pinned
+  redis-py client started with `db=1` fails during connection setup with
+  `DB index is out of range` before its first command, and a DB 0 client keeps
+  its data. Addressed databases must be chosen at the application layer, not by
+  `SELECT`. `DBSIZE` and `INFO keyspace` describe the single `db0` keyspace; no
+  per-database statistics or `FLUSHDB`/`FLUSHALL` selection exists. See
+  [compatibility](compatibility.md#important-boundaries) and the
+  [database-zero evidence](production-readiness-gaps.md#1-compatibility-and-command-surface).
+- Deployment-wide or cross-process rate limiting (S4). The server's budgets are
+  per process; use the external control plane described above.
+- RDB, `SAVE`/`BGSAVE`, `DUMP`/`RESTORE`/`MIGRATE`, online backup and PITR
+  (C5, D1, D5). Migration means the bounded offline import in
+  [migration and interchange](#migration-and-interchange), not interchange
+  formats.
+- Replication, Sentinel, cluster routing, failover and multi-node topologies
+  (A1–A5).
+- `CLIENT TRACKING`/client-side caching, `OBJECT IDLETIME`/`FREQ`, full RESP3
+  attributes/push tracking and `LATENCY GRAPH` (C5, C6, O2, O3). `LATENCY
+  HISTOGRAM` exists only as the documented bounded 32-bucket approximation.
+- Redis-compatible HyperLogLog payload interchange and diagnostics (C10).
+- Redis 8 vector-set commands (`VADD`, `VCARD`, `VDIM`, `VEMB`, `VGETATTR`,
+  `VINFO`, `VISMEMBER`, `VLINKS`, `VRANDMEMBER`, `VRANGE`, `VREM`, `VSETATTR`,
+  `VSIM`), Redis 8 array commands (`ar*`) and the Valkey 9 `BACKUP`,
+  `COMMANDLOG`, `HOTKEYS`, `HIMPORT`, `TRIMSLOTS` and stream extension commands
+  (`XACKDEL`, `XCFGSET`, `XDELEX`, `XIDMPRECORD`, `XNACK`) (C5). `DEBUG` and
+  `LOLWUT` are also absent. All of them return `ERR unknown command`; none of the
+  advertised commands depends on them.
+- A full `redis.conf` language, `CONFIG REWRITE`, includes and live reload (C13,
+  O5).
+- `redis-py`, node-redis, go-redis and other language-client conformance (C7).
+- Any durability RPO/RTO, independent security review, true RSS enforcement,
+  cross-process observability or production SLO (D1–D11, S1–S9, O1–O9).
 
 ## Persistence contract
 

@@ -51,3 +51,22 @@ work or falling through to an unqualified unknown-command reply:
 Arity is validated before each capability error. These exclusions are part of
 the compatibility profile boundary; they are not implementations and do not
 close the corresponding production-readiness items.
+
+## Command inventory and absent names
+
+[The command matrix](production-readiness/command-matrix.md) enumerates every
+command and subcommand name reported by the pinned Redis and Valkey references
+and records what this server does with it. A command name that is not returned
+by `COMMAND` is absent from the profile; the head answers it with the standard
+`ERR unknown command` (for example `DEBUG`, `LOLWUT`, the Redis 8 vector-set and
+array commands, and the Valkey 9 `BACKUP`, `COMMANDLOG`, `HOTKEYS`, `HIMPORT`
+and `TRIMSLOTS` extensions) or with one of the named capability errors above.
+It never accepts an absent top-level command silently. `tests/command_matrix.rs`
+fails if the committed matrix and the tested head disagree, if an absent command
+answers successfully, or if a named capability error is not recorded here or in
+the [production profile](production-profile.md).
+
+The same matrix lists the subcommands of containers that do exist. Those rows
+record the container's bounded answer or its rejection; they are not a claim that
+every option is implemented, and the area documents linked from the
+[documentation index](README.md) remain authoritative for option-level support.
