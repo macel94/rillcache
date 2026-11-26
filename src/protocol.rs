@@ -263,12 +263,20 @@ fn decode<'a, S: ArgumentStorage<'a>, T>(
     limits: Limits,
     finish: impl FnOnce(S, usize) -> T,
 ) -> Result<Option<T>, ProtocolError> {
+    // Preserve upstream's malformed-length reply for the frame-derived ceiling,
+    // but report a stricter configured argument limit as too many arguments.
+    let argument_limit_error =
+        if limits.max_arguments < Limits::argument_cap(limits.max_frame_bytes) {
+            ProtocolError::TooManyArguments
+        } else {
+            ProtocolError::InvalidArrayLength
+        };
     let Some((count, mut offset)) = length(
         input,
         0,
         b'*',
         limits.max_arguments,
-        ProtocolError::TooManyArguments,
+        argument_limit_error,
     )?
     else {
         return incomplete(input, limits);
