@@ -98,7 +98,11 @@ def resp_command(*args):
     return b"*%d\r\n" % len(args) + b"".join(b"$%d\r\n" % len(a) + a + b"\r\n" for a in args)
 
 
-def read_reply(stream):
+class ErrorReply(str):
+    """A RESP error nested inside an array; a top-level error still raises."""
+
+
+def read_reply(stream, nested=False):
     prefix = stream.read(1)
     if not prefix:
         raise ConnectionError("EOF before RESP reply")
@@ -107,7 +111,12 @@ def read_reply(stream):
         raise ValueError("invalid or oversized RESP line")
     payload = line[:-2]
     if prefix == b"-":
-        raise RuntimeError(payload.decode(errors="replace"))
+        message = payload.decode(errors="replace")
+        # EXEC returns runtime errors as array elements; they are values, not
+        # transport failures, and must not desynchronize the reply stream.
+        if nested:
+            return ErrorReply(message)
+        raise RuntimeError(message)
     if prefix == b"+":
         return payload
     if prefix == b":":
@@ -124,9 +133,12 @@ def read_reply(stream):
         return data
     if prefix == b"*":
         length = int(payload)
+        if length == -1:
+            # RESP2 null array (for example an aborted EXEC or a missed pop).
+            return None
         if not 0 <= length <= 16384:
             raise ValueError("invalid array length")
-        return [read_reply(stream) for _ in range(length)]
+        return [read_reply(stream, nested=True) for _ in range(length)]
     raise ValueError(f"unexpected RESP prefix {prefix!r}")
 
 
