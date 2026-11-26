@@ -43,7 +43,12 @@ show what has actually been checked, including exclusions and failures.
   `SELECT 0` and `COPY ... DB 0` use that same shared keyspace. Nonzero `SELECT`
   and `COPY ... DB n` are rejected without changing data; `MOVE` and `SWAPDB`
   are unsupported. `FLUSHDB` clears the only keyspace. Clients that require a
-  nonzero logical database or DB-based isolation are incompatible. Replication,
+  nonzero logical database or DB-based isolation are incompatible: a client
+  configured with a nonzero database fails during connection startup, and
+  `DBSIZE`/`INFO keyspace` report only `db0`. Choose databases at the
+  application layer instead of with `SELECT`; there is no per-database
+  observability, `FLUSHDB`/`FLUSHALL` database argument or isolation boundary.
+  Replication,
   failover and Redis Cluster routing are not supported. `ROLE` reports a
   standalone master with no replicas or replication stream; it does not imply
   replica or failover support. Cluster clients that need `CLUSTER SHARDS`,

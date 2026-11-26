@@ -108,15 +108,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** module support is implemented and security-reviewed, or the
   exclusion is explicit in the profile and compatibility matrix.
 
-- [ ] **C4. Multiple logical databases are missing.** [P0]
-  Only database 0 exists. `SELECT` accepts 0, `MOVE`/`SWAPDB` return a multi-database
-  error, and `COPY ... DB n` rejects nonzero databases. A two-client TCP test
-  verifies that rejection leaves binary source and destination data and the
-  key count unchanged, and that DB-0 COPY and FLUSHDB affect both clients'
-  shared keyspace. This is native wire evidence, not a language-client matrix.
-  **Closes when:** the profile either supports a validated number of databases
-  with per-database keyspaces, `SELECT`/`MOVE`/`SWAPDB`/`FLUSHDB` semantics and
-  per-database observability, or explicitly excludes clients that require them.
+- [x] **C4. Multiple logical databases are missing.** [P0]
+  **Complete (2026-11-26) as an explicit, tested exclusion.** Only database 0
+  exists, and the profile now states the client-facing consequence rather than
+  leaving it to a generic error. `SELECT` accepts `0`; nonzero or malformed
+  indices, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected without changing
+  binary source/destination data or the key count. `DBSIZE` and `INFO keyspace`
+  report only `db0`, so no per-database observability or isolation boundary is
+  implied. Wire coverage: `tests/keyspace.rs`
+  `database_zero_rejections_leave_the_shared_keyspace_unchanged` runs in default,
+  fixed-one and four-worker modes, and `tests/discovery.rs` pins the `db0`
+  keyspace section. Pinned-client evidence on exact head `f72b023c` (merged as
+  `cfbe0c02`, PR #620): the redis-py 5.2.1 startup check observed
+  `DB index is out of range` for `db=1` under RESP2 and RESP3 in Mio, fixed-one,
+  Tokio and native TLS, with the DB 0 sentinel unchanged; artifact
+  `upstream-redis-py-tls-45791950526-1`. This closes the exclusion branch of the
+  criterion; it is not multi-database support, and clients that need several
+  logical databases remain unsupported. See
+  [profile exclusions](production-profile.md#explicit-exclusions) and
+  [compatibility boundaries](compatibility.md#important-boundaries).
 
 - [ ] **C5. The command and subcommand surface is incomplete.** [P0]
   The registry contains 245 commands, but common surfaces are absent or bounded:
