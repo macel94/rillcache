@@ -234,6 +234,7 @@ class ExecutionTests(unittest.TestCase):
         with patch.object(pm.common, "server", fake_server), \
                 patch.object(pm.common, "Client", FakeClient), \
                 patch.object(pm, "CLIENT_BINARIES", {"redis-cli": lambda: cli}), \
+                patch.object(pm, "binary_identity", lambda name: {"path": name, "sha256": "0" * 64}), \
                 patch.object(pm, "head", lambda: "test-head"):
             result = pm.run(output, candidate, manifest)
         self.assertEqual("failed", result["status"])
@@ -248,6 +249,50 @@ class ExecutionTests(unittest.TestCase):
         stored = json.loads((output / "result.json").read_text())
         self.assertEqual(result["status"], stored["status"])
         self.assertTrue(pm.summary_text(result).startswith("## Compatibility profile matrix: failed"))
+
+    def test_missing_reference_binary_identity_fails_the_run(self):
+        candidate = Path(tempfile.mkdtemp()) / "candidate"
+        candidate.write_bytes(b"fake candidate identity")
+        manifest = {"schema": 1,
+                    "profile": {"id": "test", "version": 1, "status": "draft",
+                                "document": "docs/production-profile.md"},
+                    "references": ["redis", "valkey"], "rows": [], "exclusions": [], "client_rows": [],
+                    "commands": {"declared_divergences": [], "minimum_rows": 0},
+                    "declared_row_divergences": []}
+        cli = Path(tempfile.mkdtemp()) / "redis-cli"
+        cli.write_text("#!/bin/sh\nexit 0\n")
+        cli.chmod(0o755)
+
+        class EmptyClient:
+            def __init__(self, _port):
+                pass
+
+            def call(self, *args):
+                if args == ("COMMAND", "LIST"):
+                    return []
+                raise AssertionError(f"unexpected command {args}")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_server(name, directory, **_kwargs):
+            yield None, 6379
+
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(pm, "CLIENT_BINARIES", {"redis-cli": lambda: cli}), \
+                patch.object(pm.common, "server", fake_server), \
+                patch.object(pm.common, "Client", EmptyClient), \
+                patch.object(pm, "binary_identity", lambda name: {"path": name, "sha256": None}), \
+                patch.object(pm, "head", lambda: "test-head"):
+            result = pm.run(Path(temp), candidate, manifest)
+        self.assertEqual("failed", result["status"])
+        self.assertEqual({"reference-binary"}, {failure["kind"] for failure in result["failures"]})
 
 
 if __name__ == "__main__":

@@ -298,6 +298,12 @@ def probe(client, commands):
     return replies
 
 
+def binary_identity(name):
+    """Record the exact reference binary; a missing one cannot produce a green run."""
+    path = Path(common.binary(name))
+    return {"path": str(path), "sha256": common.digest(path) if path.is_file() else None}
+
+
 def head():
     """Record the tested revision without probing unavailable toolchains."""
     if os.environ.get("SOURCE_HEAD_SHA"):
@@ -390,8 +396,7 @@ def run(output, candidate, manifest):
         "profile": {"id": manifest["profile"]["id"], "version": manifest["profile"]["version"],
                     "status": manifest["profile"]["status"], "document": manifest["profile"]["document"]},
         "candidate": {"path": str(candidate), "sha256": common.digest(candidate), "head": head()},
-        "references": {name: {"version": pin["version"], "sha256": pin["sha256"],
-                              "binary_sha256": common.digest(common.binary(name))}
+        "references": {name: {"version": pin["version"], "sha256": pin["sha256"], **binary_identity(name)}
                        for name, pin in common.PINS["upstreams"].items()},
         "surface": {}, "rows": [], "exclusions": [], "clients": [], "failures": [],
         "environment": {"platform": platform.platform(), "python": platform.python_version(),
@@ -502,9 +507,13 @@ def run(output, candidate, manifest):
                 result["failures"].append({"kind": "surface", "reference": reference_name, "count": len(mismatches)})
             if len(surfaces["rillcache"]) < manifest["commands"].get("minimum_rows", 1):
                 result["failures"].append({"kind": "surface-size", "candidate": len(surfaces["rillcache"]),
-                                           "minimum": manifest["commands"]["minimum_rows"]})
+                                           "minimum": manifest["commands"].get("minimum_rows", 0)})
     finally:
         common.binary = original_binary
+    for name, identity in result["references"].items():
+        if identity["sha256"] is None:
+            result["failures"].append({"kind": "reference-binary", "id": name,
+                                       "reason": "pinned reference binary identity is missing"})
     result["status"] = "passed" if not result["failures"] else "failed"
     common.save(output / "result.json", result)
     return result
