@@ -92,9 +92,49 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  client-matrix:
+    name: Pinned language-client matrix
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upstream-tcp-tools-${{ github.run_id }}
+          path: target/upstream/
+      - name: Unpack same-run tools
+        run: tar -xzf target/upstream/bundle.tar.gz -C target/upstream
+      - name: Validate the versioned client matrix offline
+        run: python3 scripts/upstream/client_matrix.py --check
+      - name: Install the hash-pinned redis-py wheel
+        run: |
+          python3 -m venv target/client-venv
+          target/client-venv/bin/python -m pip install --require-hashes --only-binary=:all: --no-deps -r scripts/redis-py-requirements.txt
+      - name: Install the integrity-pinned node-redis package
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix ci/clients/node-redis
+      - name: Build the checksum-pinned go-redis harness
+        working-directory: ci/clients/go-redis
+        env:
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+        run: go version && go build -o rillcache-client-matrix .
+      - name: Execute every declared client case on fresh candidate listeners
+        run: PATH="$PWD/target/client-venv/bin:$PWD/ci/clients/go-redis:$PATH" python3 scripts/upstream/client_matrix.py --output target/upstream/evidence/client-matrix --candidate target/upstream/rillcache
+      - name: Preserve per-client results, logs and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-client-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/client-matrix/
+          retention-days: 30
+          if-no-files-found: warn
+
   suites:
     name: Tcl ${{ matrix.reference }} / ${{ matrix.suite.id }}
-    needs: [build, command-matrix]
+    needs: [build, command-matrix, client-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:

@@ -252,7 +252,7 @@ references, so an excluded capability cannot silently start succeeding.
   advertised commands depends on them.
 - A full `redis.conf` language, `CONFIG REWRITE`, includes and live reload (C13,
   O5).
-- `redis-py`, node-redis, go-redis and other language-client conformance (C7).
+- Language-client conformance beyond the three pinned clients and the declared case set (C7).
 - Any durability RPO/RTO, independent security review, true RSS enforcement,
   cross-process observability or production SLO (D1–D11, S1–S9, O1–O9).
 
@@ -285,8 +285,9 @@ visible in process arguments.
 | --- | --- | --- | --- |
 | `redis-cli` | `8.10.2` pinned build | Tested | RESP2/RESP3 client rows in the C1 matrix plus the pinned Tcl matrix |
 | `valkey-benchmark` | `9.1.2` pinned build | Tested | Official workload generator used by the protected performance gates |
-| `redis-py` | `5.2.1` | Partial (C7) | Optional local/hosted diagnostic: RESP2/RESP3, named ACL, binary values, pipeline, transaction, Pub/Sub, reconnect against the candidate only; TLS and error paths uncovered; not a commitment |
-| node-redis, go-redis | none pinned | Excluded (C7) | No pinned harness; excluded from this draft profile |
+| `redis-py` | `5.2.1` | Tested (C7) | [Pinned language-client matrix](language-clients.md): 14 declared cases including AUTH/ACL, RESP2/RESP3, pipeline, transaction, Pub/Sub, TLS and error paths |
+| `node-redis` | `6.4.0` | Tested (C7) | [Pinned language-client matrix](language-clients.md): the same 14 declared cases |
+| `go-redis` | `v9.14.0` | Tested (C7) | [Pinned language-client matrix](language-clients.md): the same 14 declared cases |
 | Arbitrary clients | none pinned | Excluded (C7) | Clients depending on unlisted commands or RESP3 attributes are unsupported |
 
 ## Limits

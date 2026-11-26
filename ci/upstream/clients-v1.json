@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "matrix": {
+    "id": "rillcache-language-clients",
+    "version": 1,
+    "profile": "rillcache-standalone-0.1",
+    "document": "docs/language-clients.md",
+    "gap": "C7",
+    "claim": "Per-client case evidence for the exact tested head only; not a support window or release acceptance."
+  },
+  "cases": [
+    {
+      "id": "handshake-auth",
+      "description": "Connect with the named ACL user and password, then PING."
+    },
+    {
+      "id": "acl-allowed",
+      "description": "The named user with +@all can SET and GET its own key."
+    },
+    {
+      "id": "acl-denied-command",
+      "description": "The limited user receives NOPERM for SET outside its allowed commands."
+    },
+    {
+      "id": "resp2-roundtrip",
+      "description": "RESP2 connection covers PING, SET/GET with binary bytes, INCR and HSET/HGETALL."
+    },
+    {
+      "id": "resp3-roundtrip",
+      "description": "RESP3 (HELLO 3) connection covers the same roundtrip."
+    },
+    {
+      "id": "pipeline",
+      "description": "A batched pipeline returns ordered replies for every queued command."
+    },
+    {
+      "id": "transaction",
+      "description": "MULTI/EXEC returns the ordered results and leaves committed state."
+    },
+    {
+      "id": "pubsub",
+      "description": "A subscriber receives a published binary payload from a second connection."
+    },
+    {
+      "id": "error-wrong-type",
+      "description": "A command against the wrong type surfaces a WRONGTYPE client error."
+    },
+    {
+      "id": "error-unknown-command",
+      "description": "An unknown command surfaces a client error without disconnecting."
+    },
+    {
+      "id": "error-auth-required",
+      "description": "A connection without credentials receives an authentication error."
+    },
+    {
+      "id": "reconnect",
+      "description": "A dropped connection reconnects and still reads the committed value."
+    },
+    {
+      "id": "tls-positive",
+      "description": "TLS with the test CA authenticates and completes SET/GET."
+    },
+    {
+      "id": "tls-wrong-identity",
+      "description": "TLS to a certificate without the target IP SAN is rejected."
+    }
+  ],
+  "clients": [
+    {
+      "id": "redis-py",
+      "version": "5.2.1",
+      "language": "python",
+      "pin": "scripts/redis-py-requirements.txt",
+      "harness": "scripts/redis_py_conformance.py",
+      "command": [
+        "python3",
+        "scripts/redis_py_conformance.py",
+        "--matrix"
+      ],
+      "exclusions": [],
+      "expectations": {
+        "resp3-roundtrip": {
+          "detail_regex": "^resp3-hgetall-flat-array: the profile's bounded RESP3 subset returns arrays, not maps \\(C6\\)$",
+          "reason": "The profile's RESP3 subset emits arrays rather than maps (C6), so redis-py surfaces HGETALL as a flat field/value array. The exact shape is asserted and frozen; if either side starts emitting maps, this case fails and the matrix must be reviewed."
+        }
+      }
+    },
+    {
+      "id": "node-redis",
+      "version": "6.4.0",
+      "language": "javascript",
+      "pin": "ci/clients/node-redis/package-lock.json",
+      "harness": "ci/clients/node-redis/harness.mjs",
+      "command": [
+        "node",
+        "ci/clients/node-redis/harness.mjs"
+      ],
+      "exclusions": [],
+      "expectations": {
+        "resp3-roundtrip": {
+          "detail_regex": "^resp3-hgetall-flat-array: the profile's bounded RESP3 subset returns arrays, not maps \\(C6\\)$",
+          "reason": "The profile's RESP3 subset emits arrays rather than maps (C6), so node-redis returns HGETALL as a flat field/value array under RESP3. The exact shape is asserted and frozen; a change on either side fails the matrix."
+        }
+      }
+    },
+    {
+      "id": "go-redis",
+      "version": "v9.14.0",
+      "language": "go",
+      "pin": "ci/clients/go-redis/go.mod",
+      "harness": "ci/clients/go-redis/main.go",
+      "command": [
+        "ci/clients/go-redis/rillcache-client-matrix"
+      ],
+      "exclusions": []
+    }
+  ],
+  "credentials": {
+    "named_user": "matrix",
+    "named_password": "matrix-test-secret",
+    "limited_user": "limited",
+    "limited_password": "limited-test-secret",
+    "default_password": "default-test-secret"
+  }
+}

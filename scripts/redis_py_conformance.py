@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run pinned redis-py against managed Rillcache servers (optional external tooling)."""
+"""Run pinned redis-py against Rillcache: the legacy managed mode and the C7 matrix mode.
+
+Matrix mode runs the shared language-client case set against runner-owned
+password/ACL, TLS and wrong-identity candidate listeners and writes one result
+per declared case. It never starts its own servers.
+"""
 from __future__ import annotations
 
 import argparse
@@ -242,14 +247,240 @@ def run(binary: Path, output: Path, *, tls: bool = False) -> dict:
     return result
 
 
+
+MATRIX_CASES = (
+    "handshake-auth", "acl-allowed", "acl-denied-command", "resp2-roundtrip", "resp3-roundtrip",
+    "pipeline", "transaction", "pubsub", "error-wrong-type", "error-unknown-command",
+    "error-auth-required", "reconnect", "tls-positive", "tls-wrong-identity",
+)
+
+
+def matrix_case(records, case, body):
+    try:
+        detail = body()
+    except Exception as error:  # one failing case must not abort the others
+        records.append({"id": case, "status": "failed", "detail": str(error)[:400]})
+        return
+    records.append({"id": case, "status": "passed", "detail": detail or ""})
+
+
+def matrix_options(redis, port, user, password, protocol, tls_ca=None):
+    options = {"host": "127.0.0.1", "port": port, "username": user, "password": password,
+               "protocol": protocol, "db": 0, "decode_responses": False,
+               "socket_connect_timeout": 3.0, "socket_timeout": 3.0, "retry_on_timeout": False}
+    if tls_ca is not None:
+        options.update(ssl=True, ssl_ca_certs=str(tls_ca), ssl_cert_reqs="required",
+                       ssl_check_hostname=True)
+    return options
+
+
+def matrix_run(redis, args, prefix: str) -> dict:
+    records = []
+    named = (args.named_user, args.named_password)
+    limited = (args.limited_user, args.limited_password)
+    plain = args.plain_port
+    key = lambda label: f"py-matrix:{prefix}:{label}".encode()
+
+    def expect(condition, message):
+        check(condition, message)
+
+    def wrong_type_error(client, target):
+        try:
+            client.lpush(target, b"x")
+        except redis.exceptions.ResponseError as error:
+            expect("WRONGTYPE" in str(error), f"wrong-type error text: {error}")
+        else:
+            raise RuntimeError("wrong-type write succeeded")
+
+    def noperm_error(client):
+        try:
+            client.set(key("denied"), b"value")
+        except redis.exceptions.NoPermissionError:
+            return
+        else:
+            raise RuntimeError("limited user was allowed to SET")
+
+    matrix_case(records, "handshake-auth", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2),
+        lambda client: expect(client.ping() is True, "PING did not return PONG")))
+    matrix_case(records, "acl-allowed", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2),
+        lambda client: (expect(client.set(key("acl"), b"value") is True, "named user SET failed"),
+                        expect(client.get(key("acl")) == b"value", "named user GET differed"))))
+    matrix_case(records, "acl-denied-command", lambda: _with_client(
+        redis, matrix_options(redis, plain, *limited, 2), noperm_error))
+
+    def roundtrip(protocol):
+        def body(client):
+            expect(client.ping() is True, f"RESP{protocol} PING failed")
+            binary = b"\x00\xff\x0d\x0a"
+            expect(client.set(key(f"binary-{protocol}"), binary) is True, "binary SET failed")
+            expect(client.get(key(f"binary-{protocol}")) == binary, "binary GET differed")
+            expect(client.set(key(f"counter-{protocol}"), b"41") is True, "counter SET failed")
+            expect(client.incr(key(f"counter-{protocol}")) == 42, "INCR differed")
+            client.hset(key(f"hash-{protocol}"), b"field", b"value")
+            reply = client.hgetall(key(f"hash-{protocol}"))
+            if protocol == 3:
+                # The profile's RESP3 subset emits arrays, not maps (C6), so the
+                # client surfaces a flat field/value array. Assert that shape so
+                # a silent change to either side fails this case.
+                expect(reply == [b"field", b"value"], f"RESP3 HGETALL shape differed: {reply!r}")
+                return "resp3-hgetall-flat-array: the profile's bounded RESP3 subset returns arrays, not maps (C6)"
+            expect(reply == {b"field": b"value"}, f"RESP2 HGETALL differed: {reply!r}")
+            return ""
+        return lambda: _with_client(redis, matrix_options(redis, plain, *named, protocol), body)
+
+    matrix_case(records, "resp2-roundtrip", roundtrip(2))
+    matrix_case(records, "resp3-roundtrip", roundtrip(3))
+
+    def pipeline(client):
+        with client.pipeline(transaction=False) as pipe:
+            pipe.set(key("p1"), b"one")
+            pipe.set(key("p2"), b"two")
+            pipe.mget([key("p1"), key("p2")])
+            replies = pipe.execute()
+        expect(replies == [True, True, [b"one", b"two"]], f"pipeline replies differed: {replies!r}")
+
+    matrix_case(records, "pipeline", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2), pipeline))
+
+    def transaction(client):
+        with client.pipeline(transaction=True) as pipe:
+            pipe.set(key("tx"), b"value")
+            pipe.get(key("tx"))
+            replies = pipe.execute()
+        expect(replies == [True, b"value"], f"transaction replies differed: {replies!r}")
+        expect(client.get(key("tx")) == b"value", "transaction state was not committed")
+
+    matrix_case(records, "transaction", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2), transaction))
+
+    def pubsub(client):
+        channel = key("channel")
+        with client.pubsub() as subscriber:
+            subscriber.subscribe(channel)
+            expect(subscriber.get_message(timeout=3) is not None, "subscribe acknowledgement missing")
+            expect(client.publish(channel, b"payload") == 1, "publish subscriber count differed")
+            message = subscriber.get_message(timeout=3)
+            expect(message is not None and message.get("data") == b"payload", "pub/sub payload differed")
+
+    matrix_case(records, "pubsub", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2), pubsub))
+
+    matrix_case(records, "error-wrong-type", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2),
+        lambda client: (client.set(key("wrong"), b"value"), wrong_type_error(client, key("wrong")))))
+    matrix_case(records, "error-unknown-command", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2), lambda client: unknown_command_error(redis, client)))
+    matrix_case(records, "error-auth-required", lambda: _with_client(
+        redis, matrix_options(redis, plain, None, None, 2), lambda client: auth_required_error(redis, client)))
+
+    def reconnect(client):
+        expect(client.set(key("reconnect"), b"value") is True, "SET before reconnect failed")
+        client.connection_pool.disconnect()
+        expect(client.get(key("reconnect")) == b"value", "value missing after reconnect")
+
+    matrix_case(records, "reconnect", lambda: _with_client(
+        redis, matrix_options(redis, plain, *named, 2), reconnect))
+
+    def tls_positive(client):
+        expect(client.ping() is True, "TLS PING failed")
+        expect(client.set(key("tls"), b"value") is True, "TLS SET failed")
+        expect(client.get(key("tls")) == b"value", "TLS GET differed")
+
+    matrix_case(records, "tls-positive", lambda: _with_client(
+        redis, matrix_options(redis, args.tls_port, *named, 2, tls_ca=args.ca), tls_positive))
+    matrix_case(records, "tls-wrong-identity", lambda: tls_wrong_identity(
+        redis, matrix_options(redis, args.alt_tls_port, *named, 2, tls_ca=args.ca)))
+
+    return {"client": "redis-py", "version": redis.__version__,
+            "protocols": [2, 3], "cases": records}
+
+
+def _with_client(redis, options, body):
+    client = redis.Redis(**options)
+    try:
+        return body(client)
+    finally:
+        client.close()
+
+
+def unknown_command_error(redis, client):
+    try:
+        client.execute_command("NOSUCHCOMMAND")
+    except redis.exceptions.ResponseError as error:
+        check("unknown command" in str(error).lower(), f"unknown-command error text: {error}")
+    else:
+        raise RuntimeError("unknown command succeeded")
+    check(client.ping() is True, "connection was unusable after the error")
+
+
+def auth_required_error(redis, client):
+    try:
+        client.get(b"py-matrix:noauth")
+    except redis.exceptions.AuthenticationError:
+        return
+    except redis.exceptions.ResponseError as error:
+        text = str(error).upper()
+        check("NOAUTH" in text or "AUTHENTICATION" in text, f"auth error text: {error}")
+    else:
+        raise RuntimeError("unauthenticated read succeeded")
+
+
+def tls_wrong_identity(redis, options):
+    client = redis.Redis(**options)
+    try:
+        client.ping()
+    except redis.exceptions.ConnectionError as error:
+        cause = error.__cause__ or error.__context__
+        if isinstance(cause, ssl.SSLCertVerificationError) and cause.verify_code == 64:
+            return
+        raise RuntimeError("wrong TLS endpoint did not produce an IP mismatch") from error
+    finally:
+        client.close()
+    raise RuntimeError("certificate without the target IP SAN was accepted")
+
+
+def matrix_main(redis, args) -> int:
+    result = matrix_run(redis, args, "case")
+    args.json_out.parent.mkdir(parents=True, exist_ok=True)
+    args.json_out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    failed = [case for case in result["cases"] if case["status"] != "passed"]
+    print(f"redis-py {redis.__version__}: {len(result['cases']) - len(failed)}/{len(result['cases'])} cases passed")
+    for case in failed:
+        print(f"FAILED {case['id']}: {case.get('detail', '')}", file=sys.stderr)
+    return 0 if not failed else 1
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--matrix", action="store_true",
+                        help="run the shared language-client case set against runner-owned listeners")
+    parser.add_argument("--plain-port", type=int, help="matrix mode: plaintext listener port")
+    parser.add_argument("--tls-port", type=int, help="matrix mode: TLS listener port")
+    parser.add_argument("--alt-tls-port", type=int, help="matrix mode: wrong-identity TLS listener port")
+    parser.add_argument("--named-user"), parser.add_argument("--named-password")
+    parser.add_argument("--limited-user"), parser.add_argument("--limited-password")
+    parser.add_argument("--default-password")
+    parser.add_argument("--ca", type=Path, help="matrix mode: test CA certificate")
+    parser.add_argument("--json-out", type=Path, help="matrix mode: case results path")
     parser.add_argument("--server", type=Path, default=Path("target/release/rillcache"),
-                        help="candidate rillcache executable (default: target/release/rillcache)")
+                        help="candidate rillcache executable (legacy managed mode only)")
     parser.add_argument("--output", type=Path, default=Path("target/upstream/redis-py-conformance"),
                         help="directory for JSON result and per-mode server logs")
     parser.add_argument("--tls", action="store_true", help="also verify the native TLS endpoint")
     args = parser.parse_args(argv)
+    if args.matrix:
+        required = ("plain_port", "tls_port", "alt_tls_port", "named_user", "named_password",
+                    "limited_user", "limited_password", "default_password", "ca", "json_out")
+        missing = [name for name in required if getattr(args, name) in (None, "")]
+        if missing:
+            parser.error("--matrix requires: " + ", ".join("--" + name.replace("_", "-") for name in missing))
+        try:
+            redis = require_client()
+            return matrix_main(redis, args)
+        except Exception as error:
+            print(f"redis-py client matrix FAILED: {error}", file=sys.stderr)
+            return 1
     try:
         result = run(args.server, args.output, tls=args.tls)
         print(json.dumps(result, indent=2, sort_keys=True))

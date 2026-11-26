@@ -183,11 +183,14 @@ def process_stats(pid):
 
 
 @contextlib.contextmanager
-def server(name, directory, *, port=None, affinity=None, compatibility=False, error_dialect=None):
+def server(name, directory, *, port=None, affinity=None, compatibility=False, error_dialect=None,
+           aclfile=None, tls=None, readiness="ping"):
     if error_dialect not in (None, "redis", "valkey"):
         raise ValueError("error dialect must be redis or valkey")
     if error_dialect is not None and name != "rillcache":
         raise ValueError("error dialect can only be configured on rillcache")
+    if readiness not in ("ping", "tcp"):
+        raise ValueError("readiness must be ping or tcp")
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     port = port or available_port()
@@ -199,6 +202,16 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False, er
             argv += ["--error-dialect", error_dialect]
         if compatibility:
             argv += ["--max-bulk-bytes", "8388608", "--max-frame-bytes", "16777216"]
+        if aclfile is not None:
+            argv += ["--aclfile", str(Path(aclfile).resolve())]
+        if tls is not None:
+            certificate, key = tls
+            # The plaintext listener keeps an ephemeral port so the requested
+            # port belongs to the TLS listener alone.
+            argv = [f"127.0.0.1:0" if part == f"127.0.0.1:{port}" else part for part in argv]
+            argv += ["--tls-bind", f"127.0.0.1:{port}",
+                     "--tls-cert-file", str(Path(certificate).resolve()),
+                     "--tls-key-file", str(Path(key).resolve())]
     else:
         argv += ["--bind", "127.0.0.1", "--port", str(port), "--protected-mode", "yes",
                  "--save", "", "--appendonly", "no", "--daemonize", "no", "--dir", str(directory),
@@ -210,6 +223,10 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False, er
     if affinity is not None:
         argv = ["taskset", "-c", str(affinity), *argv]
     identity = {"argv": argv, "port": port, "persistence": "disabled", "affinity": affinity,
+                "aclfile": str(Path(aclfile).resolve()) if aclfile is not None else None,
+                "readiness": readiness,
+                "tls": {"certificate": str(Path(tls[0]).resolve()), "key": str(Path(tls[1]).resolve())}
+                       if tls is not None else None,
                 "error_dialect": (error_dialect or "valkey") if name == "rillcache" else None,
                 "compatibility_limits": ({"max_bulk_bytes": 8388608, "max_frame_bytes": 16777216,
                                           "native_proto_max_bulk_len": 8388608,
@@ -225,9 +242,15 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False, er
                 if proc.poll() is not None:
                     raise RuntimeError(f"{name} exited during startup: {proc.returncode}")
                 try:
-                    with Client(port) as client:
-                        if client.call("PING") != b"PONG":
-                            raise ValueError("readiness PING did not return PONG")
+                    if readiness == "tcp":
+                        # A TLS listener cannot answer a plaintext PING; the
+                        # client row itself asserts the handshake outcome.
+                        with socket.create_connection(("127.0.0.1", port), timeout=1):
+                            pass
+                    else:
+                        with Client(port) as client:
+                            if client.call("PING") != b"PONG":
+                                raise ValueError("readiness PING did not return PONG")
                     break
                 except (OSError, RuntimeError, ValueError):
                     if time.monotonic() >= deadline:
