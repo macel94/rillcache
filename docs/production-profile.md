@@ -17,6 +17,7 @@ P0 gates are closed or explicitly excluded by a reviewed profile decision.
 | Reference servers | Redis `8.10.2`, Valkey `9.1.2` (pinned in `benchmarks/targets.mk`) |
 | Topology | One standalone process, one owner-local data path |
 | Logical databases | Database `0` only |
+| Clients requiring several databases | Excluded; startup with `db` other than `0`, `SELECT` other than `0`, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected |
 | Persistence mode | Optional private append-only journal; RDB excluded |
 | Transport | Plain TCP, optional native TLS 1.3 |
 | Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
@@ -58,6 +59,14 @@ a command returning a generic error:
 - Scripting, `EVAL`/`EVALSHA`, functions and `FCALL` (C2).
 - Loadable modules (C3); `MODULE LIST` is empty and loading is unsupported.
 - Multiple logical databases, `SELECT` other than `0`, `MOVE`, `SWAPDB` (C4).
+  Clients that configure a nonzero database cannot use this profile: a pinned
+  redis-py client started with `db=1` fails during connection setup with
+  `DB index is out of range` before its first command, and a DB 0 client keeps
+  its data. Addressed databases must be chosen at the application layer, not by
+  `SELECT`. `DBSIZE` and `INFO keyspace` describe the single `db0` keyspace; no
+  per-database statistics or `FLUSHDB`/`FLUSHALL` selection exists. See
+  [compatibility](compatibility.md#important-boundaries) and the
+  [database-zero evidence](production-readiness-gaps.md#1-compatibility-and-command-surface).
 - RDB, `SAVE`/`BGSAVE`, `DUMP`/`RESTORE`/`MIGRATE`, online backup and PITR
   (C5, D1, D5).
 - Replication, Sentinel, cluster routing, failover and multi-node topologies
