@@ -638,16 +638,7 @@ fn valkey_polygon_search_and_store_work_over_tcp_in_all_modes() {
         command(
             &mut stream,
             &[
-                b"GEOADD",
-                b"points",
-                b"0",
-                b"0",
-                b"center",
-                b"0.5",
-                b"0.5",
-                b"inside",
-                b"2",
-                b"0",
+                b"GEOADD", b"points", b"0", b"0", b"center", b"0.5", b"0.5", b"inside", b"2", b"0",
                 b"outside",
             ],
             b":3\r\n",

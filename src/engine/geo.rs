@@ -967,8 +967,7 @@ fn point_in_polygon(lon: f64, lat: f64, vertices: &[(f64, f64)]) -> bool {
         let (previous_lon, previous_lat) = vertices[previous];
         if (current_lat > lat) != (previous_lat > lat)
             && lon
-                < (previous_lon - current_lon) * (lat - current_lat)
-                    / (previous_lat - current_lat)
+                < (previous_lon - current_lon) * (lat - current_lat) / (previous_lat - current_lat)
                     + current_lon
         {
             inside = !inside;
@@ -1303,17 +1302,8 @@ mod tests {
             run(
                 &store,
                 &[
-                    b"GEOADD",
-                    b"points",
-                    b"0",
-                    b"0",
-                    b"center",
-                    b"0.5",
-                    b"0.5",
-                    b"inside",
-                    b"2",
-                    b"0",
-                    b"outside",
+                    b"GEOADD", b"points", b"0", b"0", b"center", b"0.5", b"0.5", b"inside", b"2",
+                    b"0", b"outside",
                 ],
             ),
             b":3\r\n"
