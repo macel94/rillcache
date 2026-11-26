@@ -88,18 +88,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   matrix, client libraries, deployment topology and excluded features; CI runs
   every row against pinned Redis and Valkey and records pass/fail.
 
-- [ ] **C2. Scripting and functions are missing.** [P0]
-  `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|DEBUG|KILL`, `FUNCTION
-  LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` and `FCALL`/`FCALL_RO` are absent.
-  Only `SCRIPT FLUSH` and `FUNCTION FLUSH` return `+OK` for an empty registry.
-  Native TCP verification covers those no-ops, execution command discovery,
-  and rejection of execution and representative registry subcommands. The
-  dependency policy does not permit a Lua runtime.
-  **Closes when:** a reviewed runtime decision exists; scripts/functions execute
-  atomically with bounded CPU/memory/instruction use, deterministic journal and
-  replication behavior, exact error/result mapping and no filesystem/network
-  escape; or the profile explicitly excludes scripting and clients are documented
-  as unsupported rather than silently failing.
+- [x] **C2. Scripting and functions are missing.** [P0]
+  **Complete (2026-11-26) by the explicit-exclusion branch, with no Lua runtime
+  linked.** `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `FCALL` and `FCALL_RO`
+  are absent from the registry and return the unknown-command error;
+  `SCRIPT DEBUG|KILL|LOAD|EXISTS` and `FUNCTION
+  LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` return a deliberate
+  unsupported-subcommand error; a missing subcommand returns the arity error; and
+  an invalid `FLUSH` mode is rejected. Only `SCRIPT FLUSH`/`FUNCTION FLUSH`
+  acknowledge an empty registry. Native TCP evidence runs in default, fixed-one
+  and four-worker modes: `tests/discovery.rs`
+  `script_and_function_flush_do_not_imply_execution_support` covers the no-ops,
+  `COMMAND INFO` absence and representative rejections, and
+  `every_named_scripting_entry_point_fails_explicitly` covers every remaining
+  named entry point plus unchanged data (`DBSIZE`/`GET`) after the attempts.
+  The profile and compatibility boundary state that clients requiring script or
+  function execution are incompatible. This does not claim script execution,
+  determinism, atomicity or a Lua decision beyond exclusion.
 
 - [ ] **C3. Module loading is missing.** [P1]
   `MODULE LIST` is empty and `MODULE LOAD`/`LOADEX`/`UNLOAD` return explicit

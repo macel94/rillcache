@@ -63,7 +63,13 @@ show what has actually been checked, including exclusions and failures.
   (including script registration and `EVALSHA` fallback), server-side functions,
   or loadable modules are incompatible. `SCRIPT FLUSH` and `FUNCTION FLUSH`
   acknowledge an empty registry; neither indicates execution support.
-  `COMMAND INFO` returns no metadata for the execution commands.
+  `COMMAND INFO` returns no metadata for the execution commands. The exclusion is
+  explicit for every named entry point: `EVAL_RO`/`EVALSHA_RO` are absent,
+  `SCRIPT DEBUG|KILL|LOAD|EXISTS` and `FUNCTION
+  DELETE|STATS|DUMP|RESTORE|KEYS|LOAD|LIST` return a deliberate
+  unsupported-subcommand error, and an invalid `FLUSH` mode is rejected rather
+  than acknowledged. See
+  [scripting exclusion](production-profile.md#explicit-exclusions).
 - **Pub/Sub is at-most-once; stream groups are the redelivery alternative.**
   Pub/Sub delivery is process-local, bounded per client and lost on disconnect,
   queue pressure, restart or crash, with no replay, acknowledgment or

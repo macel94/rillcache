@@ -1036,3 +1036,72 @@ fn command_list_filters_by_pattern_category_and_module() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn every_named_scripting_entry_point_fails_explicitly() {
+    let absent = b"-ERR unknown command\r\n";
+    let unsupported = b"-ERR unsupported subcommand or syntax error\r\n";
+    let cases: &[(&[&[u8]], &[u8])] = &[
+        (&[b"EVAL_RO", b"return 1", b"0"], absent),
+        (
+            &[
+                b"EVALSHA_RO",
+                b"0000000000000000000000000000000000000000",
+                b"0",
+            ],
+            absent,
+        ),
+        (&[b"SCRIPT", b"DEBUG", b"yes"], unsupported),
+        (&[b"SCRIPT", b"KILL"], unsupported),
+        (&[b"SCRIPT", b"LOAD", b"return 1"], unsupported),
+        (
+            &[
+                b"SCRIPT",
+                b"EXISTS",
+                b"0000000000000000000000000000000000000000",
+            ],
+            unsupported,
+        ),
+        (&[b"FUNCTION", b"DELETE", b"example"], unsupported),
+        (&[b"FUNCTION", b"STATS"], unsupported),
+        (&[b"FUNCTION", b"DUMP"], unsupported),
+        (&[b"FUNCTION", b"RESTORE", b"payload"], unsupported),
+        (&[b"FUNCTION", b"KEYS"], unsupported),
+        (
+            &[b"FUNCTION", b"LOAD", b"#!lua name=example\n"],
+            unsupported,
+        ),
+        (&[b"FUNCTION", b"LIST"], unsupported),
+        (&[b"SCRIPT", b"FLUSH", b"BOGUS"], unsupported),
+        (
+            &[b"FUNCTION", b"FLUSH", b"BOGUS"],
+            b"-ERR unsupported subcommand or syntax error\r\n",
+        ),
+        (
+            &[b"SCRIPT"],
+            b"-ERR wrong number of arguments for 'script' command\r\n",
+        ),
+        (
+            &[b"FUNCTION"],
+            b"-ERR wrong number of arguments for 'function' command\r\n",
+        ),
+    ];
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(request(&mut client, &[b"SET", b"key", b"v\0"]), b"+OK\r\n");
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"INFO", b"EVAL_RO", b"EVALSHA_RO"]
+            ),
+            b"*2\r\n*-1\r\n*-1\r\n"
+        );
+        for &(args, expected) in cases {
+            assert_eq!(request(&mut client, args), expected, "{args:?}");
+        }
+        assert_eq!(request(&mut client, &[b"GET", b"key"]), b"$2\r\nv\0\r\n");
+        assert_eq!(request(&mut client, &[b"DBSIZE"]), b":1\r\n");
+        server.shutdown().unwrap();
+    }
+}
