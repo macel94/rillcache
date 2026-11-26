@@ -59,7 +59,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
+| Compatibility and command surface | Partial | RESP3/session features (C6), language-client matrix (C7), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
@@ -73,20 +73,33 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 1. Compatibility and command surface
 
-- [ ] **C1. The production compatibility profile is undefined.** [P0]
-  There is no published matrix of supported Redis/Valkey versions, commands,
-  client libraries, topology, persistence mode and exclusions. "Drop-in" is
-  therefore untestable and ambiguous.
-  **Partial (2026-11-14): draft standalone profile.** The
-  [production profile](production-profile.md) now declares the reference
-  versions, topology, supported families, explicit exclusions, persistence and
-  security boundaries, client matrix and limits. It is explicitly a draft, not a
-  readiness claim. The command-by-command CI matrix that runs every profile row
-  against pinned Redis and Valkey is still absent, as are the language-client,
-  durability, security and SLO evidence rows.
-  **Closes when:** a versioned profile lists exact upstream versions, command
-  matrix, client libraries, deployment topology and excluded features; CI runs
-  every row against pinned Redis and Valkey and records pass/fail.
+- [x] **C1. The production compatibility profile is undefined.** [P0]
+  **Complete (2026-11-26) with a versioned profile and an executed matrix.**
+  [`ci/upstream/profile-v1.json`](../ci/upstream/profile-v1.json) declares
+  profile `rillcache-standalone-0.1` version `1` (`draft`): exact Redis `8.10.2`
+  and Valkey `9.1.2` pins with SHA-256, standalone topology, transport,
+  persistence and rate-limiting boundaries, 56 command rows over 12 families, 12
+  executable exclusions each bound to a canonical gap id (C2, C3, C4, C5, C6,
+  C13, D1, O2, A1, S4), the client matrix and six command-surface divergences.
+  The [production profile](production-profile.md) renders the same manifest.
+  `scripts/upstream/profile_matrix.py` validates the manifest against
+  `ci/upstream/pins.json`, `benchmarks/targets.mk`, this checklist and the
+  profile document, then executes every row, exclusion and pinned `redis-cli`
+  client row on the candidate and on **both** pinned native references.
+  Hosted evidence for head `ab7da80c`: `Declared compatibility profile matrix`
+  job 140211666492 in run
+  [45908462103](https://github.com/macel94/rillcache/actions/runs/45908462103)
+  reports 111 row executions (105 passed, 6 declared divergences, 0 failed),
+  24 exclusion checks (24 enforced, 0 violated), 28 client rows passed, and no
+  undeclared command-surface mismatch against either reference. The six required
+  Tcl contexts depend on that job, so a failed matrix blocks the PR. Four genuine
+  reply differences stay visible as manifest-frozen sha256 declarations with the
+  exact payloads retained in `result.json`: XPENDING consumer-count and
+  empty-summary types, `XINFO GROUPS entries-read` reporting `0` where both
+  references report null, and the bounded `ERR unknown command` text that does
+  not echo client bytes. This closes profile definition and per-row command
+  evidence only: language-client conformance (C7), durability RPO/RTO, security
+  review and SLOs remain open, so no production, drop-in or support claim follows.
 
 - [x] **C2. Scripting and functions are missing.** [P0]
   **Complete (2026-11-26) by the explicit-exclusion branch, with no Lua runtime
@@ -523,40 +536,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [ ] **D7. Signal-driven shutdown is partial.** [P0]
-  **Partial (2026-11-19):** the standalone binary handles Unix SIGINT/SIGTERM
-  and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
-  journal within a 25-second deadline; a second signal or expired deadline logs
-  forced termination and exits nonzero. Kubernetes now allows a 30-second grace
-  period. **Partial (2026-11-19):** shutdown stops listener admission and
-  half-closes client read sides; replies for already-dispatched commands are
-  written before those connections close, within the existing deadline.
-  Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
-  response and journal recovery in default and opt-in Tokio plain-TCP modes and
-  over TLS. All three transports also have a second-SIGTERM test that requires
-  a forced-termination log and nonzero exit while an admitted reply is unread.
-  On Linux, the Mio, Tokio and TLS forced-exit tests also restart from the
-  unchanged AOF directory and verify an acknowledged write under `appendfsync
-  always`. This does not cover unsynced writes or power loss. The 25-second
-  deadline outcome is separately unit-tested, not timed end-to-end for each
-  transport. A separate plain-TCP test in Mio and Tokio leaves the reply unread
-  past a single SIGTERM, verifies successful exit within five seconds and a
-  properly truncated reply, then checks on Linux that the acknowledged
-  `appendfsync always` value is intact after restarting. This exercises the
-  bounded client drain on working storage. The matching native TLS subprocess
-  test leaves its reply unread through one SIGTERM and verifies successful
-  exit within five seconds with only a valid reply prefix left to read. Neither
-  test exhausts the separate 25-second supervisor deadline.
-  Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
-  blocked clients connected through successful exit, then verify after restart
-  that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
-  **Retained gap:** this is not a full client drain; replies that exceed a
-  bounded transport write timeout or the shutdown deadline may be abandoned.
-  Client receipt is not acknowledged, and forced timeout cannot guarantee the
-  final journal flush. **Closes when:** all supported transports have verified
-  command-drain, cancellation, join and forced-timeout behavior within the
-  supervisor grace contract.
-
+- [x] **D7. Signal-driven shutdown is partial.** [P0]
+  **Complete (2026-11-26) for the standalone supervisor contract across plain
+  Mio, plain Tokio and native TLS.** The standalone binary handles Unix
+  SIGINT/SIGTERM and Windows Ctrl-C, stops admission, joins workers and flushes
+  the journal within a configurable grace period (`--shutdown-deadline-ms`,
+  default 25 s, max 600 s, documented in
+  [startup defaults](getting-started.md#configure-only-what-you-need)); a second
+  signal or an expired deadline logs `forced termination: <reason>` and exits
+  nonzero. Existing subprocess tests prove bounded command drain of a withheld
+  8 MiB reply, cancellation of idle/incomplete-frame/subscribed/blocked clients
+  with no replay of incomplete work, forced termination on a second signal,
+  restart from the unchanged AOF with `appendfsync always`, and TLS drain with a
+  valid reply prefix. The previously untested branch — **deadline exhaustion
+  end-to-end** — is now covered by `tests/shutdown_deadline.rs`: with a 300 ms
+  deadline and an unread admitted reply that keeps the worker blocked, each of
+  the three transports exits within the test bound, logs the deadline reason,
+  exits nonzero, and restarts with the acknowledged 1 MiB value intact.
+  Retained limits: client receipt is not acknowledged, a reply that exceeds the
+  deadline may be truncated, and a forced timeout cannot guarantee the final
+  journal flush beyond the acknowledged fsync policy.
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
   Startup claims `<journal>.lock` with an exclusive create recording PID and
