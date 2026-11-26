@@ -529,7 +529,7 @@ struct GeoHashBounds {
     max_lat: f64,
 }
 
-fn collect_hits(members: &[(Vec<u8>, f64)], center: (f64, f64), search: &Search) -> Vec<Hit> {
+fn collect_hits(members: &[(&[u8], f64)], center: (f64, f64), search: &Search) -> Vec<Hit> {
     let cells = search_cells(center, &search.shape);
     let mut hits = Vec::new();
     'cells: for cell in cells {
@@ -561,7 +561,7 @@ fn collect_hits(members: &[(Vec<u8>, f64)], center: (f64, f64), search: &Search)
                 continue;
             }
             hits.push(Hit {
-                member: member.clone(),
+                member: member.to_vec(),
                 distance,
                 hash,
                 lon,
