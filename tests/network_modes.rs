@@ -172,7 +172,7 @@ fn fragmented_and_pipelined_wire_errors_are_isolated_in_every_mode() {
         malformed.write_all(b"*1\r\n$-1\r\n").unwrap();
         let mut error = Vec::new();
         malformed.read_to_end(&mut error).unwrap();
-        assert_eq!(error, b"-ERR Protocol error: invalid length\r\n");
+        assert_eq!(error, b"-ERR Protocol error: invalid bulk length\r\n");
         send(&mut healthy, &[b"PING"]);
         expect(&mut healthy, b"+PONG\r\n");
         server.shutdown().unwrap();

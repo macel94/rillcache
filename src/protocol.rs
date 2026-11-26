@@ -6,6 +6,7 @@ use std::fmt;
 pub const MIN_ARGUMENT_BYTES: usize = 6;
 /// Upper bound for the frame-derived argument cap (Redis-scale, 1 Mi elements).
 pub const MAX_ARGUMENTS_CEILING: usize = 1024 * 1024;
+const MAX_INLINE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -45,29 +46,33 @@ pub struct Request<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProtocolError {
     ExpectedArray,
-    ExpectedBulkString,
-    InvalidLength,
+    ExpectedBulkString(u8),
+    InvalidArrayLength,
+    InvalidBulkLength,
     InvalidTerminator,
-    EmptyCommand,
     TooManyArguments,
     BulkTooLarge,
     FrameTooLarge,
     InvalidInlineCommand,
+    UnbalancedQuotes,
 }
 
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::ExpectedArray => "expected an array of bulk strings",
-            Self::ExpectedBulkString => "expected a non-null bulk string",
-            Self::InvalidLength => "invalid length",
-            Self::InvalidTerminator => "invalid CRLF terminator",
-            Self::EmptyCommand => "empty command array is not supported",
-            Self::TooManyArguments => "too many arguments",
-            Self::BulkTooLarge => "bulk string limit exceeded",
-            Self::FrameTooLarge => "request frame limit exceeded",
-            Self::InvalidInlineCommand => "invalid inline command",
-        })
+        match self {
+            Self::ExpectedArray => f.write_str("expected an array of bulk strings"),
+            Self::ExpectedBulkString(byte) => {
+                write!(f, "expected '$', got '{}'", char::from(*byte))
+            }
+            Self::InvalidArrayLength => f.write_str("invalid multibulk length"),
+            Self::InvalidBulkLength => f.write_str("invalid bulk length"),
+            Self::InvalidTerminator => f.write_str("invalid CRLF in request"),
+            Self::TooManyArguments => f.write_str("too many arguments"),
+            Self::BulkTooLarge => f.write_str("bulk string limit exceeded"),
+            Self::FrameTooLarge => f.write_str("request frame limit exceeded"),
+            Self::InvalidInlineCommand => f.write_str("invalid inline command"),
+            Self::UnbalancedQuotes => f.write_str("unbalanced quotes in request"),
+        }
     }
 }
 
@@ -127,14 +132,14 @@ type InlineRequest = (Vec<Vec<u8>>, usize);
 
 fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, ProtocolError> {
     let Some(newline) = input.iter().position(|&byte| byte == b'\n') else {
-        return if input.len() >= limits.max_frame_bytes {
+        return if input.len() >= limits.max_frame_bytes.min(MAX_INLINE_BYTES) {
             Err(ProtocolError::FrameTooLarge)
         } else {
             Ok(None)
         };
     };
     let consumed = newline + 1;
-    if consumed > limits.max_frame_bytes {
+    if consumed > limits.max_frame_bytes.min(MAX_INLINE_BYTES) {
         return Err(ProtocolError::FrameTooLarge);
     }
     let end = if newline > 0 && input[newline - 1] == b'\r' {
@@ -156,27 +161,18 @@ fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, P
             return Err(ProtocolError::TooManyArguments);
         }
         let mut token = Vec::new();
-        let quote = match line[index] {
-            b'"' => Some(b'"'),
-            b'\'' => Some(b'\''),
-            _ => None,
-        };
-        if let Some(quote) = quote {
-            index += 1;
-            let mut closed = false;
-            while index < line.len() {
-                let byte = line[index];
-                if byte == quote {
+        let mut quote = None;
+        while index < line.len() {
+            let byte = line[index];
+            if let Some(active_quote) = quote {
+                if byte == active_quote {
+                    quote = None;
                     index += 1;
-                    closed = true;
-                    if index < line.len() && !line[index].is_ascii_whitespace() {
-                        return Err(ProtocolError::InvalidInlineCommand);
-                    }
-                    break;
+                    continue;
                 }
                 if byte == b'\\' && index + 1 < line.len() {
                     let next = line[index + 1];
-                    if quote == b'"'
+                    if active_quote == b'"'
                         && next == b'x'
                         && index + 3 < line.len()
                         && hex(line[index + 2]).is_some()
@@ -185,14 +181,9 @@ fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, P
                         token.push(
                             (hex(line[index + 2]).unwrap() << 4) | hex(line[index + 3]).unwrap(),
                         );
-                        if token.len() > limits.max_bulk_bytes {
-                            return Err(ProtocolError::BulkTooLarge);
-                        }
                         index += 4;
-                        continue;
-                    }
-                    if quote == b'"' || next == b'\'' {
-                        token.push(if quote == b'"' {
+                    } else if active_quote == b'"' || next == b'\'' {
+                        token.push(if active_quote == b'"' {
                             match next {
                                 b'n' => b'\n',
                                 b'r' => b'\r',
@@ -204,30 +195,30 @@ fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, P
                         } else {
                             next
                         });
-                        if token.len() > limits.max_bulk_bytes {
-                            return Err(ProtocolError::BulkTooLarge);
-                        }
                         index += 2;
-                        continue;
+                    } else {
+                        token.push(byte);
+                        index += 1;
                     }
+                } else {
+                    token.push(byte);
+                    index += 1;
                 }
+            } else if byte.is_ascii_whitespace() {
+                break;
+            } else if matches!(byte, b'"' | b'\'') {
+                quote = Some(byte);
+                index += 1;
+            } else {
                 token.push(byte);
                 index += 1;
-                if token.len() > limits.max_bulk_bytes {
-                    return Err(ProtocolError::BulkTooLarge);
-                }
             }
-            if !closed {
-                return Err(ProtocolError::InvalidInlineCommand);
+            if token.len() > limits.max_bulk_bytes {
+                return Err(ProtocolError::BulkTooLarge);
             }
-        } else {
-            while index < line.len() && !line[index].is_ascii_whitespace() {
-                token.push(line[index]);
-                index += 1;
-                if token.len() > limits.max_bulk_bytes {
-                    return Err(ProtocolError::BulkTooLarge);
-                }
-            }
+        }
+        if quote.is_some() {
+            return Err(ProtocolError::UnbalancedQuotes);
         }
         arguments.push(token);
     }
@@ -255,14 +246,11 @@ fn decode<'a, S: ArgumentStorage<'a>, T>(
         0,
         b'*',
         limits.max_arguments,
-        ProtocolError::TooManyArguments,
+        ProtocolError::InvalidArrayLength,
     )?
     else {
         return incomplete(input, limits);
     };
-    if count == 0 {
-        return Err(ProtocolError::EmptyCommand);
-    }
     let mut arguments = S::new(count);
     for _ in 0..count {
         if offset >= limits.max_frame_bytes {
@@ -273,7 +261,7 @@ fn decode<'a, S: ArgumentStorage<'a>, T>(
             offset,
             b'$',
             limits.max_bulk_bytes,
-            ProtocolError::BulkTooLarge,
+            ProtocolError::InvalidBulkLength,
         )?
         else {
             return incomplete(input, limits);
@@ -375,15 +363,34 @@ fn length(
         return Err(if prefix == b'*' {
             ProtocolError::ExpectedArray
         } else {
-            ProtocolError::ExpectedBulkString
+            ProtocolError::ExpectedBulkString(first)
         });
+    }
+    let error = if prefix == b'*' {
+        ProtocolError::InvalidArrayLength
+    } else {
+        ProtocolError::InvalidBulkLength
+    };
+    let bytes = &input[start + 1..];
+    if prefix == b'*' && bytes.first() == Some(&b'-') {
+        let Some(cr) = bytes.iter().position(|&byte| byte == b'\r') else {
+            return Ok(None);
+        };
+        if cr == 1 || !bytes[1..cr].iter().all(u8::is_ascii_digit) {
+            return Err(error);
+        }
+        return match bytes.get(cr + 1) {
+            None => Ok(None),
+            Some(b'\n') => Ok(Some((0, start + 1 + cr + 2))),
+            Some(_) => Err(error),
+        };
     }
     let mut value = 0usize;
     for (digits, &byte) in input[start + 1..].iter().enumerate() {
         let index = start + 1 + digits;
         if byte == b'\r' {
             if digits == 0 {
-                return Err(ProtocolError::InvalidLength);
+                return Err(error);
             }
             return match input.get(index + 1) {
                 None => Ok(None),
@@ -392,12 +399,12 @@ fn length(
             };
         }
         if !byte.is_ascii_digit() || digits == 20 {
-            return Err(ProtocolError::InvalidLength);
+            return Err(error);
         }
         value = value
             .checked_mul(10)
             .and_then(|n| n.checked_add(usize::from(byte - b'0')))
-            .ok_or(ProtocolError::InvalidLength)?;
+            .ok_or(error)?;
         if value > maximum {
             return Err(limit_error);
         }
@@ -503,18 +510,34 @@ mod tests {
 
     #[test]
     fn malformed_or_oversized_inline_input_is_rejected_within_limits() {
-        for line in [
-            b"SET \"open\r\n".as_slice(),
-            b"SET \"closed\"suffix\r\n",
-            b"SET 'open\r\n",
-        ] {
+        for line in [b"SET \"open\r\n".as_slice(), b"SET 'open\r\n"] {
             assert_eq!(
                 dispatch_request(line, Limits::default(), |_| panic!(
                     "invalid inline executed"
                 )),
-                Err(ProtocolError::InvalidInlineCommand)
+                Err(ProtocolError::UnbalancedQuotes)
             );
         }
+        assert_eq!(
+            dispatch_request(b"SET \"closed\"suffix\r\n", Limits::default(), |args| {
+                args.iter().map(|arg| arg.to_vec()).collect::<Vec<_>>()
+            }),
+            Ok(Some((
+                vec![b"SET".to_vec(), b"closedsuffix".to_vec()],
+                20
+            )))
+        );
+        assert_eq!(
+            dispatch_request(
+                b"set \"\"\"tes\"t-'k'e\"y\" \"test\"'-'value\r\n",
+                Limits::default(),
+                |args| args.iter().map(|arg| arg.to_vec()).collect::<Vec<_>>()
+            ),
+            Ok(Some((
+                vec![b"set".to_vec(), b"test-key".to_vec(), b"test-value".to_vec()],
+                37
+            )))
+        );
         let limits = Limits {
             max_frame_bytes: 8,
             max_bulk_bytes: 3,
@@ -686,7 +709,7 @@ mod tests {
         assert_eq!(parsed.arguments[1], b"");
         assert_eq!(
             parse_request(b"*1\r\n$-1\r\n", Limits::default()),
-            Err(ProtocolError::InvalidLength)
+            Err(ProtocolError::InvalidBulkLength)
         );
         let mut output = Vec::new();
         encode_bulk(None, &mut output);
@@ -696,20 +719,23 @@ mod tests {
 
     #[test]
     fn rejects_invalid_frames_without_waiting_for_a_payload() {
+        for input in [b"*0\r\n".as_slice(), b"*-10\r\n"] {
+            let parsed = parse_request(input, Limits::default()).unwrap().unwrap();
+            assert!(parsed.arguments.is_empty());
+            assert_eq!(parsed.consumed, input.len());
+        }
         for (input, expected) in [
             (b"PING\r\n".as_slice(), ProtocolError::ExpectedArray),
-            (b"*0\r\n", ProtocolError::EmptyCommand),
-            (b"*-1\r\n", ProtocolError::InvalidLength),
-            (b"*+1\r\n", ProtocolError::InvalidLength),
-            (b"*\r\n", ProtocolError::InvalidLength),
-            (b"*1\nx", ProtocolError::InvalidLength),
+            (b"*+1\r\n", ProtocolError::InvalidArrayLength),
+            (b"*\r\n", ProtocolError::InvalidArrayLength),
+            (b"*1\nx", ProtocolError::InvalidArrayLength),
             (b"*1\rx", ProtocolError::InvalidTerminator),
-            (b"*1\r\n+PING\r\n", ProtocolError::ExpectedBulkString),
+            (b"*1\r\n+PING\r\n", ProtocolError::ExpectedBulkString(b'+')),
             (b"*1\r\n$4\r\nPINGxx", ProtocolError::InvalidTerminator),
             (b"*1\r\n$4\r\nPINGx", ProtocolError::InvalidTerminator),
-            (b"*524289", ProtocolError::TooManyArguments),
-            (b"*1\r\n$1048577", ProtocolError::BulkTooLarge),
-            (b"*000000000000000000000", ProtocolError::InvalidLength),
+            (b"*524289", ProtocolError::InvalidArrayLength),
+            (b"*1\r\n$1048577", ProtocolError::InvalidBulkLength),
+            (b"*000000000000000000000", ProtocolError::InvalidArrayLength),
         ] {
             assert_eq!(
                 parse_request(input, Limits::default()),

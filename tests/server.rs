@@ -243,7 +243,7 @@ fn inline_commands_are_quoted_binary_safe_fragmented_and_pipeline_ordered() {
     malformed.write_all(b"SET \"unterminated\r\n").unwrap();
     let mut output = Vec::new();
     malformed.read_to_end(&mut output).unwrap();
-    assert_eq!(output, b"-ERR Protocol error: invalid inline command\r\n");
+    assert_eq!(output, b"-ERR Protocol error: unbalanced quotes in request\r\n");
     send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
 }
 
@@ -275,7 +275,7 @@ fn malformed_input_closes_only_the_offending_connection() {
         .unwrap();
     let mut output = Vec::new();
     broken.read_to_end(&mut output).unwrap();
-    assert_eq!(output, b"+PONG\r\n-ERR Protocol error: invalid length\r\n");
+    assert_eq!(output, b"+PONG\r\n-ERR Protocol error: invalid bulk length\r\n");
     send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
 }
 
