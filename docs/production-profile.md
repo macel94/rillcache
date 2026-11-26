@@ -20,6 +20,7 @@ P0 gates are closed or explicitly excluded by a reviewed profile decision.
 | Clients requiring several databases | Excluded; startup with `db` other than `0`, `SELECT` other than `0`, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected |
 | Persistence mode | Optional private append-only journal; RDB excluded |
 | Transport | Plain TCP, optional native TLS 1.3 |
+| Deployment-wide rate limiting | Not implemented in the server; process-local budgets only. Multi-process or replicated deployments require an authoritative external control plane |
 | Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
 | Platforms | Linux x86_64 (development/CI); other platforms unverified |
 
@@ -51,6 +52,32 @@ The [original upstream Tcl hash diagnostic](upstream-ci.md#compatibility-contrac
 compares the pinned native Redis and Valkey controls with Rillcache. Its result
 is evidence for the selected files and revision, not approval of the hash row.
 
+## Deployment-wide rate limiting
+
+The server enforces authentication budgets **inside one process only**:
+`--auth-failure-limit` bounds consecutive failures per connection (default 10),
+and the opt-in `--auth-source-limit` / `--auth-global-limit` add per-peer-IP and
+process-wide lockouts over `--auth-source-window-ms` (default 60 s). These
+counters are never shared with another server process, so they do not compose
+across replicas, rolling deployments or a shared NAT address; one process
+locking a source out leaves every other process unaffected.
+
+The supported topology is therefore a single owner process, and any deployment
+that exposes more than one process must put an authoritative rate limiter in
+front of it. The required external behaviour is:
+
+- admission control runs **before** AUTH and applies to connection and
+  credential attempts, so a locked client never reaches the server;
+- it fails **closed** when the limiter is unavailable, and its refusals are
+  visible to the client as a connection or command rejection rather than a
+  silent success;
+- it is configured from the same source of truth for every replica, since the
+  server's own budgets remain defence in depth and cannot see peer traffic.
+
+`tests/auth_process_isolation.rs` proves the isolation that makes this
+requirement necessary: two real server processes with identical limits do not
+share lockout state.
+
 ## Explicit exclusions
 
 The following are **not** part of this draft profile and must not be inferred from
@@ -74,6 +101,8 @@ a command returning a generic error:
   per-database statistics or `FLUSHDB`/`FLUSHALL` selection exists. See
   [compatibility](compatibility.md#important-boundaries) and the
   [database-zero evidence](production-readiness-gaps.md#1-compatibility-and-command-surface).
+- Deployment-wide or cross-process rate limiting (S4). The server's budgets are
+  per process; use the external control plane described above.
 - RDB, `SAVE`/`BGSAVE`, `DUMP`/`RESTORE`/`MIGRATE`, online backup and PITR
   (C5, D1, D5).
 - Replication, Sentinel, cluster routing, failover and multi-node topologies
