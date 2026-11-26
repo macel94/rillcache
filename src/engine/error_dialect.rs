@@ -55,6 +55,23 @@ impl ErrorDialect {
             Self::Valkey => b"-ERR numfields should be greater than 0 and match the provided number of fields\r\n",
         }
     }
+
+    pub(super) fn geo_shape_required(self, store: bool) -> &'static [u8] {
+        match (self, store) {
+            (Self::Redis, false) => {
+                b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCH\r\n"
+            }
+            (Self::Redis, true) => {
+                b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCHSTORE\r\n"
+            }
+            (Self::Valkey, false) => {
+                b"-ERR exactly one of BYRADIUS, BYBOX and BYPOLYGON can be specified for GEOSEARCH\r\n"
+            }
+            (Self::Valkey, true) => {
+                b"-ERR exactly one of BYRADIUS, BYBOX and BYPOLYGON can be specified for GEOSEARCHSTORE\r\n"
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -70,5 +87,17 @@ mod tests {
         for value in ["", "auto", "REDIS", "redis\0", "valkey "] {
             assert_eq!(ErrorDialect::parse(value), None);
         }
+    }
+
+    #[test]
+    fn geo_search_missing_shape_text_tracks_the_selected_vendor() {
+        assert_eq!(
+            ErrorDialect::Redis.geo_shape_required(false),
+            b"-ERR exactly one of BYRADIUS and BYBOX can be specified for GEOSEARCH\r\n"
+        );
+        assert_eq!(
+            ErrorDialect::Valkey.geo_shape_required(false),
+            b"-ERR exactly one of BYRADIUS, BYBOX and BYPOLYGON can be specified for GEOSEARCH\r\n"
+        );
     }
 }

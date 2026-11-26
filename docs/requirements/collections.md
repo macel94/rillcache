@@ -112,12 +112,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   respectively. Missing members shall return the command's null shape; wrong-type
   keys shall return WRONGTYPE; invalid units or coordinates shall fail before
   producing a result.
-- **R179 (event-driven):** When `GEOSEARCH` runs, it shall require exactly one of
-  FROMMEMBER/FROMLONLAT and exactly one of BYRADIUS/BYBOX, support ASC/DESC,
-  COUNT with optional ANY validation and WITHCOORD/WITHDIST/WITHHASH, resolve
-  FROMMEMBER against the live source, scan the bounded sorted set with the
-  documented haversine/rectangle checks, and return at most COUNT deterministic
-  results. A missing source shall return an empty array.
+- **R179 (event-driven):** When `GEOSEARCH` runs, it shall require exactly one
+  supported origin/shape form, support Valkey BYPOLYGON without an origin,
+  ASC/DESC, COUNT with optional ANY validation and WITHCOORD/WITHDIST/WITHHASH,
+  resolve FROMMEMBER against the live source, apply the documented geohash-cell
+  traversal and haversine/rectangle/polygon checks, and return at most COUNT
+  deterministic results. A missing source shall return an empty array; a missing
+  member shall use the selected vendor's pinned error wording.
 - **R180 (unwanted behavior):** When `GEOSEARCHSTORE` stores matches, it shall
   perform one atomic destination replacement, clear the destination TTL, support
   STOREDIST, delete the destination for an empty result and never partially write
@@ -125,8 +126,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `GEOSEARCHSTORE` shall publish `zadd`/`geosearchstore`/`del` events, expose
   truthful `@geo` metadata and two ordered keys for the store command, and be
   covered by unit and all-mode wire tests. Legacy `GEORADIUS*` aliases are
-  delivered in S55; native neighbour indexes and RDB interchange shall remain
-  documented as unsupported.
+  delivered in S55; native sorted-set range indexes and RDB interchange shall
+  remain documented as unsupported.
 
 ## Sorted-set range and selection completion (S50)
 
