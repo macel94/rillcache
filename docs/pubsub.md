@@ -51,6 +51,14 @@ at-most-once: messages can be lost on disconnect, backpressure, process restart
 or crash. There is no replay, acknowledgment, durability or ordering guarantee
 across different publishers beyond the order their frames were enqueued.
 
+After reconnecting, clients must subscribe again. Once the old registration
+is removed, a publish to an otherwise unsubscribed channel returns zero and
+is not replayed when the new subscription starts. The wire regression in
+`tests/pubsub.rs` checks this boundary for a single RESP2 subscriber and an
+ordinary channel. For replay, evaluate [Streams](streams.md) under the chosen
+persistence and recovery policy or use an external durable transport; this
+Pub/Sub test does not validate either alternative.
+
 The connection thread drains queued frames in bounded batches and never writes
 messages from another thread, so reply and push frames cannot interleave. In
 default thread-per-client mode, subscribed connections use a 10 ms socket read
