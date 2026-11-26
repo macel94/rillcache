@@ -781,18 +781,23 @@ mod tests {
             b"*2\r\n$17\r\navailability-zone\r\n$0\r\n\r\n"
         );
         assert_eq!(
-            run(&store, &[b"CONFIG", b"SET", b"availability-zone", b"myzone"]),
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"availability-zone", b"myzone"]
+            ),
             b"+OK\r\n"
         );
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"availability-*"]),
             b"*2\r\n$17\r\navailability-zone\r\n$6\r\nmyzone\r\n"
         );
-        assert!(run(
-            &store,
-            &[b"CONFIG", b"SET", b"availability-zone", &vec![b'x'; 257]]
-        )
-        .starts_with(b"-ERR"));
+        assert!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"availability-zone", &vec![b'x'; 257]]
+            )
+            .starts_with(b"-ERR")
+        );
         assert_eq!(
             run(
                 &store,
@@ -812,7 +817,10 @@ mod tests {
             b"*2\r\n$17\r\navailability-zone\r\n$6\r\nmyzone\r\n"
         );
         assert_eq!(
-            run(&store, &[b"CONFIG", b"SET", b"availability-zone", b""]),
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"availability-zone", b""]
+            ),
             b"+OK\r\n"
         );
         assert_eq!(

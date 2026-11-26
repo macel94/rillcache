@@ -395,7 +395,10 @@ impl std::ops::Deref for ShardExecutor {
 
 impl ServerServices {
     pub(crate) fn availability_zone(&self) -> Option<Vec<u8>> {
-        self.availability_zone.read().ok().and_then(|zone| zone.clone())
+        self.availability_zone
+            .read()
+            .ok()
+            .and_then(|zone| zone.clone())
     }
 
     pub(crate) fn set_availability_zone(&self, zone: Option<Vec<u8>>) -> bool {

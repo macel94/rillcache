@@ -677,12 +677,7 @@ fn cold_command(args: &[&[u8]]) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(b"ACL"))
 }
 
-fn publish_query_buffer(
-    context: &Context,
-    session: &Session,
-    input: &[u8],
-    published: &mut usize,
-) {
+fn publish_query_buffer(context: &Context, session: &Session, input: &[u8], published: &mut usize) {
     let qbuf = input.len();
     if qbuf != *published {
         context

@@ -609,11 +609,10 @@ impl Reactor {
                 && !connection.client.input.is_empty()
                 && !connection.client.closing
             {
-                progress |= connection.client.receive(
-                    self.config.limits,
-                    chunk,
-                    self.store.as_ref(),
-                )?;
+                progress |=
+                    connection
+                        .client
+                        .receive(self.config.limits, chunk, self.store.as_ref())?;
                 if connection.client.eof {
                     return Ok(None);
                 }
