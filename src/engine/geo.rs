@@ -601,26 +601,27 @@ fn search_cells(center: (f64, f64), shape: &Shape) -> Vec<GeoHashCell> {
         area = decode_cell(center_cell);
     }
 
+    // `bits == 0` is a valid geohash cell, so use step zero for omitted neighbors.
     if step >= 2 {
         if area.min_lat < bounds.min_lat {
-            neighbors[1].bits = 0;
-            neighbors[6].bits = 0;
-            neighbors[7].bits = 0;
+            neighbors[1].step = 0;
+            neighbors[6].step = 0;
+            neighbors[7].step = 0;
         }
         if area.max_lat > bounds.max_lat {
-            neighbors[0].bits = 0;
-            neighbors[4].bits = 0;
-            neighbors[5].bits = 0;
+            neighbors[0].step = 0;
+            neighbors[4].step = 0;
+            neighbors[5].step = 0;
         }
         if area.min_lon < bounds.min_lon {
-            neighbors[3].bits = 0;
-            neighbors[5].bits = 0;
-            neighbors[7].bits = 0;
+            neighbors[3].step = 0;
+            neighbors[5].step = 0;
+            neighbors[7].step = 0;
         }
         if area.max_lon > bounds.max_lon {
-            neighbors[2].bits = 0;
-            neighbors[4].bits = 0;
-            neighbors[6].bits = 0;
+            neighbors[2].step = 0;
+            neighbors[4].step = 0;
+            neighbors[6].step = 0;
         }
     }
 
@@ -637,7 +638,7 @@ fn search_cells(center: (f64, f64), shape: &Shape) -> Vec<GeoHashCell> {
     ];
     let mut cells = Vec::with_capacity(candidates.len());
     for cell in candidates {
-        if cell.bits == 0 || cells.last() == Some(&cell) {
+        if cell.step == 0 || cells.last() == Some(&cell) {
             continue;
         }
         cells.push(cell);
