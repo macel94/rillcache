@@ -183,10 +183,14 @@ Portable scope limits are applied **identically**:
   No individual failing test is silently removed. Unsupported public commands
   reached inside selected tests remain failures.
 - External-mode upstream `external:skip` behavior is automatic, not evidence of
-  candidate support. Protocol's main block is external-only-inapplicable; it is
-  explicitly excluded rather than reporting a zero-test green result. Other
-  units, modules, cluster and integration scopes remain untested; every pinned
-  source unit receives an inclusion/exclusion reason in `unit-inventory.json`.
+  candidate support. `unit/protocol` is excluded from this profile, but it is
+  **not** a zero-test unit: external mode does not skip its `protocol`/`network`
+  tags. The unchanged Valkey file includes untagged HELLO/availability-zone
+  CONFIG behavior and a partial-command-after-BLPOP assertion on `CLIENT LIST`
+  `qbuf`, outside the current profile. The full unit remains excluded rather than
+  filtering those assertions. Other units, modules, cluster and integration
+  scopes remain untested; every pinned source unit receives an inclusion/exclusion
+  reason in `unit-inventory.json`.
 - Upstream may conditionally omit tests without emitting events. Thus skip/ignore
   **events** (especially group-level ignores) are not exact skipped assertion
   counts. Native observed names provide an auditable lower-bound universe, not
