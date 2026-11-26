@@ -533,9 +533,7 @@ fn collect_hits(members: &[(&[u8], f64)], center: (f64, f64), search: &Search) -
     let cells = search_cells(center, &search.shape);
     let mut ordered = members.to_vec();
     ordered.sort_unstable_by(|left, right| {
-        left.1
-            .total_cmp(&right.1)
-            .then_with(|| left.0.cmp(right.0))
+        left.1.total_cmp(&right.1).then_with(|| left.0.cmp(right.0))
     });
     let mut hits = Vec::new();
     'cells: for cell in cells {
