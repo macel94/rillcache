@@ -30,6 +30,7 @@ per-row evidence for that head; it is never release acceptance.
 | Clients requiring several databases | Excluded; startup with `db` other than `0`, `SELECT` other than `0`, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected |
 | Persistence mode | Optional private append-only journal; RDB excluded |
 | Transport | Plain TCP, optional native TLS 1.3 |
+| Deployment-wide rate limiting | Not implemented in the server; process-local budgets only. Multi-process or replicated deployments require an authoritative external control plane |
 | Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
 | Platforms | Linux x86_64 (development/CI); other platforms unverified |
 
@@ -113,6 +114,32 @@ no-replica form returns `+OK` without changing topology while `REPLICAOF` and
 `FAILOVER` return explicit unsupported errors. Clients must not treat that `+OK`
 as a topology change.
 
+## Deployment-wide rate limiting
+
+The server enforces authentication budgets **inside one process only**:
+`--auth-failure-limit` bounds consecutive failures per connection (default 10),
+and the opt-in `--auth-source-limit` / `--auth-global-limit` add per-peer-IP and
+process-wide lockouts over `--auth-source-window-ms` (default 60 s). These
+counters are never shared with another server process, so they do not compose
+across replicas, rolling deployments or a shared NAT address; one process
+locking a source out leaves every other process unaffected.
+
+The supported topology is therefore a single owner process, and any deployment
+that exposes more than one process must put an authoritative rate limiter in
+front of it. The required external behaviour is:
+
+- admission control runs **before** AUTH and applies to connection and
+  credential attempts, so a locked client never reaches the server;
+- it fails **closed** when the limiter is unavailable, and its refusals are
+  visible to the client as a connection or command rejection rather than a
+  silent success;
+- it is configured from the same source of truth for every replica, since the
+  server's own budgets remain defence in depth and cannot see peer traffic.
+
+`tests/auth_process_isolation.rs` proves the isolation that makes this
+requirement necessary: two real server processes with identical limits do not
+share lockout state.
+
 ## Explicit exclusions
 
 The following are **not** part of this draft profile. Each exclusion is executed
@@ -121,9 +148,10 @@ inferred from a generic error:
 
 | Exclusion | Gap | Executed check |
 | --- | --- | --- |
-| Scripting execution: `EVAL`/`EVALSHA`, `SCRIPT LOAD`, `FCALL`, `FUNCTION LOAD` | C2 | Every execution entry point errors; only `SCRIPT FLUSH`/`FUNCTION FLUSH` acknowledge an empty registry |
+| Scripting execution: `EVAL`/`EVALSHA` (including `_RO`), `SCRIPT LOAD`, `FCALL`/`FCALL_RO`, `FUNCTION LOAD` | C2 | Every execution entry point errors; only `SCRIPT FLUSH`/`FUNCTION FLUSH` acknowledge an empty registry |
 | Loadable modules, `MODULE LOAD` | C3 | Loading errors; `MODULE LIST` is empty |
-| Multiple logical databases: `SELECT n≠0`, `MOVE`, `SWAPDB`, `COPY ... DB n` | C4 | Rejected without mutating the DB 0 value or creating the destination |
+| Multiple logical databases, `SELECT n≠0`, `MOVE`, `SWAPDB`, `COPY ... DB n` | C4 | Rejected without mutating the DB 0 value or creating the destination; a pinned redis-py client started with `db=1` fails during connection setup with `DB index is out of range`, so addressed databases must be chosen at the application layer |
+| Deployment-wide or cross-process rate limiting | S4 | Server budgets are per process; use the external control plane described above |
 | RDB snapshots: `SAVE`, `BGSAVE` | C5 | Explicit unsupported-persistence error |
 | `DUMP`/`RESTORE`/`MIGRATE` payloads, online backup, PITR | D1, D5 | Explicit unsupported-serialization error; no private blob is emitted |
 | Replication, Sentinel, cluster routing, failover (A1–A5) | A1 | `REPLICAOF`/`FAILOVER` error; the `SLAVEOF NO ONE` no-op is declared above |

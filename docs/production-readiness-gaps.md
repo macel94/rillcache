@@ -634,17 +634,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested; or the audit path is explicitly best-effort with a
   documented compensating control.
 
-- [ ] **S4. Cross-process rate limiting is missing.** [P0]
-  Failed-auth budgets remain process-local. Shared NAT addresses can throttle
-  each other; there is no cross-process/distributed policy or username lockout.
-  **Partial (2026-11-18):** when the bounded per-IP table fills, new sources
-  share an overflow budget instead of evicting tracked source state. **Partial
-  (2026-11-19):** opt-in `--auth-global-limit` counts failures across peers in
-  one process and locks credential attempts for the configured source window;
-  it defaults off and can itself deny legitimate users. Neither control is
-  shared between server processes. **Closes when:** a bounded shared/distributed
-  rate-limit design is implemented or the deployment requires an external
-  control plane with documented behavior.
+- [x] **S4. Cross-process rate limiting is missing.** [P0]
+  **Complete (2026-11-26) by the external-control-plane branch of the
+  criterion; no distributed limiter is implemented or claimed.** Failed-auth
+  budgets remain process-local: `--auth-failure-limit` is per connection, and the
+  opt-in `--auth-source-limit`/`--auth-global-limit` lockouts are per process over
+  `--auth-source-window-ms`. The profile now requires an authoritative
+  external limiter for any deployment with more than one process, states that it
+  must run before `AUTH`, fail closed when unavailable, produce a visible
+  rejection and be configured identically for every replica, and notes that the
+  server budgets remain defence in depth. Shared-NAT throttling between clients
+  is documented as a consequence rather than hidden. Evidence:
+  `tests/auth_process_isolation.rs`
+  `authentication_lockout_is_not_shared_between_processes` starts two real
+  binaries with identical per-source budgets, locks 127.0.0.1 out of the first
+  (including after reconnect), and shows the second still authenticates, keeps
+  its own failure count and is unaffected. This does not claim username
+  lockout, distributed counters, or that one process's budgets protect another.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
   TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
