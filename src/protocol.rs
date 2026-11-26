@@ -271,13 +271,8 @@ fn decode<'a, S: ArgumentStorage<'a>, T>(
         } else {
             ProtocolError::InvalidArrayLength
         };
-    let Some((count, mut offset)) = length(
-        input,
-        0,
-        b'*',
-        limits.max_arguments,
-        argument_limit_error,
-    )?
+    let Some((count, mut offset)) =
+        length(input, 0, b'*', limits.max_arguments, argument_limit_error)?
     else {
         return incomplete(input, limits);
     };
