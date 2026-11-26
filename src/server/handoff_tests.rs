@@ -20,6 +20,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
             stream,
             session: Session::new(),
             input,
+            published_qbuf: 0,
             output: Vec::new(),
             sent: 0,
             closing: false,

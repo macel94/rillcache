@@ -192,6 +192,7 @@ impl<E: Execution> Reactor<E> {
                     stream,
                     session,
                     input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
+                    published_qbuf: 0,
                     output: Vec::with_capacity(8192),
                     sent: 0,
                     closing: false,
@@ -252,7 +253,7 @@ impl<E: Execution> Reactor<E> {
                 && !client.input.is_empty()
                 && !client.closing
             {
-                let received = client.receive(self.config.limits, chunk)?;
+                let received = client.receive(self.config.limits, chunk, self.store.as_ref())?;
                 if client.eof {
                     return Ok(Served::Closed);
                 }

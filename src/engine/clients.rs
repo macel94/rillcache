@@ -18,6 +18,7 @@ pub struct ClientRecord {
     pub(super) user: Option<Vec<u8>>,
     pub(super) created: Instant,
     pub(super) blocked: std::sync::atomic::AtomicBool,
+    pub(super) qbuf: std::sync::atomic::AtomicUsize,
     pub(super) control: Option<TcpStream>,
 }
 
@@ -40,6 +41,7 @@ pub struct ClientSnapshot {
     pub age_seconds: u64,
     pub age_ms: u64,
     pub blocked: bool,
+    pub qbuf: usize,
     pub sub: usize,
     pub psub: usize,
     pub ssub: usize,
@@ -133,6 +135,7 @@ impl super::ServerServices {
                     user: None,
                     created: Instant::now(),
                     blocked: std::sync::atomic::AtomicBool::new(false),
+                    qbuf: std::sync::atomic::AtomicUsize::new(0),
                     control: Some(control),
                 },
             );
@@ -193,6 +196,14 @@ impl super::ServerServices {
         }
     }
 
+    pub fn set_client_query_buffer(&self, id: u64, bytes: usize) {
+        if let Ok(clients) = self.clients.read()
+            && let Some(record) = clients.get(&id)
+        {
+            record.qbuf.store(bytes, Ordering::Relaxed);
+        }
+    }
+
     pub fn connected_clients(&self) -> usize {
         self.clients.read().map_or(0, |clients| clients.len())
     }
@@ -220,6 +231,7 @@ impl super::ServerServices {
                 age_seconds: record.created.elapsed().as_secs(),
                 age_ms: u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
                 blocked: record.blocked.load(std::sync::atomic::Ordering::Relaxed),
+                qbuf: record.qbuf.load(std::sync::atomic::Ordering::Relaxed),
                 sub,
                 psub,
                 ssub,

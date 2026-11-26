@@ -32,7 +32,7 @@ impl Session {
             }
         };
         if arguments.is_empty() {
-            self.hello_reply(requested, output);
+            self.hello_reply(store, requested, output);
             return;
         }
 
@@ -113,16 +113,22 @@ impl Session {
         if let Some(name) = name {
             self.set_name(name);
         }
-        self.hello_reply(requested, output);
+        self.hello_reply(store, requested, output);
     }
 
-    pub(super) fn hello_reply(&self, protocol: Protocol, output: &mut Vec<u8>) {
+    pub(super) fn hello_reply<E: Execution>(
+        &self,
+        store: &E,
+        protocol: Protocol,
+        output: &mut Vec<u8>,
+    ) {
         // These fields identify this server without claiming a Redis version,
         // modules, replication role, or unsupported capability.
         enum Value<'a> {
             Bulk(&'a [u8]),
             Integer(u64),
         }
+        let availability_zone = store.availability_zone();
         let fields = [
             (b"server".as_slice(), Value::Bulk(b"rillcache")),
             (
@@ -136,10 +142,11 @@ impl Session {
             (b"id".as_slice(), Value::Integer(self.id)),
             (b"mode".as_slice(), Value::Bulk(b"standalone")),
         ];
+        let extra = usize::from(availability_zone.is_some());
         if protocol == Protocol::Resp3 {
-            output.extend_from_slice(b"%5\r\n");
+            let _ = write!(output, "%{}\r\n", fields.len() + extra);
         } else {
-            output.extend_from_slice(b"*10\r\n");
+            let _ = write!(output, "*{}\r\n", (fields.len() + extra) * 2);
         }
         for (key, value) in fields {
             encode_bulk(Some(key), output);
@@ -149,6 +156,10 @@ impl Session {
                     let _ = write!(output, ":{value}\r\n");
                 }
             }
+        }
+        if let Some(zone) = availability_zone {
+            encode_bulk(Some(b"availability_zone"), output);
+            encode_bulk(Some(&zone), output);
         }
     }
     pub(super) fn sync_client_metadata<E: Execution>(&self, store: &E) {
@@ -483,7 +494,7 @@ impl Session {
             use std::fmt::Write as _;
             let _ = writeln!(
                 text,
-                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} ssub={} resp={} user={} lib-name={} lib-ver={}",
+                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} ssub={} qbuf={} resp={} user={} lib-name={} lib-ver={}",
                 snapshot.id,
                 snapshot.addr,
                 snapshot.laddr,
@@ -493,6 +504,7 @@ impl Session {
                 snapshot.sub,
                 snapshot.psub,
                 snapshot.ssub,
+                snapshot.qbuf,
                 if snapshot.resp3 { 3 } else { 2 },
                 user,
                 lib_name,

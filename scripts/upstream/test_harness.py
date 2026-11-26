@@ -53,9 +53,10 @@ class ScopeTests(unittest.TestCase):
             "unit/scan": "unit/keyspace",
             "unit/quit": "unit/keyspace",
             "unit/geo": "unit/keyspace",
+            "unit/protocol": "unit/keyspace",
         })
         self.assertEqual(
-            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"],
+            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/protocol"],
             compat.embedded_suites("unit/keyspace"),
         )
         self.assertEqual([], compat.embedded_suites("unit/type/string"))
@@ -85,13 +86,13 @@ class ScopeTests(unittest.TestCase):
 
 class ProcessTests(unittest.TestCase):
     def test_embedded_suites_run_as_children_and_propagate_failures(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children) as run:
             self.assertEqual(1, compat.run_embedded_suites("unit/keyspace", "redis"))
-        self.assertEqual(5, run.call_count)
+        self.assertEqual(6, run.call_count)
         for call, suite in zip(
             run.call_args_list,
-            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"),
+            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/protocol"),
         ):
             argv = call.args[0]
             self.assertEqual("--reference", argv[2])
@@ -101,7 +102,7 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual({"check": False}, call.kwargs)
 
     def test_embedded_suite_signal_exit_is_not_a_pass(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children):
             self.assertEqual(2, compat.run_embedded_suites("unit/keyspace", "redis"))
 
@@ -303,12 +304,8 @@ class CompatibilityTests(unittest.TestCase):
             self.assertTrue(by_unit["unit/quit"]["selected_in_matrix"])
             self.assertEqual("diagnostic", by_unit["unit/type/hash"]["classification"])
             self.assertIn("DUMP/RESTORE", by_unit["unit/type/hash"]["reason"])
-            self.assertEqual("excluded", by_unit["unit/protocol"]["classification"])
-            protocol_reason = by_unit["unit/protocol"]["reason"]
-            self.assertIn("not a zero-test unit", protocol_reason)
-            self.assertIn("availability-zone", protocol_reason)
-            self.assertIn("CLIENT LIST qbuf", protocol_reason)
-            self.assertNotIn("zero executed tests", protocol_reason)
+            self.assertEqual("mandatory", by_unit["unit/protocol"]["classification"])
+            self.assertTrue(by_unit["unit/protocol"]["selected_in_matrix"])
 
 
 class PerformanceTests(unittest.TestCase):

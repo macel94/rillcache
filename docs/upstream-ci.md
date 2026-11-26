@@ -105,8 +105,9 @@ claimed until it executes on the exact candidate.
 The six required reference/row contexts run the original upstream Tcl files
 `unit/type/string`, `unit/type/incr`, and `unit/keyspace` against both Redis and
 Valkey. Each keyspace context additionally runs the original `unit/type/set`,
-`unit/bitfield`, `unit/scan`, `unit/quit` and `unit/geo` files as separate
-native-first child runs, so they add no matrix rows, optional checks or policy bypass.
+`unit/bitfield`, `unit/scan`, `unit/quit`, `unit/geo` and `unit/protocol` files as
+separate native-first child runs, so they add no matrix rows, optional checks or
+policy bypass.
 Matrix fail-fast is
 disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
@@ -161,10 +162,10 @@ Performance runs retain the unchanged default configuration.
 `ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
 `unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
 and carries the manifest's reason (including the hash-suite blocker above).
-The set, bitfield and scan files are additional mandatory original units embedded
-in each keyspace matrix context; their native and candidate artifacts are retained
-alongside that context's keyspace evidence. The scan selection preserves the
-complete pinned files, including Redis/Valkey-specific scan options; the cursor
+The set, bitfield, scan, quit, geo and protocol files are additional mandatory
+original units embedded in each keyspace matrix context; their native and candidate
+artifacts are retained alongside that context's keyspace evidence. The scan selection
+preserves the complete pinned files, including Redis/Valkey-specific scan options; the cursor
 implementation is not claimed to be an internal hash-table or cluster equivalent.
 There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
@@ -183,14 +184,12 @@ Portable scope limits are applied **identically**:
   No individual failing test is silently removed. Unsupported public commands
   reached inside selected tests remain failures.
 - External-mode upstream `external:skip` behavior is automatic, not evidence of
-  candidate support. `unit/protocol` is excluded from this profile, but it is
-  **not** a zero-test unit: external mode does not skip its `protocol`/`network`
-  tags. The unchanged Valkey file includes untagged HELLO/availability-zone
-  CONFIG behavior and a partial-command-after-BLPOP assertion on `CLIENT LIST`
-  `qbuf`, outside the current profile. The full unit remains excluded rather than
-  filtering those assertions. Other units, modules, cluster and integration
-  scopes remain untested; every pinned source unit receives an inclusion/exclusion
-  reason in `unit-inventory.json`.
+  candidate support. The full unchanged `unit/protocol` file is included as a
+  mandatory native-first child run, including Valkey's HELLO/availability-zone
+  CONFIG behavior and partial-command-after-BLPOP `CLIENT LIST qbuf` assertion.
+  It is not split, filtered or rewritten. Other units, modules, cluster and
+  integration scopes remain untested; every pinned source unit receives an
+  inclusion/exclusion reason in `unit-inventory.json`.
 - Upstream may conditionally omit tests without emitting events. Thus skip/ignore
   **events** (especially group-level ignores) are not exact skipped assertion
   counts. Native observed names provide an auditable lower-bound universe, not

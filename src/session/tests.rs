@@ -41,6 +41,34 @@ fn hello_protocol_switch_and_errors_are_atomic() {
 }
 
 #[test]
+fn hello_reports_and_clears_configured_availability_zone_in_both_protocols() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+
+    assert!(call(&mut session, &store, &[b"HELLO", b"3"]).starts_with(b"%5\r\n"));
+    assert_eq!(
+        call(&mut session, &store, &[b"CONFIG", b"SET", b"availability-zone", b"myzone"]),
+        b"+OK\r\n"
+    );
+    let resp3 = call(&mut session, &store, &[b"HELLO", b"3"]);
+    assert!(resp3.starts_with(b"%6\r\n"));
+    let zone_field = b"$17\r\navailability_zone\r\n$6\r\nmyzone";
+    assert!(resp3.windows(zone_field.len()).any(|part| part == zone_field));
+
+    let resp2 = call(&mut session, &store, &[b"HELLO", b"2"]);
+    assert!(resp2.starts_with(b"*12\r\n"));
+    assert!(resp2.windows(zone_field.len()).any(|part| part == zone_field));
+
+    assert_eq!(
+        call(&mut session, &store, &[b"CONFIG", b"SET", b"availability-zone", b""]),
+        b"+OK\r\n"
+    );
+    let cleared = call(&mut session, &store, &[b"HELLO", b"3"]);
+    assert!(cleared.starts_with(b"%5\r\n"));
+    assert!(!cleared.windows(17).any(|part| part == b"availability_zone"));
+}
+
+#[test]
 fn client_info_reports_watch_state() {
     let store = Store::new(1024);
     let mut session = Session::new();

@@ -275,6 +275,18 @@ impl ShardExecutor {
             if wants_maxclients {
                 matches.push((b"maxclients", self.max_clients().to_string()));
             }
+            let wants_availability_zone = if wildcard {
+                glob_match(&folded_pattern, b"availability-zone")
+            } else {
+                pattern.eq_ignore_ascii_case(b"availability-zone")
+            };
+            if wants_availability_zone {
+                let value = self.availability_zone().unwrap_or_default();
+                matches.push((
+                    b"availability-zone",
+                    String::from_utf8_lossy(&value).into_owned(),
+                ));
+            }
             let wants_latency_threshold = if wildcard {
                 glob_match(&folded_pattern, b"latency-monitor-threshold")
             } else {
@@ -369,6 +381,7 @@ impl ShardExecutor {
         let mut auto_aof_min_size = None;
         let mut appendfsync = None;
         let mut maxclients = None;
+        let mut availability_zone = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
                 let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
@@ -479,6 +492,12 @@ impl ShardExecutor {
                     return;
                 };
                 maxclients = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"availability-zone") {
+                if pair[1].len() > 256 || std::str::from_utf8(pair[1]).is_err() {
+                    out.extend_from_slice(b"-ERR invalid availability-zone\r\n");
+                    return;
+                }
+                availability_zone = Some((!pair[1].is_empty()).then(|| pair[1].to_vec()));
             } else if pair[0].eq_ignore_ascii_case(b"save") {
                 if !pair[1].is_empty() {
                     out.extend_from_slice(b"-ERR RDB snapshots are unsupported\r\n");
@@ -552,6 +571,12 @@ impl ShardExecutor {
         }
         if let Some(enabled) = commandstats {
             self.set_commandstats_enabled(enabled);
+        }
+        if let Some(zone) = availability_zone
+            && !self.set_availability_zone(zone)
+        {
+            super::internal_error(out);
+            return;
         }
         out.extend_from_slice(b"+OK\r\n");
     }
@@ -745,7 +770,55 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*56\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*58\r\n"));
+    }
+
+    #[test]
+    fn availability_zone_config_is_bounded_visible_and_atomically_clearable() {
+        let store = ShardExecutor::new(100);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"availability-zone"]),
+            b"*2\r\n$17\r\navailability-zone\r\n$0\r\n\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"availability-zone", b"myzone"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"availability-*"]),
+            b"*2\r\n$17\r\navailability-zone\r\n$6\r\nmyzone\r\n"
+        );
+        assert!(run(
+            &store,
+            &[b"CONFIG", b"SET", b"availability-zone", &vec![b'x'; 257]]
+        )
+        .starts_with(b"-ERR"));
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"SET",
+                    b"availability-zone",
+                    b"transient",
+                    b"maxmemory-policy",
+                    b"not-a-policy"
+                ]
+            ),
+            b"-ERR invalid maxmemory-policy\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"availability-zone"]),
+            b"*2\r\n$17\r\navailability-zone\r\n$6\r\nmyzone\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"availability-zone", b""]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"availability-zone"]),
+            b"*2\r\n$17\r\navailability-zone\r\n$0\r\n\r\n"
+        );
     }
 
     #[test]

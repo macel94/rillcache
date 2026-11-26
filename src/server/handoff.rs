@@ -259,6 +259,7 @@ impl Sharing {
                 stream: stream.try_clone()?,
                 session: Session::new(),
                 input: Vec::new(),
+                published_qbuf: 0,
                 output: Vec::new(),
                 sent: 0,
                 closing: false,

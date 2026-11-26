@@ -311,6 +311,7 @@ pub struct ServerServices {
     dataset_override: std::sync::Mutex<Option<DatasetStats>>,
     error_dialect: RwLock<ErrorDialect>,
     collection_config: RwLock<CollectionConfig>,
+    availability_zone: RwLock<Option<Vec<u8>>>,
     clock: Arc<dyn Clock>,
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
@@ -393,6 +394,18 @@ impl std::ops::Deref for ShardExecutor {
 }
 
 impl ServerServices {
+    pub(crate) fn availability_zone(&self) -> Option<Vec<u8>> {
+        self.availability_zone.read().ok().and_then(|zone| zone.clone())
+    }
+
+    pub(crate) fn set_availability_zone(&self, zone: Option<Vec<u8>>) -> bool {
+        let Ok(mut current) = self.availability_zone.write() else {
+            return false;
+        };
+        *current = zone;
+        true
+    }
+
     /// Publish one coherent cross-owner dataset aggregate for the duration of an
     /// informational command; `None` clears it again.
     pub(crate) fn publish_dataset(&self, stats: Option<DatasetStats>) {
@@ -430,6 +443,7 @@ impl ServerServices {
             dataset_override: std::sync::Mutex::new(None),
             error_dialect: RwLock::new(ErrorDialect::default()),
             collection_config: RwLock::new(CollectionConfig::default()),
+            availability_zone: RwLock::new(None),
             clock,
             auth_required: AtomicBool::new(auth.required()),
             security_word: std::sync::atomic::AtomicU32::new(

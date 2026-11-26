@@ -677,6 +677,22 @@ fn cold_command(args: &[&[u8]]) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(b"ACL"))
 }
 
+fn publish_query_buffer(
+    context: &Context,
+    session: &Session,
+    input: &[u8],
+    published: &mut usize,
+) {
+    let qbuf = input.len();
+    if qbuf != *published {
+        context
+            .store
+            .services_handle()
+            .set_client_query_buffer(session.id(), qbuf);
+        *published = qbuf;
+    }
+}
+
 async fn serve_connection(
     mut stream: TokioStream,
     mut session: Session,
@@ -686,6 +702,7 @@ async fn serve_connection(
 ) -> io::Result<()> {
     let config = &context.config;
     let mut input = Vec::with_capacity(8192.min(config.limits.max_frame_bytes));
+    let mut published_qbuf = 0;
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; MAX_READ];
     let mut activity = Instant::now();
@@ -790,6 +807,7 @@ async fn serve_connection(
             if consumed > 0 {
                 input.drain(..consumed);
             }
+            publish_query_buffer(context, &session, &input, &mut published_qbuf);
             if need_input && !input.is_empty() {
                 let now = Instant::now();
                 frame_deadline.observe_incomplete(true, now);
@@ -867,6 +885,7 @@ async fn serve_connection(
             }
             Ok(Ok(size)) => {
                 input.extend_from_slice(&chunk[..size]);
+                publish_query_buffer(context, &session, &input, &mut published_qbuf);
                 activity = Instant::now();
             }
             Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,

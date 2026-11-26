@@ -2,8 +2,8 @@
   "schema": 1,
   "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
   "compatibility": {
-    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/geo", "unit/type/set", "unit/bitfield", "unit/scan", "unit/quit"],
-    "embedded_suites": {"unit/type/set": "unit/keyspace", "unit/bitfield": "unit/keyspace", "unit/scan": "unit/keyspace", "unit/quit": "unit/keyspace", "unit/geo": "unit/keyspace"},
+    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/geo", "unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/protocol"],
+    "embedded_suites": {"unit/type/set": "unit/keyspace", "unit/bitfield": "unit/keyspace", "unit/scan": "unit/keyspace", "unit/quit": "unit/keyspace", "unit/geo": "unit/keyspace", "unit/protocol": "unit/keyspace"},
     "diagnostic_suites": ["unit/type/hash"],
     "diagnostic_suite_reasons": {
       "unit/type/hash": "Not mandatory: the original suite includes Hash ziplist of various encodings and Hash ziplist of various encodings - sanitize dump, which issue DUMP/RESTORE. Those commands are explicitly outside the standalone profile; preserving the full upstream suite means this native-first comparison currently reports the divergence rather than filtering either test."
@@ -28,7 +28,6 @@
       "external mode": "Upstream automatically skips external:skip blocks (process restarts, persistence, multiple servers). Conditions can omit tests without emitting skip events."
     },
     "excluded_units": [
-      {"glob": "unit/protocol", "reason": "Excluded from the standalone profile, not a zero-test unit: external mode does not skip its protocol/network tags. The unchanged Valkey unit includes untagged HELLO/availability-zone CONFIG behavior and partial-command-after-BLPOP CLIENT LIST qbuf assertions outside this candidate profile; preserve the whole unit rather than filtering tests."},
       {"glob": "unit/moduleapi/*", "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."},
       {"glob": "unit/cluster/*", "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."},
       {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
