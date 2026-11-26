@@ -1,0 +1,2858 @@
+{
+  "schema": 1,
+  "profile": {
+    "id": "rillcache-standalone-0.1",
+    "version": 1,
+    "status": "draft",
+    "application_version": "0.1.0",
+    "document": "docs/production-profile.md",
+    "readiness_gap": "C1",
+    "claim": "No production, drop-in or support claim. A row is evidence for the exact tested head only."
+  },
+  "references": {
+    "redis": {
+      "version": "8.10.2",
+      "sha256": "541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8"
+    },
+    "valkey": {
+      "version": "9.1.2",
+      "sha256": "19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983"
+    }
+  },
+  "deployment": {
+    "topology": "one standalone process, one owner-local data path, no replication or cluster",
+    "owners": 1,
+    "logical_databases": 1,
+    "persistence": "private append-only journal only (appendfsync always|everysec|no); RDB, online backup and PITR excluded",
+    "transport": [
+      "plain TCP",
+      "native TLS 1.3"
+    ],
+    "platforms": {
+      "verified": [
+        "linux-x86_64"
+      ],
+      "unverified": [
+        "linux-aarch64",
+        "macos",
+        "windows"
+      ]
+    }
+  },
+  "commands": {
+    "source": "COMMAND LIST",
+    "compared_fields": [
+      "presence",
+      "arity"
+    ],
+    "minimum_rows": 240,
+    "declared_divergences": [
+      {
+        "id": "pfdebug-arity",
+        "command": "pfdebug",
+        "field": "arity",
+        "candidate": -3,
+        "reason": "The bounded PFDEBUG surface accepts a variable-argument form; both pinned references declare a fixed arity of 3. PFDEBUG payload interchange remains excluded (C10)."
+      },
+      {
+        "id": "digest-valkey",
+        "command": "digest",
+        "field": "presence",
+        "references": [
+          "valkey"
+        ],
+        "reason": "Private keyspace digest that follows the Redis 8.10.2 name; Valkey 9.1.2 does not ship it. It is not a drop-in requirement."
+      },
+      {
+        "id": "delifeq-both",
+        "command": "delifeq",
+        "field": "presence",
+        "references": [
+          "redis",
+          "valkey"
+        ],
+        "reason": "Conditional delete shipped after both pinned reference revisions. Published as a candidate extension, not a compatibility row."
+      },
+      {
+        "id": "delex-valkey",
+        "command": "delex",
+        "field": "presence",
+        "references": [
+          "valkey"
+        ],
+        "reason": "Redis 8.10.2 conditional delete variant; Valkey 9.1.2 does not ship it. The candidate follows the Redis name."
+      },
+      {
+        "id": "sdiffcard-valkey",
+        "command": "sdiffcard",
+        "field": "presence",
+        "references": [
+          "valkey"
+        ],
+        "reason": "Redis 8.10.2 set cardinality command; Valkey 9.1.2 does not ship it."
+      },
+      {
+        "id": "sunioncard-valkey",
+        "command": "sunioncard",
+        "field": "presence",
+        "references": [
+          "valkey"
+        ],
+        "reason": "Redis 8.10.2 set cardinality command; Valkey 9.1.2 does not ship it."
+      }
+    ],
+    "declared_noops": [
+      {
+        "id": "slaveof-no-one",
+        "command": "SLAVEOF NO ONE",
+        "reason": "Replication is excluded (A1). The legacy no-replica form returns +OK while changing no topology; REPLICAOF and FAILOVER return explicit unsupported errors. Declared here so clients are not silently misled."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "id": "redis-cli",
+      "version": "8.10.2 (pinned reference build)",
+      "status": "tested",
+      "evidence": "Pinned redis-cli RESP2/RESP3 rows in this profile matrix plus the pinned Tcl matrix."
+    },
+    {
+      "id": "valkey-benchmark",
+      "version": "9.1.2 (pinned reference build)",
+      "status": "tested",
+      "evidence": "Official workload generator used by the protected performance gates; not a behavioral client row."
+    },
+    {
+      "id": "redis-py",
+      "version": "5.2.1",
+      "status": "partial",
+      "gap": "C7",
+      "evidence": "Optional local/hosted diagnostic covers RESP2/RESP3, named ACL, binary values, pipeline, transaction, Pub/Sub and reconnect against the candidate only; TLS and error paths are not covered there and it is not a support commitment."
+    },
+    {
+      "id": "node-redis",
+      "version": null,
+      "status": "excluded",
+      "gap": "C7",
+      "evidence": "No pinned harness. Excluded from this draft profile."
+    },
+    {
+      "id": "go-redis",
+      "version": null,
+      "status": "excluded",
+      "gap": "C7",
+      "evidence": "No pinned harness. Excluded from this draft profile."
+    },
+    {
+      "id": "arbitrary clients",
+      "version": null,
+      "status": "excluded",
+      "gap": "C7",
+      "evidence": "Any client whose discovery or error handling depends on unlisted commands or RESP3 attributes is unsupported."
+    }
+  ],
+  "client_rows": [
+    {
+      "id": "cli-resp2-ping",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "PING"
+      ]
+    },
+    {
+      "id": "cli-resp3-ping",
+      "client": "redis-cli",
+      "args": [
+        "-3",
+        "PING"
+      ]
+    },
+    {
+      "id": "cli-resp2-set",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "SET",
+        "{p}key",
+        "value"
+      ]
+    },
+    {
+      "id": "cli-resp2-incr",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "INCR",
+        "{p}counter"
+      ]
+    },
+    {
+      "id": "cli-resp2-get-missing",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "GET",
+        "{p}missing"
+      ]
+    },
+    {
+      "id": "cli-resp2-mget-missing",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "MGET",
+        "{p}a",
+        "{p}b"
+      ]
+    },
+    {
+      "id": "cli-resp2-hset",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "HSET",
+        "{p}hash",
+        "field",
+        "value"
+      ]
+    },
+    {
+      "id": "cli-resp2-hgetall-missing",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "HGETALL",
+        "{p}hash"
+      ]
+    },
+    {
+      "id": "cli-resp2-lrange-missing",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "LRANGE",
+        "{p}list",
+        "0",
+        "-1"
+      ]
+    },
+    {
+      "id": "cli-resp2-type-missing",
+      "client": "redis-cli",
+      "args": [
+        "-2",
+        "TYPE",
+        "{p}missing"
+      ]
+    },
+    {
+      "id": "cli-resp3-get-missing",
+      "client": "redis-cli",
+      "args": [
+        "-3",
+        "GET",
+        "{p}missing"
+      ]
+    },
+    {
+      "id": "cli-resp3-mget-missing",
+      "client": "redis-cli",
+      "args": [
+        "-3",
+        "MGET",
+        "{p}a",
+        "{p}b"
+      ]
+    },
+    {
+      "id": "cli-resp3-hgetall-missing",
+      "client": "redis-cli",
+      "args": [
+        "-3",
+        "HGETALL",
+        "{p}hash"
+      ]
+    },
+    {
+      "id": "cli-resp3-zadd",
+      "client": "redis-cli",
+      "args": [
+        "-3",
+        "ZADD",
+        "{p}zs",
+        "1",
+        "member"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "id": "strings-set-get",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}k",
+          "v"
+        ],
+        [
+          "GET",
+          "{p}k"
+        ],
+        [
+          "STRLEN",
+          "{p}k"
+        ],
+        [
+          "EXISTS",
+          "{p}k"
+        ]
+      ]
+    },
+    {
+      "id": "strings-binary",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}kb",
+          {
+            "bytes_hex": "6100620d0aff"
+          }
+        ],
+        [
+          "GET",
+          "{p}kb"
+        ],
+        [
+          "STRLEN",
+          "{p}kb"
+        ]
+      ]
+    },
+    {
+      "id": "strings-append-range",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}k",
+          "hello"
+        ],
+        [
+          "APPEND",
+          "{p}k",
+          " world"
+        ],
+        [
+          "GETRANGE",
+          "{p}k",
+          "0",
+          "4"
+        ],
+        [
+          "GETRANGE",
+          "{p}k",
+          "-5",
+          "-1"
+        ],
+        [
+          "SETRANGE",
+          "{p}k",
+          "6",
+          "there"
+        ],
+        [
+          "GET",
+          "{p}k"
+        ]
+      ]
+    },
+    {
+      "id": "strings-mset-mget",
+      "family": "strings",
+      "commands": [
+        [
+          "MSET",
+          "{p}a",
+          "1",
+          "{p}b",
+          "2",
+          "{p}c",
+          "3"
+        ],
+        [
+          "MGET",
+          "{p}a",
+          "{p}b",
+          "{p}missing",
+          "{p}c"
+        ]
+      ]
+    },
+    {
+      "id": "strings-incr",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}n",
+          "41"
+        ],
+        [
+          "INCR",
+          "{p}n"
+        ],
+        [
+          "INCRBY",
+          "{p}n",
+          "8"
+        ],
+        [
+          "DECR",
+          "{p}n"
+        ],
+        [
+          "DECRBY",
+          "{p}n",
+          "5"
+        ],
+        [
+          "GET",
+          "{p}n"
+        ]
+      ]
+    },
+    {
+      "id": "strings-incrbyfloat",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}f",
+          "10.5"
+        ],
+        [
+          "INCRBYFLOAT",
+          "{p}f",
+          "0.1"
+        ],
+        [
+          "INCRBYFLOAT",
+          "{p}f",
+          "-5"
+        ],
+        [
+          "GET",
+          "{p}f"
+        ]
+      ]
+    },
+    {
+      "id": "strings-conditional-set",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}cx",
+          "first",
+          "NX"
+        ],
+        [
+          "SET",
+          "{p}cx",
+          "ignored",
+          "NX"
+        ],
+        [
+          "SET",
+          "{p}cx",
+          "second",
+          "XX"
+        ],
+        [
+          "GET",
+          "{p}cx"
+        ],
+        [
+          "SETNX",
+          "{p}cx",
+          "ignored"
+        ],
+        [
+          "GETSET",
+          "{p}cx",
+          "third"
+        ],
+        [
+          "GET",
+          "{p}cx"
+        ]
+      ]
+    },
+    {
+      "id": "strings-msetnx",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}present",
+          "1"
+        ],
+        [
+          "MSETNX",
+          "{p}m1",
+          "a",
+          "{p}present",
+          "b"
+        ],
+        [
+          "EXISTS",
+          "{p}m1"
+        ],
+        [
+          "MSETNX",
+          "{p}m2",
+          "a",
+          "{p}m3",
+          "b"
+        ],
+        [
+          "MGET",
+          "{p}m2",
+          "{p}m3"
+        ]
+      ]
+    },
+    {
+      "id": "strings-getdel-getex",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}gd",
+          "v"
+        ],
+        [
+          "GETDEL",
+          "{p}gd"
+        ],
+        [
+          "EXISTS",
+          "{p}gd"
+        ],
+        [
+          "SET",
+          "{p}ge",
+          "v"
+        ],
+        [
+          "GETEX",
+          "{p}ge",
+          "PERSIST"
+        ],
+        [
+          "TTL",
+          "{p}ge"
+        ],
+        [
+          "GET",
+          "{p}ge"
+        ]
+      ]
+    },
+    {
+      "id": "strings-setex-psetex",
+      "family": "strings",
+      "commands": [
+        [
+          "SETEX",
+          "{p}se",
+          "100",
+          "v"
+        ],
+        [
+          "TTL",
+          "{p}se"
+        ],
+        [
+          "PSETEX",
+          "{p}pse",
+          "100000",
+          "v"
+        ],
+        [
+          "PTTL",
+          "{p}pse"
+        ],
+        [
+          "GET",
+          "{p}se"
+        ],
+        [
+          "GET",
+          "{p}pse"
+        ]
+      ],
+      "ttl_indices": [
+        1,
+        3
+      ]
+    },
+    {
+      "id": "strings-set-keep-ttl",
+      "family": "strings",
+      "commands": [
+        [
+          "SET",
+          "{p}kt",
+          "v",
+          "PX",
+          "100000"
+        ],
+        [
+          "SET",
+          "{p}kt",
+          "v2",
+          "KEEPTTL"
+        ],
+        [
+          "PTTL",
+          "{p}kt"
+        ],
+        [
+          "GET",
+          "{p}kt"
+        ]
+      ],
+      "ttl_indices": [
+        2
+      ]
+    },
+    {
+      "id": "bitmaps-basic",
+      "family": "bitmaps",
+      "commands": [
+        [
+          "SETBIT",
+          "{p}b",
+          "7",
+          "1"
+        ],
+        [
+          "GETBIT",
+          "{p}b",
+          "7"
+        ],
+        [
+          "GETBIT",
+          "{p}b",
+          "6"
+        ],
+        [
+          "BITCOUNT",
+          "{p}b"
+        ],
+        [
+          "SETBIT",
+          "{p}b",
+          "0",
+          "1"
+        ],
+        [
+          "GET",
+          "{p}b"
+        ]
+      ]
+    },
+    {
+      "id": "bitmaps-bitop",
+      "family": "bitmaps",
+      "commands": [
+        [
+          "SET",
+          "{p}x",
+          {
+            "bytes_hex": "ff00"
+          }
+        ],
+        [
+          "SET",
+          "{p}y",
+          {
+            "bytes_hex": "0ff0"
+          }
+        ],
+        [
+          "BITOP",
+          "AND",
+          "{p}dst-and",
+          "{p}x",
+          "{p}y"
+        ],
+        [
+          "BITOP",
+          "OR",
+          "{p}dst-or",
+          "{p}x",
+          "{p}y"
+        ],
+        [
+          "BITOP",
+          "XOR",
+          "{p}dst-xor",
+          "{p}x",
+          "{p}y"
+        ],
+        [
+          "BITOP",
+          "NOT",
+          "{p}dst-not",
+          "{p}x"
+        ],
+        [
+          "GET",
+          "{p}dst-and"
+        ],
+        [
+          "GET",
+          "{p}dst-or"
+        ],
+        [
+          "GET",
+          "{p}dst-xor"
+        ],
+        [
+          "GET",
+          "{p}dst-not"
+        ]
+      ]
+    },
+    {
+      "id": "bitmaps-bitpos-bitcount-range",
+      "family": "bitmaps",
+      "commands": [
+        [
+          "SET",
+          "{p}p",
+          {
+            "bytes_hex": "ff00ff"
+          }
+        ],
+        [
+          "BITPOS",
+          "{p}p",
+          "0"
+        ],
+        [
+          "BITPOS",
+          "{p}p",
+          "1",
+          "0"
+        ],
+        [
+          "BITCOUNT",
+          "{p}p",
+          "0",
+          "0"
+        ],
+        [
+          "BITCOUNT",
+          "{p}p",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "bitmaps-bitfield",
+      "family": "bitmaps",
+      "commands": [
+        [
+          "BITFIELD",
+          "{p}bf",
+          "SET",
+          "u8",
+          "0",
+          "255",
+          "GET",
+          "u8",
+          "0",
+          "INCRBY",
+          "u8",
+          "0",
+          "10"
+        ],
+        [
+          "BITFIELD_RO",
+          "{p}bf",
+          "GET",
+          "u8",
+          "0"
+        ]
+      ]
+    },
+    {
+      "id": "lists-basic",
+      "family": "lists",
+      "commands": [
+        [
+          "RPUSH",
+          "{p}l",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "LRANGE",
+          "{p}l",
+          "0",
+          "-1"
+        ],
+        [
+          "LINDEX",
+          "{p}l",
+          "1"
+        ],
+        [
+          "LLEN",
+          "{p}l"
+        ],
+        [
+          "LSET",
+          "{p}l",
+          "0",
+          "z"
+        ],
+        [
+          "LINSERT",
+          "{p}l",
+          "BEFORE",
+          "b",
+          "y"
+        ],
+        [
+          "LREM",
+          "{p}l",
+          "0",
+          "y"
+        ],
+        [
+          "LTRIM",
+          "{p}l",
+          "0",
+          "1"
+        ],
+        [
+          "LRANGE",
+          "{p}l",
+          "0",
+          "-1"
+        ]
+      ]
+    },
+    {
+      "id": "lists-push-pop",
+      "family": "lists",
+      "commands": [
+        [
+          "LPUSH",
+          "{p}l",
+          "b",
+          "a"
+        ],
+        [
+          "RPUSH",
+          "{p}l",
+          "c"
+        ],
+        [
+          "LPOP",
+          "{p}l"
+        ],
+        [
+          "RPOP",
+          "{p}l"
+        ],
+        [
+          "LPUSHX",
+          "{p}l",
+          "x"
+        ],
+        [
+          "RPUSHX",
+          "{p}missing-list",
+          "x"
+        ],
+        [
+          "LLEN",
+          "{p}missing-list"
+        ]
+      ]
+    },
+    {
+      "id": "lists-lmove",
+      "family": "lists",
+      "commands": [
+        [
+          "RPUSH",
+          "{p}src",
+          "1",
+          "2",
+          "3"
+        ],
+        [
+          "LMOVE",
+          "{p}src",
+          "{p}dst",
+          "LEFT",
+          "RIGHT"
+        ],
+        [
+          "RPOPLPUSH",
+          "{p}src",
+          "{p}dst"
+        ],
+        [
+          "LRANGE",
+          "{p}src",
+          "0",
+          "-1"
+        ],
+        [
+          "LRANGE",
+          "{p}dst",
+          "0",
+          "-1"
+        ]
+      ]
+    },
+    {
+      "id": "sets-basic",
+      "family": "sets",
+      "commands": [
+        [
+          "SADD",
+          "{p}s",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "SCARD",
+          "{p}s"
+        ],
+        [
+          "SISMEMBER",
+          "{p}s",
+          "a"
+        ],
+        [
+          "SISMEMBER",
+          "{p}s",
+          "z"
+        ],
+        [
+          "SMISMEMBER",
+          "{p}s",
+          "a",
+          "z"
+        ],
+        [
+          "SREM",
+          "{p}s",
+          "b"
+        ],
+        [
+          "SMEMBERS",
+          "{p}s"
+        ]
+      ],
+      "sort_replies": [
+        6
+      ]
+    },
+    {
+      "id": "sets-algebra",
+      "family": "sets",
+      "commands": [
+        [
+          "SADD",
+          "{p}s1",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "SADD",
+          "{p}s2",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "SINTER",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SUNION",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SDIFF",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SINTERCARD",
+          "2",
+          "{p}s1",
+          "{p}s2"
+        ]
+      ],
+      "sort_replies": [
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "id": "sets-cardinality-redis-only",
+      "family": "sets",
+      "references": [
+        "redis"
+      ],
+      "commands": [
+        [
+          "SADD",
+          "{p}s1",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "SADD",
+          "{p}s2",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "SUNIONCARD",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SDIFFCARD",
+          "{p}s1",
+          "{p}s2"
+        ]
+      ]
+    },
+    {
+      "id": "sets-store",
+      "family": "sets",
+      "commands": [
+        [
+          "SADD",
+          "{p}s1",
+          "a",
+          "b"
+        ],
+        [
+          "SADD",
+          "{p}s2",
+          "b",
+          "c"
+        ],
+        [
+          "SINTERSTORE",
+          "{p}si",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SMEMBERS",
+          "{p}si"
+        ],
+        [
+          "SUNIONSTORE",
+          "{p}su",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SCARD",
+          "{p}su"
+        ],
+        [
+          "SDIFFSTORE",
+          "{p}sd",
+          "{p}s1",
+          "{p}s2"
+        ],
+        [
+          "SMEMBERS",
+          "{p}sd"
+        ]
+      ],
+      "sort_replies": [
+        3,
+        7
+      ]
+    },
+    {
+      "id": "sets-move",
+      "family": "sets",
+      "commands": [
+        [
+          "SADD",
+          "{p}m1",
+          "a"
+        ],
+        [
+          "SADD",
+          "{p}m2",
+          "b"
+        ],
+        [
+          "SMOVE",
+          "{p}m1",
+          "{p}m2",
+          "a"
+        ],
+        [
+          "SISMEMBER",
+          "{p}m1",
+          "a"
+        ],
+        [
+          "SISMEMBER",
+          "{p}m2",
+          "a"
+        ]
+      ]
+    },
+    {
+      "id": "hashes-basic",
+      "family": "hashes",
+      "commands": [
+        [
+          "HSET",
+          "{p}h",
+          "f1",
+          "v1",
+          "f2",
+          "v2"
+        ],
+        [
+          "HGET",
+          "{p}h",
+          "f1"
+        ],
+        [
+          "HMGET",
+          "{p}h",
+          "f1",
+          "missing"
+        ],
+        [
+          "HLEN",
+          "{p}h"
+        ],
+        [
+          "HEXISTS",
+          "{p}h",
+          "f2"
+        ],
+        [
+          "HSTRLEN",
+          "{p}h",
+          "f1"
+        ],
+        [
+          "HKEYS",
+          "{p}h"
+        ],
+        [
+          "HVALS",
+          "{p}h"
+        ],
+        [
+          "HDEL",
+          "{p}h",
+          "f1"
+        ],
+        [
+          "HEXISTS",
+          "{p}h",
+          "f1"
+        ]
+      ],
+      "sort_replies": [
+        6,
+        7
+      ]
+    },
+    {
+      "id": "hashes-hgetall",
+      "family": "hashes",
+      "commands": [
+        [
+          "HSET",
+          "{p}h",
+          "b",
+          "2",
+          "a",
+          "1"
+        ],
+        [
+          "HGETALL",
+          "{p}h"
+        ]
+      ],
+      "sort_pair_replies": [
+        1
+      ]
+    },
+    {
+      "id": "hashes-hsetnx-hincr",
+      "family": "hashes",
+      "commands": [
+        [
+          "HSETNX",
+          "{p}h",
+          "f",
+          "1"
+        ],
+        [
+          "HSETNX",
+          "{p}h",
+          "f",
+          "2"
+        ],
+        [
+          "HGET",
+          "{p}h",
+          "f"
+        ],
+        [
+          "HINCRBY",
+          "{p}h",
+          "f",
+          "4"
+        ],
+        [
+          "HINCRBYFLOAT",
+          "{p}h",
+          "f",
+          "0.5"
+        ],
+        [
+          "HGET",
+          "{p}h",
+          "f"
+        ]
+      ]
+    },
+    {
+      "id": "hashes-hrandfield",
+      "family": "hashes",
+      "commands": [
+        [
+          "HSET",
+          "{p}h",
+          "a",
+          "1",
+          "b",
+          "2",
+          "c",
+          "3"
+        ],
+        [
+          "HRANDFIELD",
+          "{p}h",
+          "3"
+        ],
+        [
+          "HRANDFIELD",
+          "{p}h",
+          "-6"
+        ],
+        [
+          "HRANDFIELD",
+          "{p}h",
+          "2",
+          "WITHVALUES"
+        ]
+      ],
+      "sort_replies": [
+        1,
+        2
+      ],
+      "sort_pair_replies": [
+        3
+      ],
+      "length_replies": [
+        2,
+        3
+      ]
+    },
+    {
+      "id": "hashes-scan",
+      "family": "hashes",
+      "commands": [
+        [
+          "HSET",
+          "{p}h",
+          "a",
+          "1",
+          "b",
+          "2"
+        ],
+        [
+          "HSCAN",
+          "{p}h",
+          "0",
+          "MATCH",
+          "a*"
+        ]
+      ],
+      "sort_tail_replies": [
+        1
+      ]
+    },
+    {
+      "id": "zsets-basic",
+      "family": "sorted-sets",
+      "commands": [
+        [
+          "ZADD",
+          "{p}z",
+          "1",
+          "a",
+          "2",
+          "b",
+          "3",
+          "c"
+        ],
+        [
+          "ZCARD",
+          "{p}z"
+        ],
+        [
+          "ZSCORE",
+          "{p}z",
+          "b"
+        ],
+        [
+          "ZRANK",
+          "{p}z",
+          "c"
+        ],
+        [
+          "ZREVRANK",
+          "{p}z",
+          "c"
+        ],
+        [
+          "ZINCRBY",
+          "{p}z",
+          "2",
+          "a"
+        ],
+        [
+          "ZRANGE",
+          "{p}z",
+          "0",
+          "-1",
+          "WITHSCORES"
+        ],
+        [
+          "ZREVRANGE",
+          "{p}z",
+          "0",
+          "-1"
+        ]
+      ]
+    },
+    {
+      "id": "zsets-ranges",
+      "family": "sorted-sets",
+      "commands": [
+        [
+          "ZADD",
+          "{p}z",
+          "1",
+          "a",
+          "2",
+          "b",
+          "3",
+          "c"
+        ],
+        [
+          "ZRANGEBYSCORE",
+          "{p}z",
+          "2",
+          "3"
+        ],
+        [
+          "ZREVRANGEBYSCORE",
+          "{p}z",
+          "3",
+          "1",
+          "LIMIT",
+          "0",
+          "2"
+        ],
+        [
+          "ZCOUNT",
+          "{p}z",
+          "1",
+          "2"
+        ],
+        [
+          "ZRANGEBYLEX",
+          "{p}z",
+          "-",
+          "+"
+        ],
+        [
+          "ZLEXCOUNT",
+          "{p}z",
+          "a",
+          "c"
+        ],
+        [
+          "ZREMRANGEBYRANK",
+          "{p}z",
+          "0",
+          "0"
+        ],
+        [
+          "ZRANGE",
+          "{p}z",
+          "0",
+          "-1"
+        ]
+      ]
+    },
+    {
+      "id": "zsets-pop-rand",
+      "family": "sorted-sets",
+      "commands": [
+        [
+          "ZADD",
+          "{p}z",
+          "1",
+          "a",
+          "2",
+          "b",
+          "3",
+          "c"
+        ],
+        [
+          "ZPOPMIN",
+          "{p}z"
+        ],
+        [
+          "ZPOPMAX",
+          "{p}z"
+        ],
+        [
+          "ZADD",
+          "{p}z2",
+          "1",
+          "a",
+          "2",
+          "b"
+        ],
+        [
+          "ZRANDMEMBER",
+          "{p}z2",
+          "2"
+        ],
+        [
+          "ZMPOP",
+          "1",
+          "{p}z",
+          "MIN"
+        ]
+      ],
+      "sort_replies": [
+        4
+      ]
+    },
+    {
+      "id": "zsets-store",
+      "family": "sorted-sets",
+      "commands": [
+        [
+          "ZADD",
+          "{p}z1",
+          "1",
+          "a",
+          "2",
+          "b"
+        ],
+        [
+          "ZADD",
+          "{p}z2",
+          "3",
+          "b",
+          "4",
+          "c"
+        ],
+        [
+          "ZUNIONSTORE",
+          "{p}zu",
+          "2",
+          "{p}z1",
+          "{p}z2"
+        ],
+        [
+          "ZRANGE",
+          "{p}zu",
+          "0",
+          "-1",
+          "WITHSCORES"
+        ],
+        [
+          "ZINTERSTORE",
+          "{p}zi",
+          "2",
+          "{p}z1",
+          "{p}z2"
+        ],
+        [
+          "ZRANGE",
+          "{p}zi",
+          "0",
+          "-1",
+          "WITHSCORES"
+        ],
+        [
+          "ZDIFFSTORE",
+          "{p}zd",
+          "2",
+          "{p}z1",
+          "{p}z2"
+        ],
+        [
+          "ZRANGE",
+          "{p}zd",
+          "0",
+          "-1",
+          "WITHSCORES"
+        ],
+        [
+          "ZUNION",
+          "2",
+          "{p}z1",
+          "{p}z2",
+          "WITHSCORES"
+        ],
+        [
+          "ZINTERCARD",
+          "2",
+          "{p}z1",
+          "{p}z2"
+        ]
+      ]
+    },
+    {
+      "id": "zsets-rangebylex",
+      "family": "sorted-sets",
+      "commands": [
+        [
+          "ZADD",
+          "{p}z",
+          "0",
+          "a",
+          "0",
+          "b",
+          "0",
+          "c",
+          "0",
+          "d"
+        ],
+        [
+          "ZRANGEBYLEX",
+          "{p}z",
+          "[b",
+          "(d"
+        ],
+        [
+          "ZREVRANGEBYLEX",
+          "{p}z",
+          "[d",
+          "[b"
+        ],
+        [
+          "ZREMRANGEBYLEX",
+          "{p}z",
+          "[a",
+          "[b"
+        ],
+        [
+          "ZRANGE",
+          "{p}z",
+          "0",
+          "-1"
+        ]
+      ]
+    },
+    {
+      "id": "geo-basic",
+      "family": "geospatial",
+      "commands": [
+        [
+          "GEOADD",
+          "{p}g",
+          "13.361389",
+          "38.115556",
+          "palermo",
+          "15.087269",
+          "37.502669",
+          "catania"
+        ],
+        [
+          "GEOPOS",
+          "{p}g",
+          "palermo",
+          "catania"
+        ],
+        [
+          "GEODIST",
+          "{p}g",
+          "palermo",
+          "catania",
+          "km"
+        ],
+        [
+          "GEOHASH",
+          "{p}g",
+          "palermo"
+        ],
+        [
+          "GEOSEARCH",
+          "{p}g",
+          "FROMLONLAT",
+          "15",
+          "37",
+          "BYRADIUS",
+          "200",
+          "km",
+          "ASC"
+        ]
+      ],
+      "float_replies": [
+        1
+      ]
+    },
+    {
+      "id": "geo-store",
+      "family": "geospatial",
+      "commands": [
+        [
+          "GEOADD",
+          "{p}g",
+          "13.361389",
+          "38.115556",
+          "palermo",
+          "15.087269",
+          "37.502669",
+          "catania"
+        ],
+        [
+          "GEOSEARCHSTORE",
+          "{p}gdst",
+          "{p}g",
+          "FROMLONLAT",
+          "15",
+          "37",
+          "BYRADIUS",
+          "200",
+          "km",
+          "ASC"
+        ],
+        [
+          "ZRANGE",
+          "{p}gdst",
+          "0",
+          "-1"
+        ],
+        [
+          "GEORADIUS",
+          "{p}g",
+          "15",
+          "37",
+          "200",
+          "km",
+          "ASC"
+        ],
+        [
+          "GEORADIUS_RO",
+          "{p}g",
+          "15",
+          "37",
+          "200",
+          "km",
+          "ASC"
+        ]
+      ]
+    },
+    {
+      "id": "hll",
+      "family": "hyperloglog",
+      "commands": [
+        [
+          "PFADD",
+          "{p}h",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "PFCOUNT",
+          "{p}h"
+        ],
+        [
+          "PFADD",
+          "{p}h2",
+          "c",
+          "d"
+        ],
+        [
+          "PFMERGE",
+          "{p}hm",
+          "{p}h",
+          "{p}h2"
+        ],
+        [
+          "PFCOUNT",
+          "{p}hm"
+        ]
+      ]
+    },
+    {
+      "id": "streams-basic",
+      "family": "streams",
+      "commands": [
+        [
+          "XADD",
+          "{p}st",
+          "1-1",
+          "f",
+          "v1"
+        ],
+        [
+          "XADD",
+          "{p}st",
+          "2-2",
+          "f",
+          "v2"
+        ],
+        [
+          "XLEN",
+          "{p}st"
+        ],
+        [
+          "XRANGE",
+          "{p}st",
+          "-",
+          "+"
+        ],
+        [
+          "XREVRANGE",
+          "{p}st",
+          "+",
+          "-"
+        ],
+        [
+          "XDEL",
+          "{p}st",
+          "1-1"
+        ],
+        [
+          "XLEN",
+          "{p}st"
+        ]
+      ]
+    },
+    {
+      "id": "streams-trim",
+      "family": "streams",
+      "commands": [
+        [
+          "XADD",
+          "{p}st",
+          "1-1",
+          "f",
+          "1"
+        ],
+        [
+          "XADD",
+          "{p}st",
+          "2-2",
+          "f",
+          "2"
+        ],
+        [
+          "XADD",
+          "{p}st",
+          "3-3",
+          "f",
+          "3"
+        ],
+        [
+          "XTRIM",
+          "{p}st",
+          "MAXLEN",
+          "2"
+        ],
+        [
+          "XLEN",
+          "{p}st"
+        ],
+        [
+          "XRANGE",
+          "{p}st",
+          "-",
+          "+"
+        ]
+      ]
+    },
+    {
+      "id": "streams-group",
+      "family": "streams",
+      "commands": [
+        [
+          "XADD",
+          "{p}st",
+          "1-1",
+          "f",
+          "1"
+        ],
+        [
+          "XADD",
+          "{p}st",
+          "2-2",
+          "f",
+          "2"
+        ],
+        [
+          "XGROUP",
+          "CREATE",
+          "{p}st",
+          "{p}grp",
+          "0"
+        ],
+        [
+          "XREADGROUP",
+          "GROUP",
+          "{p}grp",
+          "consumer",
+          "COUNT",
+          "1",
+          "STREAMS",
+          "{p}st",
+          ">"
+        ],
+        [
+          "XPENDING",
+          "{p}st",
+          "{p}grp"
+        ],
+        [
+          "XACK",
+          "{p}st",
+          "{p}grp",
+          "1-1"
+        ],
+        [
+          "XPENDING",
+          "{p}st",
+          "{p}grp"
+        ]
+      ]
+    },
+    {
+      "id": "streams-info",
+      "family": "streams",
+      "commands": [
+        [
+          "XADD",
+          "{p}st",
+          "1-1",
+          "f",
+          "1"
+        ],
+        [
+          "XGROUP",
+          "CREATE",
+          "{p}st",
+          "{p}grp",
+          "0"
+        ],
+        [
+          "XINFO",
+          "STREAM",
+          "{p}st"
+        ],
+        [
+          "XINFO",
+          "GROUPS",
+          "{p}st"
+        ]
+      ],
+      "select_fields": [
+        {
+          "index": 2,
+          "fields": [
+            "length",
+            "last-generated-id",
+            "max-deleted-entry-id",
+            "entries-added",
+            "groups",
+            "first-entry",
+            "last-entry"
+          ]
+        },
+        {
+          "index": 3,
+          "fields": [
+            "name",
+            "consumers",
+            "pending",
+            "last-delivered-id",
+            "entries-read",
+            "lag"
+          ],
+          "each": true
+        }
+      ]
+    },
+    {
+      "id": "transactions-multi",
+      "family": "transactions",
+      "commands": [
+        [
+          "MULTI"
+        ],
+        [
+          "SET",
+          "{p}tx",
+          "v"
+        ],
+        [
+          "INCR",
+          "{p}tx"
+        ],
+        [
+          "GET",
+          "{p}tx"
+        ],
+        [
+          "EXEC"
+        ],
+        [
+          "GET",
+          "{p}tx"
+        ]
+      ]
+    },
+    {
+      "id": "transactions-discard",
+      "family": "transactions",
+      "commands": [
+        [
+          "MULTI"
+        ],
+        [
+          "SET",
+          "{p}dx",
+          "v"
+        ],
+        [
+          "DISCARD"
+        ],
+        [
+          "EXISTS",
+          "{p}dx"
+        ],
+        [
+          "MULTI"
+        ],
+        [
+          "GET",
+          "{p}missing"
+        ],
+        [
+          "EXEC"
+        ]
+      ]
+    },
+    {
+      "id": "keyspace-basic",
+      "family": "keyspace",
+      "commands": [
+        [
+          "SET",
+          "{p}a",
+          "1"
+        ],
+        [
+          "EXISTS",
+          "{p}a",
+          "{p}missing",
+          "{p}a"
+        ],
+        [
+          "TYPE",
+          "{p}a"
+        ],
+        [
+          "RENAME",
+          "{p}a",
+          "{p}b"
+        ],
+        [
+          "GET",
+          "{p}b"
+        ],
+        [
+          "RENAMENX",
+          "{p}b",
+          "{p}c"
+        ],
+        [
+          "COPY",
+          "{p}c",
+          "{p}d"
+        ],
+        [
+          "GET",
+          "{p}d"
+        ],
+        [
+          "TOUCH",
+          "{p}d"
+        ],
+        [
+          "UNLINK",
+          "{p}d"
+        ],
+        [
+          "EXISTS",
+          "{p}d"
+        ]
+      ]
+    },
+    {
+      "id": "keyspace-expiry",
+      "family": "keyspace",
+      "commands": [
+        [
+          "SET",
+          "{p}e",
+          "v"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "100"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "PERSIST",
+          "{p}e"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIREAT",
+          "{p}e",
+          "99999999999"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "PEXPIRE",
+          "{p}e",
+          "100000"
+        ],
+        [
+          "PTTL",
+          "{p}e"
+        ]
+      ],
+      "ttl_indices": [
+        2,
+        4,
+        6,
+        8
+      ]
+    },
+    {
+      "id": "keyspace-expiry-options",
+      "family": "keyspace",
+      "commands": [
+        [
+          "SET",
+          "{p}e",
+          "v"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "100",
+          "NX"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "200",
+          "NX"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "200",
+          "XX"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "100",
+          "GT"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "1000",
+          "GT"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "1000",
+          "LT"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "EXPIRE",
+          "{p}e",
+          "100",
+          "LT"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ],
+        [
+          "PERSIST",
+          "{p}e"
+        ],
+        [
+          "TTL",
+          "{p}e"
+        ]
+      ],
+      "ttl_indices": [
+        3,
+        5,
+        7,
+        9,
+        11,
+        13,
+        15
+      ]
+    },
+    {
+      "id": "keyspace-keys",
+      "family": "keyspace",
+      "commands": [
+        [
+          "MSET",
+          "{p}ka",
+          "1",
+          "{p}kb",
+          "2",
+          "{p}other",
+          "3"
+        ],
+        [
+          "KEYS",
+          "{p}k*"
+        ]
+      ],
+      "sort_replies": [
+        1
+      ]
+    },
+    {
+      "id": "keyspace-scan",
+      "family": "keyspace",
+      "commands": [
+        [
+          "MSET",
+          "{p}sa",
+          "1",
+          "{p}sb",
+          "2"
+        ],
+        [
+          "SCAN",
+          "0",
+          "MATCH",
+          "{p}s*",
+          "COUNT",
+          "100"
+        ]
+      ],
+      "sort_tail_replies": [
+        1
+      ]
+    },
+    {
+      "id": "sort-basic",
+      "family": "sort",
+      "commands": [
+        [
+          "RPUSH",
+          "{p}l",
+          "3",
+          "1",
+          "2"
+        ],
+        [
+          "SORT",
+          "{p}l"
+        ],
+        [
+          "SORT",
+          "{p}l",
+          "DESC",
+          "LIMIT",
+          "0",
+          "2"
+        ],
+        [
+          "SORT_RO",
+          "{p}l"
+        ],
+        [
+          "SADD",
+          "{p}s",
+          "c",
+          "a",
+          "b"
+        ],
+        [
+          "SORT",
+          "{p}s",
+          "ALPHA"
+        ]
+      ]
+    },
+    {
+      "id": "sort-by-get",
+      "family": "sort",
+      "commands": [
+        [
+          "RPUSH",
+          "{p}l",
+          "1",
+          "2"
+        ],
+        [
+          "SET",
+          "{p}w_1",
+          "one"
+        ],
+        [
+          "SET",
+          "{p}w_2",
+          "two"
+        ],
+        [
+          "SORT",
+          "{p}l",
+          "BY",
+          "{p}w_*",
+          "GET",
+          "{p}w_*"
+        ],
+        [
+          "SORT",
+          "{p}l",
+          "BY",
+          "nosort",
+          "GET",
+          "#"
+        ]
+      ]
+    },
+    {
+      "id": "lcs",
+      "family": "strings",
+      "commands": [
+        [
+          "MSET",
+          "{p}k1",
+          "ohmytext",
+          "{p}k2",
+          "mynewtext"
+        ],
+        [
+          "LCS",
+          "{p}k1",
+          "{p}k2"
+        ],
+        [
+          "LCS",
+          "{p}k1",
+          "{p}k2",
+          "LEN"
+        ],
+        [
+          "LCS",
+          "{p}k1",
+          "{p}k2",
+          "IDX",
+          "MINMATCHLEN",
+          "4"
+        ]
+      ]
+    },
+    {
+      "id": "wrongtype-error",
+      "family": "errors",
+      "commands": [
+        [
+          "SET",
+          "{p}w",
+          "v"
+        ],
+        [
+          "LPUSH",
+          "{p}w",
+          "x"
+        ],
+        [
+          "GET",
+          "{p}w"
+        ]
+      ]
+    },
+    {
+      "id": "arity-error",
+      "family": "errors",
+      "commands": [
+        [
+          "GET"
+        ],
+        [
+          "SET",
+          "{p}k"
+        ]
+      ]
+    },
+    {
+      "id": "syntax-error",
+      "family": "errors",
+      "commands": [
+        [
+          "SET",
+          "{p}k",
+          "v",
+          "NOSUCHOPTION"
+        ],
+        [
+          "EXISTS",
+          "{p}k"
+        ]
+      ]
+    },
+    {
+      "id": "integer-error",
+      "family": "errors",
+      "commands": [
+        [
+          "SET",
+          "{p}n",
+          "notanumber"
+        ],
+        [
+          "INCR",
+          "{p}n"
+        ],
+        [
+          "GET",
+          "{p}n"
+        ]
+      ]
+    },
+    {
+      "id": "unknown-command",
+      "family": "errors",
+      "commands": [
+        [
+          "NOSUCHCOMMAND"
+        ],
+        [
+          "PING"
+        ]
+      ]
+    },
+    {
+      "id": "ping-echo",
+      "family": "connection",
+      "commands": [
+        [
+          "PING"
+        ],
+        [
+          "PING",
+          "payload"
+        ],
+        [
+          "ECHO",
+          {
+            "bytes_hex": "00ff"
+          }
+        ],
+        [
+          "SELECT",
+          "0"
+        ],
+        [
+          "QUIT"
+        ]
+      ]
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "scripting-execution",
+      "gap": "C2",
+      "reason": "No Lua runtime under the dependency policy; every execution entry point must fail closed instead of silently succeeding.",
+      "commands": [
+        {
+          "argv": [
+            "EVAL",
+            "return 1",
+            "0"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "EVALSHA",
+            "0000000000000000000000000000000000000000",
+            "0"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        },
+        {
+          "argv": [
+            "SCRIPT",
+            "LOAD",
+            "return 1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "FCALL",
+            "f",
+            "0"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        },
+        {
+          "argv": [
+            "FUNCTION",
+            "LOAD",
+            "#!lua name=mylib\nredis.register_function('f', function() return 1 end)"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "scripting-empty-registry",
+      "gap": "C2",
+      "reason": "Flushing an empty script/function registry is the only accepted administrative form; it is a documented no-op, not execution support.",
+      "commands": [
+        {
+          "argv": [
+            "SCRIPT",
+            "FLUSH"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "FUNCTION",
+            "FLUSH"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "modules",
+      "gap": "C3",
+      "reason": "Loadable modules are excluded; MODULE LOAD must fail closed. The native controls also refuse module loading because the module command is disabled in the harness configuration.",
+      "commands": [
+        {
+          "argv": [
+            "MODULE",
+            "LOAD",
+            "/tmp/does-not-exist.so"
+          ],
+          "candidate": "error",
+          "reference": "any"
+        }
+      ]
+    },
+    {
+      "id": "multiple-databases",
+      "gap": "C4",
+      "reason": "Database 0 is the only keyspace; SELECT, SWAPDB and MOVE to another database must be rejected without mutating data.",
+      "commands": [
+        {
+          "argv": [
+            "SET",
+            "{p}mv",
+            "1"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "MOVE",
+            "{p}mv",
+            "1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "GET",
+            "{p}mv"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "SELECT",
+            "1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "SWAPDB",
+            "0",
+            "1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "copy-to-other-database",
+      "gap": "C4",
+      "reason": "COPY DB n with n != 0 must be rejected without creating the destination key.",
+      "commands": [
+        {
+          "argv": [
+            "SET",
+            "{p}src",
+            "1"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "COPY",
+            "{p}src",
+            "{p}copy",
+            "DB",
+            "1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "EXISTS",
+            "{p}copy"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "rdb-persistence",
+      "gap": "C5",
+      "reason": "RDB snapshots are excluded; the private append-only journal is the only persistence mechanism.",
+      "commands": [
+        {
+          "argv": [
+            "SAVE"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "BGSAVE"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "serialization",
+      "gap": "D1",
+      "reason": "No interoperable DUMP/RESTORE/MIGRATE payload exists; these must fail closed rather than emit or accept a private blob.",
+      "commands": [
+        {
+          "argv": [
+            "SET",
+            "{p}ser",
+            "1"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "DUMP",
+            "{p}ser"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "RESTORE",
+            "{p}restored",
+            "0",
+            "payload"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        },
+        {
+          "argv": [
+            "MIGRATE",
+            "127.0.0.1",
+            "1",
+            "{p}ser",
+            "0",
+            "100"
+          ],
+          "candidate": "error",
+          "reference": "any"
+        }
+      ]
+    },
+    {
+      "id": "replication-and-failover",
+      "gap": "A1",
+      "reason": "Replication and failover are excluded; topology commands must fail closed. The legacy SLAVEOF NO ONE no-op is declared in commands.declared_noops.",
+      "commands": [
+        {
+          "argv": [
+            "REPLICAOF",
+            "127.0.0.1",
+            "1"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "FAILOVER"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        }
+      ]
+    },
+    {
+      "id": "client-tracking",
+      "gap": "C6",
+      "reason": "Client-side caching invalidation is excluded.",
+      "commands": [
+        {
+          "argv": [
+            "CLIENT",
+            "TRACKING",
+            "ON"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        }
+      ]
+    },
+    {
+      "id": "idle-and-frequency-stats",
+      "gap": "O2",
+      "reason": "Idle time and LFU frequency are not tracked; the profile excludes them instead of fabricating values.",
+      "commands": [
+        {
+          "argv": [
+            "SET",
+            "{p}obj",
+            "1"
+          ],
+          "candidate": "ok",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "OBJECT",
+            "IDLETIME",
+            "{p}obj"
+          ],
+          "candidate": "error",
+          "reference": "success"
+        },
+        {
+          "argv": [
+            "OBJECT",
+            "FREQ",
+            "{p}obj"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        }
+      ]
+    },
+    {
+      "id": "latency-graph",
+      "gap": "C5",
+      "reason": "LATENCY GRAPH is excluded; LATENCY HISTORY is the supported diagnostic.",
+      "commands": [
+        {
+          "argv": [
+            "LATENCY",
+            "GRAPH",
+            "get"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        }
+      ]
+    },
+    {
+      "id": "config-rewrite",
+      "gap": "C13",
+      "reason": "Startup configuration is read-only; there is no writable redis.conf language.",
+      "commands": [
+        {
+          "argv": [
+            "CONFIG",
+            "REWRITE"
+          ],
+          "candidate": "error",
+          "reference": "error"
+        }
+      ]
+    }
+  ],
+  "declared_row_divergences": [
+    {
+      "id": "xpending-consumer-count-type",
+      "row": "streams-group",
+      "references": [
+        "redis",
+        "valkey"
+      ],
+      "candidate_sha256": "4953881c059a7d2496dfe504157ba71970b21252e5f78484f955ea7eab07fcf6",
+      "reference_sha256": "9e25313966ac94c6438d9e87d7da5c16e84baeff22d61d83bd2ca9762953d899",
+      "reason": "XPENDING reports a per-consumer pending count as an integer and an empty pending summary as an empty array; both pinned references use a bulk string and a null array. Frozen so any change is reviewed rather than silently accepted."
+    },
+    {
+      "id": "xinfo-entries-read-zero",
+      "row": "streams-info",
+      "references": [
+        "redis",
+        "valkey"
+      ],
+      "candidate_sha256": "803160fbab3145dc08703f05e9a01ce234fc99fa5a91f166ae0a9767b2892f5d",
+      "reference_sha256": "75919e4c373da6e7a6b8c4c25e07b6aa0ca6fecc725bcade732ad43bec02d642",
+      "reason": "For a consumer group that has not read, XINFO GROUPS reports entries-read as 0; both pinned references report a null bulk. Frozen so the exact public-field difference stays visible."
+    },
+    {
+      "id": "unknown-command-text-redis",
+      "row": "unknown-command",
+      "references": [
+        "redis"
+      ],
+      "candidate_sha256": "b263fedb17d3dfddd23428854139e3550784f3c19660ad61bd9d18055a397e26",
+      "reference_sha256": "a9b8116831bd69d0c653bf2ce30fef491e86f1b5252d877dcf566430b569c4d4",
+      "reason": "An unknown command returns the bounded 'ERR unknown command' text without echoing client-supplied bytes; Redis 8.10.2 echoes the command name. Frozen verbatim."
+    },
+    {
+      "id": "unknown-command-text-valkey",
+      "row": "unknown-command",
+      "references": [
+        "valkey"
+      ],
+      "candidate_sha256": "b263fedb17d3dfddd23428854139e3550784f3c19660ad61bd9d18055a397e26",
+      "reference_sha256": "7d5b2987fc63f5b815a425e7d012a283893620fcdc4c13ba5c6a9c9ede6987f6",
+      "reason": "An unknown command returns the bounded 'ERR unknown command' text without echoing client-supplied bytes; Valkey 9.1.2 echoes the command name and leading arguments. Frozen verbatim."
+    }
+  ]
+}

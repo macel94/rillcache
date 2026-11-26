@@ -100,6 +100,57 @@ failed candidate unchanged to seek a preferred outcome. This is an opt-in hosted
 study; existing required workflows remain unchanged and no differential pass is
 claimed until it executes on the exact candidate.
 
+## Declared compatibility profile matrix
+
+`ci/upstream/profile-v1.json` is the versioned, machine-readable
+[production compatibility profile](production-profile.md) (profile
+`rillcache-standalone-0.1`, version 1). It declares the pinned reference
+versions, deployment topology, supported command rows, executable exclusions,
+client matrix and declared divergences. `scripts/upstream/profile_matrix.py`
+executes it.
+
+The `Declared compatibility profile matrix` job runs on every PR after the build
+job, consumes the same pinned bundle as the Tcl contexts, and the six required Tcl
+checks depend on it as a declared auxiliary dependency. A failed matrix therefore
+blocks the required contexts instead of reporting a green compatibility subset.
+
+Every declared row executes on the candidate and on both pinned native
+references, and every exclusion executes on a freshly started pair so topology or
+persistence fixtures cannot leak between checks. `result.json` and `summary.md`
+record per-row pass/fail with the exact candidate and reference replies for any
+difference, the candidate sha256/head, both reference versions and binary
+sha256 values, the command-surface comparison and every exclusion outcome.
+Artifacts upload on failure.
+
+The comparison is exact except for the normalizations the manifest declares per
+row: a live TTL within its bound, explicitly named non-deterministic ordering
+(set members, random members, cursor tails), reply shape for random selections,
+geo coordinate values at 1e-6 instead of text formatting, and implementation
+metadata fields excluded from `XINFO` replies. Reviewed differences that cannot be
+normalized are frozen verbatim: the manifest stores the candidate and reference
+reply sha256 for each declared row divergence, the runner keeps the exact payloads
+in `result.json`, and any drift fails the job. The current frozen divergences are
+the XPENDING consumer-count and empty-summary reply types, `XINFO GROUPS
+entries-read` reporting `0` where both references report a null, and the bounded
+`ERR unknown command` text that does not echo client-supplied bytes.
+
+The command-surface row compares every `COMMAND LIST` name against both
+references by presence and arity. Reference-only commands are counted, not
+required; only candidate commands absent from a reference, arity mismatches, and
+undocumented differences fail. Six divergences are declared: the `PFDEBUG` arity
+form and `DIGEST`, `DELIFEQ`, `DELEX`, `SDIFFCARD`, `SUNIONCARD`, which are
+Redis-only or candidate extensions.
+
+Validate the manifest offline without building or starting a server:
+
+```sh
+python3 scripts/upstream/profile_matrix.py --check
+```
+
+A green matrix is per-row evidence for the exact candidate head. It is not a
+compatibility approval, support window, language-client commitment or release
+acceptance, and it does not close the remaining P0 items.
+
 ## Compatibility contract and exclusions
 
 The six required reference/row contexts run the original upstream Tcl files
