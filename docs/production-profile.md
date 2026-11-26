@@ -134,7 +134,13 @@ a command returning a generic error:
   [migration and interchange](#migration-and-interchange), not interchange
   formats.
 - Replication, Sentinel, cluster routing, failover and multi-node topologies
-  (A1–A5).
+  (A1–A5). **Cluster clients are explicitly excluded:** every `CLUSTER`
+  subcommand except `HELP` returns `-ERR This instance has cluster support
+  disabled`, no slot map exists, no `MOVED`/`ASK` redirect is ever issued, no
+  `CROSSSLOT` rejection exists for multi-key commands, braces in keys are
+  ordinary bytes rather than hash tags, and sharded Pub/Sub stays inside this
+  single process. Clients that need slot discovery, redirects, topology refresh
+  or cross-node routing cannot operate against this profile.
 - `CLIENT TRACKING`/client-side caching, `OBJECT IDLETIME`/`FREQ`, full RESP3
   attributes/push tracking and `LATENCY GRAPH` (C5, C6, O2, O3). `LATENCY
   HISTOGRAM` exists only as the documented bounded 32-bucket approximation.

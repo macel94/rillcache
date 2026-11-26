@@ -575,17 +575,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested with packet loss, partitions, stale configuration,
   flapping nodes, leader loss, promotion and reconnect; RPO/RTO are stated.
 
-- [ ] **A3. Cluster mode is missing.** [P0]
-  `CLUSTER` is disabled; there are no 16,384 slots, hash tags, `MOVED`/`ASK`
-  redirects, migration/importing state, cluster bus or cross-slot rejection.
-  Sharded Pub/Sub has no cluster routing. A native TCP test verifies explicit
-  rejection of the `SHARDS`, `SLOTS`, and `NODES` topology probes without
-  changing local data or advertising a replica.
-  **Closes when:** slot mapping, redirects, migration, cross-slot atomicity,
-  topology discovery, partition/rejoin and mixed-version rolling upgrade pass a
-  cluster corpus, or the profile explicitly excludes cluster clients.
-
-- [ ] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
+- [x] **A3. Cluster mode is missing.** [P0]
+  **Complete (2026-11-26) by the criterion's exclusion branch: the profile
+  explicitly excludes cluster clients.** There are no 16,384 slots, hash tags,
+  `MOVED`/`ASK` redirects, migration/importing state, cluster bus or cross-slot
+  rejection, and sharded Pub/Sub has no cluster routing. The profile and
+  compatibility boundary now state that cluster clients are excluded and why.
+  Evidence: `tests/boundaries.rs`
+  `cluster_surface_is_disabled_and_hash_tags_are_literal` runs in default,
+  fixed-one and four-worker modes, requires `-ERR This instance has cluster
+  support disabled` for `INFO`, `MYID`, `SLOTS`, `SHARDS`, `NODES`, `KEYSLOT`,
+  `COUNTKEYSINSLOT`, `GETKEYSINSLOT`, `ADDSLOTS`, `DELSLOTS`, `SETSLOT`,
+  `RESET`, `FAILOVER` and `REPLICATE`, keeps `CLUSTER HELP` explanatory and the
+  bare command an arity error, and proves `MGET` over different hash tags
+  returns both local values with no `CROSSSLOT`, `MOVED` or `ASK`. This is an
+  explicit exclusion, not cluster support, and does not imply topology discovery,
+  partition handling or rolling upgrades (A4).- [ ] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
   There is no supported version-skew matrix, on-disk format migration policy,
   downgrade procedure or canary/rollback evidence. The package is still `0.1.0`.
   **Closes when:** the profile defines supported upgrade paths, format
