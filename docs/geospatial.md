@@ -24,12 +24,16 @@ longitude is `-180..180`.
 - `GEODIST key member1 member2 [M|KM|FT|MI]` returns the great-circle distance in
   the requested unit (metres by default) with exactly four fractional digits, or
   null if either member is missing. Units are case-insensitive.
-- `GEOSEARCH key (FROMMEMBER member | FROMLONLAT longitude latitude)
-  (BYRADIUS radius unit | BYBOX width height unit)
+- `GEOSEARCH key ((FROMMEMBER member | FROMLONLAT longitude latitude)
+  (BYRADIUS radius unit | BYBOX width height unit) | BYPOLYGON vertex-count
+  longitude latitude ...)
   [ASC|DESC] [COUNT count [ANY]] [WITHCOORD] [WITHDIST] [WITHHASH]` returns
-  matching members. Exactly one origin and one shape are required. Radius/box
-  dimensions must be non-negative; `COUNT` must be positive and `ANY` requires
-  `COUNT`. `COUNT` without an order implies ascending distance. `WITHDIST`
+  matching members. Radius/box searches require one origin and one shape;
+  polygon searches take at least three coordinate pairs and reject an origin.
+  Polygon membership uses the pinned Valkey ray-casting rule in longitude/latitude
+  space; its spherical Cartesian vertex centroid supplies the distance/sort origin.
+  Radius/box dimensions must be non-negative; `COUNT` must be positive and `ANY`
+  requires `COUNT`. `COUNT` without an order implies ascending distance. `WITHDIST`
   reports the distance in the search unit, `WITHHASH` the stored 52-bit score and
   `WITHCOORD` the decoded `[longitude, latitude]` pair.
 - `GEORADIUS key longitude latitude radius unit [options]` and
@@ -47,15 +51,20 @@ longitude is `-180..180`.
   `STOREDIST` stores the distance in the requested unit instead of the geohash
   score. `WITHCOORD`/`WITHDIST`/`WITHHASH` are rejected for the store variant.
 - `FROMMEMBER` on an existing source with a missing or non-decodable member
-  returns `could not decode requested zset member`. A missing source yields an
+  returns the selected vendor's pinned error wording. A missing source yields an
   empty reply, or deletes the store destination and returns zero.
 
-Searches scan the source sorted set linearly and apply the exact Redis haversine
-formula (`EARTH_RADIUS_IN_METERS = 6372797.560856`) and rectangle checks. This
-avoids nine-neighbour geohash traversal and keeps memory bounded by the existing
-one-million-element/payload limits, at the cost of O(N) work per search. Results
-without `ASC`/`DESC` are returned in deterministic score/member order, which is a
-stricter ordering than Redis promises.
+Searches derive the same center-plus-neighbor geohash cells used by the pinned
+servers, then scan the source's bounded sorted-set items in cell-prefix order.
+The implementation sorts a bounded list of source references by score/member, then
+scans up to nine score ranges; without a native skiplist range index, searches are
+O(N log N) in the worst case with O(N) temporary references, bounded by the
+existing one-million-element/payload limits. It applies the exact Redis haversine formula
+(`EARTH_RADIUS_IN_METERS = 6372797.560856`), rectangle checks, or polygon
+ray-casting. Unsorted results and `COUNT ... ANY` retain geohash-cell traversal
+order, with members within each cell ordered by score/member; sorted searches order
+by distance. Native-first `unit/geo` is the
+compatibility gate; a source change alone is not a compatibility claim.
 
 `GEOADD` changes publish a `zadd` keyspace event. `GEOSEARCHSTORE` publishes
 `geosearchstore` when it writes a destination and `del` when an empty result
@@ -65,9 +74,9 @@ no separate destination event, matching standalone Redis.
 ## Limits
 
 This is not full geospatial compatibility. The legacy `GEORADIUS` family is
-implemented as an adapter over the same linear search. The implementation does not
-use a native geohash neighbour index, so search complexity is linear in the source
-set.
+implemented as an adapter over the same bounded geohash-cell traversal. The
+candidate does not have the native sorted-set range index, so each search sorts
+source references and scans up to nine ranges (O(N log N) worst-case).
 Scores written by ordinary `ZADD` are decoded best-effort: non-finite or negative
 scores are treated as non-geographic, while arbitrary finite scores may map to
 clamped coordinates. Geo keys are still sorted sets, so `ZREM`/`ZADD` can change

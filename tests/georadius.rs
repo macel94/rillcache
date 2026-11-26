@@ -130,6 +130,22 @@ fn legacy_georadius_aliases_match_search_semantics_in_all_modes() {
         let server = start(workers);
         let mut stream = connect(&server);
         seed(&mut stream);
+        command(
+            &mut stream,
+            &[
+                b"GEOADD",
+                b"users",
+                b"-47.271613776683807",
+                b"-54.534504198047678",
+                b"user_000000",
+            ],
+            b":1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"GEORADIUS", b"users", b"0", b"0", b"50000", b"km"],
+            b"*1\r\n$11\r\nuser_000000\r\n",
+        );
 
         command(
             &mut stream,
@@ -331,7 +347,7 @@ fn legacy_georadius_aliases_match_search_semantics_in_all_modes() {
         command(
             &mut stream,
             &[b"GEORADIUSBYMEMBER", b"Sicily", b"missing", b"200", b"km"],
-            b"-ERR could not decode requested zset member\r\n",
+            b"-ERR member missing does not exist\r\n",
         );
 
         command(&mut stream, &[b"SET", b"str", b"v"], b"+OK\r\n");
