@@ -144,7 +144,7 @@ fn expect_nothing(stream: &mut TcpStream) {
     assert!(
         result.is_err(),
         "expected no notification, received {:?}",
-        &byte
+        byte
     );
 }
 
