@@ -1160,6 +1160,17 @@ impl ShardExecutor {
                     eviction.name(),
                     self.notify_flags().as_string()
                 );
+                if let Some(bound) = self.services.memory_bound() {
+                    let cgroup_limit = bound.cgroup_limit_bytes.map_or(-1, |value| value as i64);
+                    let _ = writeln!(
+                        text,
+                        "rillcache_memory_bound_bytes:{}\r\nrillcache_memory_bound_headroom_bytes:{}\r\nrillcache_memory_bound_baseline_rss_bytes:{}\r\nrillcache_memory_bound_cgroup_limit_bytes:{cgroup_limit}\r\nrillcache_memory_bound_payload_limit_bytes:{}\r\nrillcache_memory_bound_scope:rss_bound_derived_payload_limit_not_hard_rss_cap\r\nrillcache_memory_bound_enforcement:payload_admission_refuses_writes_before_the_bound\r",
+                        bound.bound_bytes,
+                        bound.headroom_bytes,
+                        bound.baseline_bytes,
+                        bound.payload_limit_bytes
+                    );
+                }
                 if let Some(cgroup) = cgroup_memory {
                     let limit = cgroup.limit_bytes.map_or(-1, |value| value as i64);
                     let limit_human = cgroup

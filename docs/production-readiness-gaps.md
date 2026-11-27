@@ -978,7 +978,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 5. Observability and operations
 
-- [ ] **O1. True memory accounting and enforcement are missing.** [P0]
+- [x] **O1. True memory accounting and enforcement are missing.** [P0]
   `maxmemory` is a key/value payload budget, not RSS or allocator memory. Keys,
   maps, indexes, thread stacks, connection buffers, kernel sockets and allocator
   fragmentation can make actual memory much larger; the kernel can OOM-kill the
@@ -987,16 +987,41 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `MEMORY STATS` report `used_memory_rss`, `used_memory_rss_human` and an explicit
   scope from Linux `/proc/self/status`; unsupported platforms report unavailable
   instead of a fake value. `INFO memory` and `MEMORY STATS` also report cgroup
-  v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
-  and are not used for admission, eviction or OOM handling. Allocator
-  accounting, enforced cgroup/headroom contracts and OS OOM behavior remain
-  absent. `INFO memory` reports remaining logical key/value capacity separately;
+  v2/v1 current and limit bytes plus an explicit scope when readable. At that
+  point both were observational only and used for admission, eviction or OOM
+  handling. `INFO memory` reports remaining logical key/value capacity separately;
   tests cover filling the payload budget, rejecting a write and freeing capacity.
   **Partial (2026-11-19):** persistent per-owner `WATCH` history now caps logical
   retained key bytes at 4 MiB (in addition to its entry-count cap), invalidating
   outstanding watches conservatively on overflow. This excludes hash-table
   allocation and all other process memory; transaction scratch has request-local
   bounds and is not covered by this history budget. This does not close O1.
+  **Complete (2026-11-27): declared resident-memory bound with derived payload enforcement.**
+  `--memory-bound-bytes N` together with `--memory-bound-headroom-bytes H`
+  declares an RSS bound and the headroom reserved for stacks, allocator metadata,
+  socket buffers and fragmentation. Startup fails closed when only one is given,
+  when `H` is zero or not smaller than `N`, when `N` exceeds a readable cgroup
+  limit, or when the baseline RSS measured at startup leaves no payload budget.
+  The derived budget `min(--max-data-bytes, N - H - baseline_rss)` is enforced by
+  the existing payload-admission path: a crossing write is refused with
+  `-OOM configured payload limit exceeded` before anything is applied, and the
+  process keeps serving. `INFO memory` reports
+  `rillcache_memory_bound_bytes`, `rillcache_memory_bound_headroom_bytes`,
+  `rillcache_memory_bound_baseline_rss_bytes`,
+  `rillcache_memory_bound_cgroup_limit_bytes`,
+  `rillcache_memory_bound_payload_limit_bytes`, `rillcache_memory_bound_scope`
+  and `rillcache_memory_bound_enforcement`; the profile documents the headroom
+  guidance and the honest scope (RSS is bounded, not hard-capped, because
+  enforcement is on the payload budget and the operator's cgroup limit remains
+  the kernel backstop). OOM behavior is tested for real in
+  `tests/memory_bound.rs`: a guarded process under a 2 GiB address-space limit is
+  refused (`-OOM`, process alive and answering `PING`) while an unguarded
+  process under a 1 GiB address-space limit dies from allocation failure and
+  restart either replays every acknowledged write or fails closed on a torn
+  journal tail, never starting with a hole. Allocator-level accounting remains
+  excluded (it needs an allocator swap the dependency policy forbids) and
+  kernel OOM-killer behaviour on dedicated hardware stays in the D-series
+  controlled-hardware drills.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 
