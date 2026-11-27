@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Only five upstream Tcl files, no fuzz/soak, stale/contradictory public claims |
+| Verification and documentation | Partial | Pinned Tcl coverage (V1), differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
 
 ---
 
@@ -912,6 +912,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   satisfied. Not claimed: any implemented script/replication/cluster security
   model, or that the absence of a feature is a security proof for a future one.
 
+## 5. Observability and operations
+
 - [ ] **O1. True memory accounting and enforcement are missing.** [P0]
   `maxmemory` is a key/value payload budget, not RSS or allocator memory. Keys,
   maps, indexes, thread stacks, connection buffers, kernel sockets and allocator
@@ -1295,16 +1297,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
-- [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
-  This change corrected known contradictions: sharded Pub/Sub and keyspace
-  notifications were described as absent after implementation; `BZMPOP`,
-  `SUBSTR` and AOF compaction were described as unsupported; rustls was described
-  as the sole dependency exception; and multi-owner execution was described as
-  unimplemented. `scripts/production_readiness.py --check` verifies this
-  inventory and its README links. Broader claim-to-test validation and CI
-  integration remain open.
-  **Closes when:** a documentation/link/claim check runs in CI and this canonical
-  file is linked from the README and indexes.
+- [x] **V5. Public documentation can still drift from executable behavior.** [P1]
+  **Complete (2026-11-27): the canonical inventory/link check runs inside the
+  required CI graph, and the entry-point links plus the explicit not-ready status
+  are asserted as tests.** `tests/documentation.rs` gains
+  `canonical_readiness_inventory_and_links_are_checked_in_ci`, which executes
+  `scripts/production_readiness.py --check` (canonical heading, one valid status
+  line, gap-id uniqueness/order and section placement, priority consistency, the
+  no-ready-with-blockers rule, and the direct `README.md`/`docs/README.md` links)
+  together with the `scripts/test_production_readiness.py` regression suite
+  (missing entry links, malformed/duplicate/incomplete inventory, ready-status
+  contradiction, blocker/followup separation, no implied release evidence). Both
+  run from a Rust integration test, so `make test` — and therefore the protected
+  `Tests and offline CI` check — fails if the check is removed, broken, unlinked
+  or silently turned ready. A second test,
+  `public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_status`,
+  asserts the canonical heading, the explicit `NOT PRODUCTION READY` status and
+  that both public entry points link the checklist. The new CI check immediately
+  proved its value: it caught a sibling merge that had dropped the
+  `## 5. Observability and operations` heading, leaving O1–O9 misplaced under the
+  security section, and this PR restores that heading without changing any gap
+  content. Scope: this closes the documentation/link/claim-check criterion only;
+  claim-by-claim behavioural verification and the remaining verification gaps
+  (V1, V2, V3, V4, V6, V7) are not claimed.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
   The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
