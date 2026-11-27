@@ -60,7 +60,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Gate | State | Worst gap |
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC or storage-fault evidence |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no device-level fault or power-loss evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
