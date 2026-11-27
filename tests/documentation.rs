@@ -124,6 +124,73 @@ fn public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_statu
     }
 }
 
+/// L2: the release contract is published and mechanically enforced, and every
+/// still-open P0 checklist item is accepted in the release notes rather than
+/// disappearing between the checklist and the notes.
+#[test]
+fn release_lifecycle_contract_is_published_and_enforced() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lifecycle = std::fs::read_to_string(manifest.join("docs/release-lifecycle.md"))
+        .expect("published release contract");
+    for section in [
+        "Semantic Versioning",
+        "Support window",
+        "Deprecation process",
+        "Upgrade expectations",
+        "Release gates",
+    ] {
+        assert!(
+            lifecycle.contains(section),
+            "release contract is missing {section}"
+        );
+    }
+
+    let script = manifest.join("scripts/cut-release.sh");
+    let contents = std::fs::read_to_string(&script).expect("release gate script");
+    assert!(
+        contents.contains("refusing to release") && contents.contains("--publish"),
+        "cut-release.sh must refuse failed gates and require an explicit publish flag"
+    );
+
+    let notes = std::fs::read_to_string(manifest.join("docs/releases/v0.1.0.md"))
+        .expect("versioned release notes");
+    for section in [
+        "Candidate",
+        "Compatibility profile",
+        "Migration",
+        "Rollback",
+        "Support window",
+    ] {
+        assert!(
+            notes.contains(section),
+            "release notes are missing {section}"
+        );
+    }
+
+    let checklist = std::fs::read_to_string(manifest.join("docs/production-readiness-gaps.md"))
+        .expect("canonical checklist");
+    let mut open_p0 = Vec::new();
+    for line in checklist.lines() {
+        if !line.starts_with("- [ ] **") || !line.contains("[P0]") {
+            continue;
+        }
+        let rest = line.trim_start_matches("- [ ] **");
+        if let Some((id, _)) = rest.split_once('.') {
+            open_p0.push(id.to_string());
+        }
+    }
+    assert!(
+        !open_p0.is_empty(),
+        "expected open P0 items while the project is not production ready"
+    );
+    for id in &open_p0 {
+        assert!(
+            notes.contains(&format!("`{id}`")),
+            "open P0 item {id} is not accepted in the release notes"
+        );
+    }
+}
+
 /// V3: the acceptance registry parses, its controls pass, and the checker refuses
 /// a maintainer-signed security scope or an incomplete candidate.
 #[test]
