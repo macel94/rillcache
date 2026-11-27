@@ -158,9 +158,40 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  acl-matrix:
+    name: ACL allow/deny matrix
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lightweight ACL matrix policy tests
+        working-directory: scripts/upstream
+        run: python3 -m unittest test_acl_matrix -v
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upstream-tcp-tools-${{ github.run_id }}
+          path: target/upstream/
+      - name: Unpack same-run tools
+        run: tar -xzf target/upstream/bundle.tar.gz -C target/upstream
+      - name: Validate the versioned matrix offline
+        run: python3 scripts/upstream/acl_matrix.py --check
+      - name: Every scenario on the candidate and both pinned references
+        run: python3 scripts/upstream/acl_matrix.py --output target/upstream/evidence/acl-matrix
+      - name: Preserve per-scenario decisions, state and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-acl-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/acl-matrix/
+          retention-days: 30
+          if-no-files-found: warn
+
   suites:
     name: Tcl ${{ matrix.reference }} / ${{ matrix.suite.id }}
-    needs: [build, command-matrix, client-matrix, replication-exclusion]
+    needs: [build, command-matrix, client-matrix, replication-exclusion, acl-matrix]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:

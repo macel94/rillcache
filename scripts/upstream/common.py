@@ -220,6 +220,8 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False, er
         if compatibility:
             argv += ["--enable-debug-command", "yes", "--proto-max-bulk-len", "8388608",
                      "--client-query-buffer-limit", "16777216"]
+        if aclfile is not None:
+            argv += ["--aclfile", str(Path(aclfile).resolve())]
     if affinity is not None:
         argv = ["taskset", "-c", str(affinity), *argv]
     identity = {"argv": argv, "port": port, "persistence": "disabled", "affinity": affinity,
