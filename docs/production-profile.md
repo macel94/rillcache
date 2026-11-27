@@ -183,6 +183,32 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Fixed-worker scheduling and latency
+
+The default Unix mode is readiness-based (Mio, owner-local reactor). Opting into
+`--threads N` switches to N cooperative workers that poll instead of blocking on
+OS readiness: a 1 ms idle wait, a bounded active window per pass and cooperative
+yields between clients; blocking commands are polled about every 10 ms.
+
+The tradeoff is deliberate and is **not** a real-time guarantee:
+
+- Idle command latency is bounded by the poll interval (about 1 ms) rather than
+  by an OS wakeup; under sustained load the active window bounds how long one
+  client can hold a worker before others get a turn.
+- Polling trades syscalls and wakeups for simplicity: the default readiness mode
+  is the lower-idle-CPU choice, and the worker modes have no CPU or latency SLO.
+- Clients beyond the worker count queue and are served in subsequent passes;
+  `max-clients` still bounds admission, and a single expensive command can delay
+  others (no fair-share or preemption).
+- `CLIENT PAUSE`, blocked commands and slow readers keep their own documented
+  bounds; none of them turns polling into an OS readiness wakeup.
+
+`tests/fixed_worker_latency.rs` pins the practical contract for `--threads 1` and
+`--threads 4`: a worker answers after 300 ms idle, a second client's `GET`
+completes while another client floods 2,000 `PING`s, and 8× the worker count in
+concurrent clients are all served within the test bound. CPU cost under idle and
+contention is measured by the benchmark studies, not asserted here.
+
 ## Slow-client and queue policy
 
 Every admitted connection has a bounded queue and bounded reply work; a slow

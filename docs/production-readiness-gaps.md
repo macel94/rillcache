@@ -1122,13 +1122,20 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   promotion still requires a source change that clears every protected condition
   on the same head plus a reviewed profile update.
 
-- [ ] **R3. Fixed-worker and patient polling policy lacks a hard latency contract.** [P1]
-  Fixed workers use nonblocking polling with a 1 ms idle wait, a bounded active
-  window and cooperative yields. Blocking commands poll about every 10 ms.
-  These are efficiency choices, not OS readiness or real-time deadlines.
-  **Closes when:** the supported profile states the latency/CPU tradeoff and
-  tests it under idle, mixed and oversubscribed clients, or a readiness-based
-  path replaces it.
+- [x] **R3. Fixed-worker and patient polling policy lacks a hard latency contract.** [P1]
+  **Complete (2026-11-27): the profile states the latency/CPU tradeoff and the
+  practical contract is tested under idle, mixed and oversubscribed clients.**
+  The profile documents the readiness-mode default, the `--threads N` cooperative
+  polling policy (1 ms idle wait, bounded active window, cooperative yields,
+  ~10 ms polling for blocking commands), and the consequences: latency bounded by
+  the poll interval, the readiness mode as the lower-idle-CPU choice, no CPU or
+  latency SLO, no preemption/fair-share, and oversubscription bounded only by
+  `max-clients`. Evidence: `tests/fixed_worker_latency.rs` shows a worker
+  answering after 300 ms idle, a second client's `GET` completing while another
+  client floods 2,000 `PING`s, and 8× the worker count in concurrent clients all
+  served, for both `--threads 1` and `--threads 4`. Not claimed: a CPU or latency
+  SLO, real-time deadlines, fair-share or preemption; idle/contended CPU remains a
+  benchmark-study measurement.
 
 - [ ] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
   `KEYS`, `SORT`, `SCAN` snapshots, geospatial searches, large collection
