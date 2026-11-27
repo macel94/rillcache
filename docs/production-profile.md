@@ -183,6 +183,41 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Tenant isolation boundary
+
+Multi-tenant deployment is **explicitly excluded**. One process is one trust
+domain: all ACL users share the keyspace, the logical payload budget, the
+connection limit, the CPU/owner threads, the Pub/Sub and keyspace-notification
+namespace, the authentication budgets and the process lifetime. ACL users are
+*authorization* inside that domain, not tenants.
+
+What ACL does and does not provide:
+
+- Key patterns deny direct data access outside the granted pattern, and
+  keyspace-wide commands (`DBSIZE`, `FLUSHDB`, `KEYS`-class operations) require
+  an all-key grant, so an ordinary scoped user cannot enumerate or flush another
+  user's keys.
+- ACL creates no separate databases, quotas, memory budgets or network
+  identities. A user that consumes the payload budget or the client limit
+  degrades every other user, `maxmemory` eviction is global, and a restart,
+  crash or OOM affects everyone.
+- `PUBSUB` introspection is governed by the `@pubsub` category rather than channel
+  patterns, so a user holding that category can enumerate channel names used by
+  other users (Redis behaves the same way). Do not grant `@pubsub` across
+  trust domains.
+- Delivery, notifications and client metadata are process-global, and there is
+  one event loop/owner per process, so timing and load side channels exist.
+
+The required compensating control for shared infrastructure is one process per
+tenant with its own port, credentials, network policy, resource limits and
+lifecycle, or an external isolation layer. Running mutually untrusted users in
+one Rillcache process is out of profile.
+
+`tests/tenant_boundary.rs` pins the boundary in one process: a scoped tenant is
+denied another tenant's key and denied keyspace-wide commands, the owner still
+reads the value, a `+@pubsub`-only user sees the other tenant's channel name via
+`PUBSUB CHANNELS`, and `INFO clients` reports the process-wide limit.
+
 ## HyperLogLog representation and interchange
 
 `PFADD`/`PFCOUNT`/`PFMERGE` are supported over a **private** representation: an
