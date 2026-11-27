@@ -61,7 +61,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
-| Availability and topology | Excluded / open | Replication, cluster and failover excluded by reviewed decisions; supported upgrades/rollback (A4) and topology runbooks (A5) still open |
+| Availability and topology | Excluded / open | Replication, cluster and failover excluded; recorded-pair upgrades/rollback complete (A4); topology runbooks and failure exercises (A5) still open |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
@@ -696,12 +696,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   bare command an arity error, and proves `MGET` over different hash tags
   returns both local values with no `CROSSSLOT`, `MOVED` or `ASK`. This is an
   explicit exclusion, not cluster support, and does not imply topology discovery,
-  partition handling or rolling upgrades (A4).- [ ] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
-  There is no supported version-skew matrix, on-disk format migration policy,
-  downgrade procedure or canary/rollback evidence. The package is still `0.1.0`.
-  **Closes when:** the profile defines supported upgrade paths, format
-  compatibility and rollback; CI exercises old/new combinations and a failed
-  upgrade preserves recoverable data.
+  partition handling or rolling upgrades (A4).
+- [x] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
+  **Complete (2026-11-27) for a recorded exact-binary pair with a tested
+  upgrade/downgrade/rollback contract.** [`ci/upgrade-pins.json`](../ci/upgrade-pins.json)
+  pins the first pair — baseline commit `a98e2959`
+  (`0.1.0-rc-baseline-a4`) → current head (`0.1.0-rc-current`) — and states that
+  each future release must pin its predecessor. The reviewed policy, format
+  compatibility rule, rollback guarantee, failed-upgrade guarantee and traffic
+  cutover procedure are in the
+  [A4 policy](production-readiness/availability-and-topology.md#a4-upgrade-downgrade-and-rollback-policy).
+  `scripts/upgrade_drill.py` builds nothing itself: it takes both exact binaries
+  and proves (a) the baseline journal is preserved with a verified archive before
+  the attempt and never modified, (b) the target binary opens it and serves
+  identical data, absolute expirations and accounting, then appends its own
+  writes, (c) the baseline binary opens the upgraded journal and the observed
+  downgrade outcome matches the reviewed pin (`serves` for this pair), (d) an
+  upgrade killed after accepted writes still leaves the preserved journal and
+  archive restorable by the baseline binary while the target recovers its own
+  acknowledged prefix, and (e) rollback from the preserved archive restores the
+  exact pre-upgrade state. Measured locally on this pair (400 keys): baseline
+  journal 196,229 bytes, upgrade startup 15.062 ms, rollback restore 12.615 ms,
+  downgrade `serves`, zero failures. The fail-closed `Upgrade and rollback drill`
+  job builds both commits from source and runs the drill with the log's ordinary
+  test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
+  migration, downgrade outside the pinned pair, or mixed-version replication.
 
 - [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin

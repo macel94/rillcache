@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "pair": {
+    "id": "rillcache-0.1-baseline-a4",
+    "old": {
+      "label": "0.1.0-rc-baseline-a4",
+      "commit": "a98e295946a26f838945830858ecd4a54b1522ed",
+      "reason": "First recorded old/new pair for the A4 contract: the last merged release-candidate commit before the upgrade/rollback policy and drill. Each future release must pin its predecessor here; a pair is claimed only for the journal format and behavior the drill exercises."
+    },
+    "new": {
+      "label": "0.1.0-rc-current",
+      "ref": "HEAD",
+      "reason": "The candidate under test (current main head at job start)."
+    },
+    "expectations": {
+      "downgrade": "serves",
+      "failed_upgrade": "the preserved baseline journal and archive remain restorable by the baseline binary"
+    }
+  }
+}
