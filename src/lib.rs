@@ -8,6 +8,7 @@
 
 pub mod engine;
 mod frame_deadline;
+pub mod memory_bound;
 pub mod protocol;
 pub mod server;
 pub mod session;
