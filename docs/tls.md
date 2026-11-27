@@ -22,7 +22,7 @@ remains `unsafe_code = "forbid"`.
   select distinct certificate chains at startup. When mappings are configured,
   an unknown SNI name is rejected; there is no wildcard matching or fallback to
   the default identity for an unknown name. Optional operator-triggered atomic
-  reload is available. A DER CRL can fail closed for verified client certificates. Native servers can staple operator-provisioned OCSP bytes, but do not validate their signature, status, freshness, or certificate identity.
+  reload is available. A DER CRL can fail closed for verified client certificates. Native servers can staple operator-provisioned OCSP bytes and validate their status, freshness window and response type at load and reload time (see [stapled status validation](#stapled-status-validation)); they do not verify the OCSP signature or the `certID` certificate binding, which stay client-side checks.
 - Plaintext and TLS listeners can run together. Put the TLS listener on the
   exposed interface and bind the plaintext listener to loopback/private space, or
   firewall the plaintext port.
@@ -176,15 +176,48 @@ test keys.
   and configured mapping file must also be owner-only (for example, mode 0600).
   Inline certificate mappings remain startup-only.
 - OCSP files must be nonempty, no larger than 1 MiB, and have one bounded DER
-  SEQUENCE envelope. This is framing validation only: the server does not parse
-  OCSP status, verify signatures/responders, check `thisUpdate`/`nextUpdate`, or
-  prove that a response names the configured certificate. Operators must obtain
-  each response from a trusted PKI workflow, keep it current, and renew/stage it
-  with the matching certificate and key. Clients must request and independently
-  validate stapled status according to their policy; clients may ignore a missing
-  or unusable staple. Stapling is not a substitute for client-side CRL policy or
-  an external TLS terminator's security review. Server-certificate OCSP/CRL
-  validation and automatic OCSP fetching remain unsupported.
+  SEQUENCE envelope. Beyond framing, the server enforces the status and freshness
+  policy described in [stapled status validation](#stapled-status-validation);
+  a staple that fails it rejects the TLS generation, so a stale or unusable
+  staple is never served. The server does not verify the OCSP signature,
+  responder authorization or `certID` binding, and it does not fetch status.
+  Operators must obtain each response from a trusted PKI workflow, keep it
+  current, and renew/stage it with the matching certificate and key. Clients must
+  request and independently validate stapled status according to their policy;
+  clients may ignore a missing or unusable staple. Stapling is not a substitute
+  for client-side CRL policy or an external TLS terminator's security review.
+  Server-certificate OCSP/CRL validation initiated by the server and automatic
+  OCSP fetching remain unsupported.
+
+### Stapled status validation
+
+`src/server/ocsp.rs` parses the bounded DER subset of RFC 6960 that the server can
+enforce without a new dependency, and rejects a staple at load or atomic reload
+time when any of these hold:
+
+- `OCSPResponse.responseStatus` is not `successful(0)`,
+- the response type is not `id-pkix-ocsp-basic`,
+- `producedAt` or any `thisUpdate` is in the future beyond a 300-second clock
+  skew,
+- any `SingleResponse` reports `revoked` or `unknown`,
+- a `SingleResponse` carries no `nextUpdate` (freshness cannot be established),
+- a `nextUpdate` is already in the past, or
+- the structure is truncated, uses indefinite lengths, or has trailing bytes.
+
+Rejection fails the generation: with `--tls-reload-trigger`, the previous valid
+generation keeps serving instead of publishing unverifiable status, the same
+fail-closed shape as an invalid SNI key. The unit tests in `src/server/ocsp.rs`
+cover fresh/good acceptance, revoked, unknown, one-revoked-of-two, missing
+`nextUpdate`, expired, future `thisUpdate`, future `producedAt`, non-successful
+response status, wrong response type, empty response list, truncated input,
+trailing bytes, indefinite lengths and a non-Zulu timestamp.
+
+Deliberate limits: signature and `certID` verification need the issuer's subject
+and public key, which would require an X.509 parser outside the reviewed
+dependency set. RFC 6960 already requires the client to verify the response
+signature and that `certID` names the presented certificate, so the server's
+enforced policy is "never serve status that is not successfully structured, good
+and fresh", not "the staple is authoritative".
 
 ### Non-production rotation acceptance drill
 
@@ -222,5 +255,12 @@ certificate selection with and without mTLS, unknown-name handshake rejection,
 atomic certificate rotation and invalid certificate-replacement retention,
 valid/revoked/unknown/expired client CRLs, and verified client-certificate-to-ACL mapping with
 unmapped-certificate rejection, atomic mapping reload, established-session identity
-retention and failed-generation rollback. Server-certificate OCSP validation remains an
-explicit deployment boundary, not an implemented control.
+retention and failed-generation rollback. Server-certificate OCSP **status and
+freshness** validation is enforced at load and reload:
+`tests/native_tls.rs::stale_unsuccessful_or_revoked_ocsp_staples_fail_closed`
+proves a stale, revoked or unknown staple fails the generation with the reason in
+the error while a fresh `good` staple is accepted and served, and the sixteen
+`src/server/ocsp.rs` unit tests cover the structural and freshness matrix.
+OCSP signature/responder verification and `certID` binding remain client-side
+checks (see [stapled status validation](#stapled-status-validation)), and
+server-initiated status fetching is not implemented.

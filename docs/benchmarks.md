@@ -350,3 +350,24 @@ References:
 [Valkey source build](https://github.com/valkey-io/valkey#building-valkey-using-makefile),
 [taskset](https://man7.org/linux/man-pages/man1/taskset.1.html),
 [Git diff no-index behavior](https://git-scm.com/docs/git-diff).
+
+## Latency units and the SLO unit
+
+The advisory upstream report states the latency quantity for every row:
+
+- **P=1 rows are per-request**: the pinned generator times one request at a time, so
+  `avg`/`p50`/`p95`/`p99` are per-command latency. These are the only numbers an SLO
+  may quote.
+- **P>1 rows are per-batch**: the generator times the whole pipeline round trip. Those
+  numbers are never divided by the pipeline depth and never quoted as per-command
+  latency.
+- The report prints a **per-request tails** table built only from P=1 aggregates and
+  keeps batch tails in the main table, so the two quantities are measured and shown
+  separately rather than converted.
+- The protected merge gates (`docs/gate-scope.md`) still compare throughput only; no
+  latency SLO is claimed from this advisory report.
+
+Not modelled, and not implied by any number above: coordinated-omission correction,
+per-request `p99.9`, client-side saturation/queueing, mixed read/write or TTL-churn
+workloads, and a second hardware generation (`P1`, `P2`, `P5`, `P6` stay open).
+
