@@ -125,23 +125,20 @@
     {
       "id": "redis-py",
       "version": "5.2.1",
-      "status": "partial",
-      "gap": "C7",
-      "evidence": "Optional local/hosted diagnostic covers RESP2/RESP3, named ACL, binary values, pipeline, transaction, Pub/Sub and reconnect against the candidate only; TLS and error paths are not covered there and it is not a support commitment."
+      "status": "tested",
+      "evidence": "Pinned C7 language-client matrix: 14 declared cases (handshake, AUTH/ACL, RESP2/3, pipeline, transaction, pub/sub, TLS, reconnect, error paths)."
     },
     {
       "id": "node-redis",
-      "version": null,
-      "status": "excluded",
-      "gap": "C7",
-      "evidence": "No pinned harness. Excluded from this draft profile."
+      "version": "6.4.0",
+      "status": "tested",
+      "evidence": "Pinned C7 language-client matrix: the same 14 declared cases with node-redis 6.4.0."
     },
     {
       "id": "go-redis",
-      "version": null,
-      "status": "excluded",
-      "gap": "C7",
-      "evidence": "No pinned harness. Excluded from this draft profile."
+      "version": "v9.14.0",
+      "status": "tested",
+      "evidence": "Pinned C7 language-client matrix: the same 14 declared cases with go-redis v9.14.0."
     },
     {
       "id": "arbitrary clients",

@@ -100,6 +100,29 @@ failed candidate unchanged to seek a preferred outcome. This is an opt-in hosted
 study; existing required workflows remain unchanged and no differential pass is
 claimed until it executes on the exact candidate.
 
+## Pinned language-client matrix
+
+The `Pinned language-client matrix` job runs on every PR after the build job and
+executes the versioned matrix in `ci/upstream/clients-v1.json` (matrix
+`rillcache-language-clients`, gap C7). Three pinned clients — `redis-py` 5.2.1
+from a hash-pinned wheel, `node-redis` 6.4.0 from an integrity-pinned lock file
+and `go-redis` v9.14.0 from checksum-pinned modules — each run the same fourteen
+declared cases against fresh candidate listeners: a password/ACL plaintext
+listener, a TLS listener presenting the test CA identity and a TLS listener whose
+certificate must be rejected. The cases cover handshake, AUTH/ACL and an ACL
+denial, RESP2 and RESP3 round-trips, pipeline, transaction, Pub/Sub, wrong-type
+and unknown-command errors, an unauthenticated connection, reconnect and both TLS
+outcomes.
+
+`scripts/upstream/client_matrix.py` refuses to run when a manifest version
+differs from its pinned lock file or a client reports a different version at
+runtime, and fails on a missing, failed, duplicated or undeclared case. A client
+expectation that freezes a known bounded-subset shape must match its declared
+pattern exactly, so a change on either side fails the job. The six required Tcl
+contexts depend on this job as a declared auxiliary dependency. `result.json`,
+`summary.md`, per-client `cases.json`/`harness.log` and the owned server logs
+upload even on failure. See [the client matrix](language-clients.md).
+
 ## Declared compatibility profile matrix
 
 `ci/upstream/profile-v1.json` is the versioned, machine-readable

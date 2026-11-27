@@ -1,5 +1,7 @@
 /target/
 /scripts/__pycache__/
+/ci/clients/node-redis/node_modules/
+/ci/clients/go-redis/rillcache-client-matrix
 .env
 .env.*
 !.env.example
