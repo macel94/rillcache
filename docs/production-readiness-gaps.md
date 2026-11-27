@@ -1029,14 +1029,20 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   with both prior values intact; `CONFIG REWRITE` fails explicitly; the server
   keeps serving. TLS retains its separately documented atomic generation reload.
   Not claimed: file-triggered reload, `CONFIG REWRITE`, or mutability beyond the
-  documented subset.- [ ] **O6. Slow-client and queue policy is incomplete.** [P1]
-  Output is backpressured and bounded by connection limits, but there are no
-  configurable slow-client thresholds, kill policy or fair-share guarantees for
-  large replies, subscribers and blocked clients.
-  **Closes when:** queue/admission policy is documented, observable and tested
-  under slow readers, pub/sub fan-out and large multi-key replies.
-
-- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
+  documented subset.- [x] **O6. Slow-client and queue policy is incomplete.** [P1]
+  **Complete (2026-11-27): the queue/admission policy is documented, observable
+  and tested under slow readers, Pub/Sub fan-out and large multi-key replies.**
+  The profile documents the per-subscriber 1,024-frame queue with non-blocking
+  fan-out, subscriber removal and the `pubsub_queue_full_drops` counter, the
+  bounded per-connection output buffer, the 2 MiB `MGET` reply bound with its
+  explicit error, and the blocked-client bounds, and states the retained gaps
+  (no configurable slow-client thresholds, kill policy, fair-share or per-tenant
+  quotas). Evidence: `tests/queue_policy.rs` runs in default, fixed-one and
+  four-worker modes — a non-reading subscriber is dropped and counted once its
+  queue fills while the publisher and a healthy subscriber continue, and an
+  8×512 KiB `MGET` is refused at the documented bound with the value intact.
+  Not claimed: configurable thresholds, kill policy, fair-share scheduling or
+  per-tenant quotas.- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.
