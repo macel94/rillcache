@@ -232,6 +232,45 @@ fn production_acceptance_registry_is_machine_checked() {
     );
 }
 
+/// V7: every required merge gate is mapped to the property it proves, and the map
+/// explicitly states the production properties no merge gate covers. The checker
+/// and its regression suite run here, so the mapping cannot silently drift from
+/// `.github/pr-workflow-gates.json` or start claiming a production pass.
+#[test]
+fn merge_gates_are_mapped_to_the_properties_they_prove() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_gate_scope.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline gate-scope check");
+    assert!(
+        check.status.success(),
+        "gate scope check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Gate scope valid"),
+        "unexpected gate scope output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_gate_scope"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the gate-scope regression tests");
+    assert!(
+        unit.status.success(),
+        "gate scope regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
 /// L4: release notes are checked against the candidate's real state, so they
 /// cannot drift from the open P0 inventory, stop naming the exercised drills, or
 /// reference evidence paths that do not exist. The checker's own regression suite
