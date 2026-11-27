@@ -57,3 +57,69 @@ fn readme_ping_set_get_example_works_without_configuration() {
     drop(stream);
     server.shutdown().unwrap();
 }
+
+/// V5: the canonical readiness inventory, its status line and its entry-point
+/// links must be checked by a command that runs in the required CI graph, not
+/// only from an operator shell.
+#[test]
+fn canonical_readiness_inventory_and_links_are_checked_in_ci() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .args(["scripts/production_readiness.py", "--check"])
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline readiness check");
+    assert!(
+        check.status.success(),
+        "readiness inventory check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let output = String::from_utf8_lossy(&check.stdout);
+    assert!(
+        output.contains("Readiness documents valid"),
+        "unexpected readiness output: {output}"
+    );
+
+    // The regression suite for missing links, invalid inventory data and status
+    // drift must also run here, otherwise a broken check could pass itself.
+    let unit = Command::new("python3")
+        .arg("-m")
+        .arg("unittest")
+        .arg("test_production_readiness")
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the readiness regression tests");
+    assert!(
+        unit.status.success(),
+        "readiness regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// V5: the canonical not-ready status and the required entry-point links must be
+/// visible from the public entry points, not only from the checklist itself.
+#[test]
+fn public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_status() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let checklist = std::fs::read_to_string(manifest.join("docs/production-readiness-gaps.md"))
+        .expect("canonical checklist");
+    assert!(
+        checklist.starts_with("# Production readiness gaps"),
+        "canonical checklist heading changed"
+    );
+    assert!(
+        checklist.contains("**Status: NOT PRODUCTION READY.**"),
+        "the canonical file must keep the explicit not-ready status"
+    );
+    for entry in ["README.md", "docs/README.md"] {
+        let text = std::fs::read_to_string(manifest.join(entry)).expect("entry point");
+        assert!(
+            text.contains("production-readiness-gaps.md"),
+            "{entry} must link the canonical readiness checklist"
+        );
+    }
+}

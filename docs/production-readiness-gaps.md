@@ -59,171 +59,108 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
-| Availability and topology | Excluded / open | Replication, cluster and failover excluded; recorded-pair upgrades/rollback complete (A4); topology runbooks and failure exercises (A5) still open |
+| Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
+| Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Only five upstream Tcl files, no fuzz/soak, stale/contradictory public claims |
+| Verification and documentation | Partial | Only three upstream Tcl files, no fuzz/soak, stale/contradictory public claims |
 
 ---
 
 ## 1. Compatibility and command surface
 
-- [x] **C1. The production compatibility profile is undefined.** [P0]
-  **Complete (2026-11-26) with a versioned profile and an executed matrix.**
-  [`ci/upstream/profile-v1.json`](../ci/upstream/profile-v1.json) declares
-  profile `rillcache-standalone-0.1` version `1` (`draft`): exact Redis `8.10.2`
-  and Valkey `9.1.2` pins with SHA-256, standalone topology, transport,
-  persistence and rate-limiting boundaries, 56 command rows over 12 families, 12
-  executable exclusions each bound to a canonical gap id (C2, C3, C4, C5, C6,
-  C13, D1, O2, A1, S4), the client matrix and six command-surface divergences.
-  The [production profile](production-profile.md) renders the same manifest.
-  `scripts/upstream/profile_matrix.py` validates the manifest against
-  `ci/upstream/pins.json`, `benchmarks/targets.mk`, this checklist and the
-  profile document, then executes every row, exclusion and pinned `redis-cli`
-  client row on the candidate and on **both** pinned native references.
-  Hosted evidence for head `ab7da80c`: `Declared compatibility profile matrix`
-  job 140211666492 in run
-  [45908462103](https://github.com/macel94/rillcache/actions/runs/45908462103)
-  reports 111 row executions (105 passed, 6 declared divergences, 0 failed),
-  24 exclusion checks (24 enforced, 0 violated), 28 client rows passed, and no
-  undeclared command-surface mismatch against either reference. The six required
-  Tcl contexts depend on that job, so a failed matrix blocks the PR. Four genuine
-  reply differences stay visible as manifest-frozen sha256 declarations with the
-  exact payloads retained in `result.json`: XPENDING consumer-count and
-  empty-summary types, `XINFO GROUPS entries-read` reporting `0` where both
-  references report null, and the bounded `ERR unknown command` text that does
-  not echo client bytes. This closes profile definition and per-row command
-  evidence only: language-client conformance (C7), durability RPO/RTO, security
-  review and SLOs remain open, so no production, drop-in or support claim follows.
+- [ ] **C1. The production compatibility profile is undefined.** [P0]
+  There is no published matrix of supported Redis/Valkey versions, commands,
+  client libraries, topology, persistence mode and exclusions. "Drop-in" is
+  therefore untestable and ambiguous.
+  **Partial (2026-11-14): draft standalone profile.** The
+  [production profile](production-profile.md) now declares the reference
+  versions, topology, supported families, explicit exclusions, persistence and
+  security boundaries, client matrix and limits. It is explicitly a draft, not a
+  readiness claim. The command-by-command CI matrix that runs every profile row
+  against pinned Redis and Valkey is still absent, as are the language-client,
+  durability, security and SLO evidence rows.
+  **Closes when:** a versioned profile lists exact upstream versions, command
+  matrix, client libraries, deployment topology and excluded features; CI runs
+  every row against pinned Redis and Valkey and records pass/fail.
 
-- [x] **C2. Scripting and functions are missing.** [P0]
-  **Complete (2026-11-26) by the explicit-exclusion branch, with no Lua runtime
-  linked.** `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `FCALL` and `FCALL_RO`
-  are absent from the registry and return the unknown-command error;
-  `SCRIPT DEBUG|KILL|LOAD|EXISTS` and `FUNCTION
-  LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` return a deliberate
-  unsupported-subcommand error; a missing subcommand returns the arity error; and
-  an invalid `FLUSH` mode is rejected. Only `SCRIPT FLUSH`/`FUNCTION FLUSH`
-  acknowledge an empty registry. Native TCP evidence runs in default, fixed-one
-  and four-worker modes: `tests/discovery.rs`
-  `script_and_function_flush_do_not_imply_execution_support` covers the no-ops,
-  `COMMAND INFO` absence and representative rejections, and
-  `every_named_scripting_entry_point_fails_explicitly` covers every remaining
-  named entry point plus unchanged data (`DBSIZE`/`GET`) after the attempts.
-  The profile and compatibility boundary state that clients requiring script or
-  function execution are incompatible. This does not claim script execution,
-  determinism, atomicity or a Lua decision beyond exclusion.
+- [ ] **C2. Scripting and functions are missing.** [P0]
+  `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|DEBUG|KILL`, `FUNCTION
+  LOAD|DELETE|LIST|STATS|DUMP|RESTORE|KEYS` and `FCALL`/`FCALL_RO` are absent.
+  Only `SCRIPT FLUSH` and `FUNCTION FLUSH` return `+OK` for an empty registry.
+  Native TCP verification covers those no-ops, execution command discovery,
+  and rejection of execution and representative registry subcommands. The
+  dependency policy does not permit a Lua runtime.
+  **Closes when:** a reviewed runtime decision exists; scripts/functions execute
+  atomically with bounded CPU/memory/instruction use, deterministic journal and
+  replication behavior, exact error/result mapping and no filesystem/network
+  escape; or the profile explicitly excludes scripting and clients are documented
+  as unsupported rather than silently failing.
 
-- [x] **C3. Module loading is missing.** [P1]
-  **Complete (2026-11-27) by the exclusion branch: the profile, compatibility
-  matrix and unsupported-surface reference all exclude loadable modules, and the
-  boundary is tested.** No module ABI, loader or in-process sandbox exists, and
-  loading native code would require an FFI/unsafe boundary the reviewed
-  dependency policy forbids, so module-dependent clients are incompatible.
-  `MODULE LIST` returns an empty array, `MODULE HELP` returns one bounded row,
-  `MODULE LOAD`/`LOADEX`/`UNLOAD` return `MODULE loading is not supported by this
-  server`, and other subcommands return `unknown MODULE subcommand`; a bare
-  `MODULE` returns the arity error. Evidence: `tests/unsupported_surface.rs`
-  exercises every one of those cases in default, fixed-one and four-worker
-  modes, and `docs/unsupported.md` documents the same contract. Not claimed:
-  module loading, an ABI, or isolation for native code.- [x] **C4. Multiple logical databases are missing.** [P0]
-  **Complete (2026-11-26) as an explicit, tested exclusion.** Only database 0
-  exists, and the profile now states the client-facing consequence rather than
-  leaving it to a generic error. `SELECT` accepts `0`; nonzero or malformed
-  indices, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected without changing
-  binary source/destination data or the key count. `DBSIZE` and `INFO keyspace`
-  report only `db0`, so no per-database observability or isolation boundary is
-  implied. Wire coverage: `tests/keyspace.rs`
-  `database_zero_rejections_leave_the_shared_keyspace_unchanged` runs in default,
-  fixed-one and four-worker modes, and `tests/discovery.rs` pins the `db0`
-  keyspace section. Pinned-client evidence on exact head `f72b023c` (merged as
-  `cfbe0c02`, PR #620): the redis-py 5.2.1 startup check observed
-  `DB index is out of range` for `db=1` under RESP2 and RESP3 in Mio, fixed-one,
-  Tokio and native TLS, with the DB 0 sentinel unchanged; artifact
-  `upstream-redis-py-tls-45791950526-1`. This closes the exclusion branch of the
-  criterion; it is not multi-database support, and clients that need several
-  logical databases remain unsupported. See
-  [profile exclusions](production-profile.md#explicit-exclusions) and
-  [compatibility boundaries](compatibility.md#important-boundaries).
+- [ ] **C3. Module loading is missing.** [P1]
+  `MODULE LIST` is empty and `MODULE LOAD`/`LOADEX`/`UNLOAD` return explicit
+  unsupported errors. This is acceptable only if the production profile excludes
+  modules and dependent clients.
+  **Closes when:** module support is implemented and security-reviewed, or the
+  exclusion is explicit in the profile and compatibility matrix.
 
-- [x] **C5. The command and subcommand surface is incomplete.** [P0]
-  **Complete (2026-11-26) by a pinned command-by-subcommand differential
-  matrix; this evidence adds no command and implements no missing surface.**
-  [The command matrix](production-readiness/command-matrix.md) records all 463
-  names reported by the pinned Redis `8.10.2` and Valkey `9.1.2` `COMMAND`
-  replies. It lists the 247 names the tested head advertises with their arity and
-  flags, and for each of the 216 names it does not advertise the exact wire reply
-  to a minimal-arity request. Every absent top-level command fails explicitly:
-  54 return the standard `ERR unknown command` and `DUMP`/`RESTORE`/`MIGRATE`
-  return the named serialization capability error documented in
-  [unsupported surfaces](unsupported.md). The 159 absent subcommands are recorded
-  the same way: 20 belong to containers the head does not advertise at all, and
-  of the 139 subcommands of advertised containers 53 answer the container's
-  bounded behavior, 42 are rejected with a named capability error and 44 with
-  their recorded argument or subcommand error. Named capability errors must also
-  be recorded in [unsupported surfaces](unsupported.md) or the
-  [profile](production-profile.md).
-  Machine checks: `tests/command_matrix.rs` runs the check in default, fixed-one
-  and four-worker modes and fails when the advertised set differs from `COMMAND`,
-  when an absent command answers successfully, when `COMMAND INFO` describes an
-  absent name, when a named capability error is undocumented, when the probe pass
-  leaves keyspace data or an unusable session, or when the committed matrix does
-  not match the tested head byte for byte. The upstream inventory is generated
-  from the checksum-verified archives pinned in `benchmarks/targets.mk` by
-  `scripts/upstream_command_inventory.py`; the check itself is offline.
-  Limits that remain open elsewhere: the 57 absent top-level commands (Redis 8
-  vector-set and array commands, Valkey 9 `BACKUP`/`COMMANDLOG`/`HOTKEYS`/
-  `HIMPORT`/`TRIMSLOTS`/stream extensions, `DEBUG`, `LOLWUT`, scripting
-  entry points, `DUMP`/`RESTORE`/`MIGRATE`) are excluded from the draft profile
-  rather than implemented, the 53 answered subcommands are bounded by their area
-  documents, and option-level, protocol-version and language-client coverage stay
-  with C1, C6 and C7. **Closes when (criterion):** a command-by-command
-  differential matrix exists for supported data types and admin surfaces; every
-  absent command is either implemented or explicitly excluded with a
-  client-facing error and profile entry.
+- [ ] **C4. Multiple logical databases are missing.** [P0]
+  Only database 0 exists. `SELECT` accepts 0, `MOVE`/`SWAPDB` return a multi-database
+  error, and `COPY ... DB n` rejects nonzero databases. A two-client TCP test
+  verifies that rejection leaves binary source and destination data and the
+  key count unchanged, and that DB-0 COPY and FLUSHDB affect both clients'
+  shared keyspace. This is native wire evidence, not a language-client matrix.
+  **Closes when:** the profile either supports a validated number of databases
+  with per-database keyspaces, `SELECT`/`MOVE`/`SWAPDB`/`FLUSHDB` semantics and
+  per-database observability, or explicitly excludes clients that require them.
 
-- [x] **C6. RESP3 and session behavior are a bounded subset.** [P1]
-  **Complete (2026-11-27) for the RESP3 surface the pinned client matrix
-  actually uses, with explicit exclusions.** The profile documents the surface
-  used by `redis-py` 5.2.1, `node-redis` 6.4.0 and `go-redis` v9.14.0 after
-  `HELLO 3`: the handshake map, Pub/Sub push frames, and RESP2-compatible simple
-  strings, errors, integers, bulk strings, arrays and nulls for the supported
-  commands, with `HGETALL` documented as a flat array rather than a map. Double,
-  boolean, big-number, verbatim, set, attribute and streamed-string types are
-  not emitted; client tracking/caching is excluded with explicit replies
-  (`CLIENT TRACKING` -> `ERR unsupported CLIENT subcommand or invalid
-  arguments`, `GETREDIR` -> `-1`, `TRACKINGINFO` -> `flags off`); `HELLO`
-  rejects versions other than 2 and 3 with `NOPROTO`. Evidence:
-  `tests/resp3_client_subset.rs` pins those types, exclusions and a fragmented
-  `HELLO 3` handshake in default, fixed-one and four-worker modes, alongside
-  the existing `tests/pubsub.rs` push coverage and `tests/protocol_fuzz.rs`
-  fragmentation/limit corpus. Not claimed: attributes, streamed strings, push
-  tracking or full RESP3 type parity.- [x] **C7. Real client-library compatibility is incomplete.** [P0]
-  **Complete (2026-11-27) with a versioned, pinned language-client matrix.**
-  [`ci/upstream/clients-v1.json`](../ci/upstream/clients-v1.json) (matrix
-  `rillcache-language-clients` v1) pins `redis-py` 5.2.1, `node-redis` 6.4.0 and
-  `go-redis` v9.14.0 and declares fourteen cases: handshake, named-user
-  AUTH/ACL allowance and denial, RESP2 and RESP3 round-trips (binary values,
-  counters, hash reads), pipeline, transaction, pub/sub, wrong-type and
-  unknown-command errors, an unauthenticated connection, reconnect, and TLS
-  positive plus wrong-identity rejection. `scripts/upstream/client_matrix.py`
-  validates the manifest against each pinned lock file, verifies the version each
-  client reports at runtime, and fails on a missing, failed, duplicated or
-  undeclared case. Hosted evidence for head `e0807d9e`: `Pinned language-client
-  matrix` job 140227942914 in run
-  [45913387009](https://github.com/macel94/rillcache/actions/runs/45913387009)
-  reports 14/14 cases for each of the three clients with no failures; the six
-  required Tcl contexts depend on that job. The RESP3 cases record that the
-  bounded RESP3 subset emits arrays rather than maps (C6), asserted and frozen
-  per client instead of hidden. This is compatibility evidence for the declared
-  case set and pinned versions: it is not a support window, does not cover other
-  client versions, pool-under-load, cluster routing, client-side caching, RESP3
-  push tracking or mutual TLS, and does not close C6.
+- [ ] **C5. The command and subcommand surface is incomplete.** [P0]
+  The registry contains 243 commands, but common surfaces are absent or bounded:
+  `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
+  `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH`;
+  `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
+  errors, others are unknown commands.
+  **Partial (2026-11-14): named exclusions for common surfaces.**
+  `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
+  `CONFIG REWRITE` now returns a specific
+  capability error with normal arity validation, documented in
+  [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
+  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT REPLY ON|OFF|SKIP`
+  now suppresses immediate, paused and blocked-completion replies (RESET
+  restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
+  clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
+  report the disabled tracking state. `CLIENT TRACKING|NO-TOUCH`; `MEMORY PURGE` is an accepted
+  no-op and `MEMORY MALLOC-STATS` reports the system-allocator boundary; Redis 8+
+  extensions and the command-by-command differential matrix remain missing.
+  **Closes when:** a command-by-command differential matrix exists for supported
+  data types and admin surfaces; every absent command is either implemented or
+  explicitly excluded with a client-facing error and profile entry.
+
+- [ ] **C6. RESP3 and session behavior are a bounded subset.** [P1]
+  RESP3 is limited to the current commands' simple strings, errors, integers,
+  bulk strings/arrays and null frames. There is no full RESP3 type coverage,
+  client tracking, full push/attribute semantics, or multiple-database select.
+  Empty/null request arrays are rejected.
+  **Closes when:** every RESP3 type and session feature used by the supported
+  client matrix has a documented, tested behavior, including malformed and
+  fragmented frames.
+
+- [ ] **C7. Real client-library compatibility is incomplete.** [P0]
+  Pinned `redis-cli` RESP2/RESP3/AUTH and metadata interop is covered.
+  **Partial (2026-11-14):** the optional standalone
+  [redis-py 5.2.1 harness](redis-py-conformance.md) exercises RESP2/RESP3,
+  named ACL authentication, binary strings, pipelines/transactions, Pub/Sub and
+  reconnect against managed candidate servers in three synchronous modes.
+  This bounded harness is not a CI gate. TLS identity, negative/error paths,
+  Redis-version coverage, node-redis, go-redis and broader client behavior remain
+  unverified; arbitrary clients may issue unsupported discovery commands.
+  **Closes when:** a versioned language-client matrix runs handshake, AUTH/ACL,
+  RESP2/RESP3, pipelines, pub/sub, TLS identity, reconnect and error-path tests
+  against the supported profile, including redis-py, node-redis and go-redis.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
@@ -302,74 +239,53 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 
-- [x] **C10. HyperLogLog is not Redis-interoperable.** [P1]
-  **Complete (2026-11-27) by the criterion's exclusion branch: HLL
-  persistence/interchange is explicitly excluded and the representation and
-  accuracy differences are documented.** `PFADD`/`PFCOUNT`/`PFMERGE` use a
-  private representation — an exact set up to 4,096 distinct members, then a
-  2^14-register sketch with a cache header and a documented ~0.81 % standard
-  error; Redis/Valkey sparse encoding, register layout and sparse thresholds are
-  absent. The profile states that the payload is not interchangeable: `DUMP`,
-  `RESTORE` and `MIGRATE` return the bounded capability error, `SAVE`/`BGSAVE`
-  return the RDB-unsupported error, and the supported offline migration imports
-  only DB 0 `SET` records, so HLL values cannot be moved in or out;
-  `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` are private diagnostics. Evidence:
-  `tests/hll_interchange.rs` runs in default, fixed-one and four-worker modes and
-  pins exact encoding/count below the limit, the `*16384` register array, the
-  switch to `dense`, `PFSELFTEST`, an estimate within 2 % of 6,000 distinct
-  members, and the explicit refusals. Not claimed: Redis-compatible payloads,
-  sparse encoding/thresholds or payload conversion.- [ ] **C11. Geospatial search is linear.** [P2]
+- [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
+  The private payload uses an exact hash set then a 2^14-register sketch, not
+  Redis's sparse/dense encoding. `PFDEBUG`, `PFSELFTEST` and sparse-threshold
+  configuration are absent.
+  **Closes when:** the profile either implements Redis/Valkey-compatible HLL
+  payloads and diagnostics, or explicitly excludes HLL persistence/interchange
+  and documents the accuracy/representation differences.
+
+- [ ] **C11. Geospatial search is linear.** [P2]
   `GEOSEARCH` and the legacy radius aliases scan the source sorted set linearly;
   there is no native geohash neighbour index. This is correct for small sets but
   is not evidence for large production keyspaces.
   **Closes when:** complexity and memory are documented and benchmarked at the
   target scale, with a native index or an accepted latency limit.
 
-- [x] **C12. Pub/Sub is deliberately non-durable.** [P1]
-  **Complete (2026-11-26) as an explicit boundary with a validated alternative.**
-  Pub/Sub delivery remains in-process, at-most-once, unordered across
-  publishers, bounded by per-client queues and neither persisted nor
-  replicated; sharded channels stay a standalone namespace with no cluster
-  hash-slot routing. The profile now states that boundary in client terms and
-  names the supported reliable alternative: a stream consumer group
-  (`XREADGROUP`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XACK`), whose pending state
-  survives a client disconnect and is recorded in the journal but is not
-  validated across a server restart, or an external durable transport for
-  recovery beyond the process or host. Evidence: `tests/stream_claim.rs`
-  `stream_group_redelivers_pending_entries_after_consumer_disconnect` closes the
-  delivering connection, then redelivers the exact binary payload to fresh
-  connections through `XCLAIM` and `XAUTOCLAIM` before `XACK` clears the set, in
-  default, fixed-one and four-worker modes; the merged RESP2
-  `disconnected_subscriber_does_not_receive_gap_messages_after_resubscribing`
-  keeps the Pub/Sub half of the boundary honest (publish in the gap returns
-  zero and is never replayed). This is at-least-once redelivery with duplicates,
-  not exactly-once, not replication, not a restart-recovery claim and not a
-  durability claim for host loss.
-  See [Pub/Sub](pubsub.md), [streams](streams.md) and
-  [compatibility boundaries](compatibility.md#important-boundaries).
+- [ ] **C12. Pub/Sub is deliberately non-durable.** [P1]
+  Delivery is in-process, at-most-once, unordered across publishers, bounded by
+  per-client queues and not persisted or replicated. Sharded channels are a
+  separate standalone namespace with no cluster hash-slot routing.
+  **Closes when:** the profile documents this boundary and uses Streams or an
+  external transport for reliable delivery; or durable/replicated delivery is
+  implemented and tested.
 
-- [x] **C13. Configuration compatibility is missing.** [P1]
-  **Complete (2026-11-27) for the declared Rillcache startup schema; this is not
-  `redis.conf` support.** The schema is versioned (`config-version 1` must be the
-  first directive; later, repeated or unsupported versions fail with a
-  line-numbered error; unmarked files keep version 1), validated before the
-  listener binds (unknown directives, invalid values, bad UTF-8, oversize and
-  forbidden directives fail closed), and documented with precedence
-  (last-wins in argument order, later CLI options override earlier files) and a
-  defaults/mutability table whose values a test compares with
-  `Config::default()`. Runtime mutability is atomic and limited to the
-  documented subset via `CONFIG SET` (see O5); `CONFIG REWRITE`, live file
-  reload, includes and the upstream language remain unsupported and are stated
-  as such. Evidence: `tests/config_schema.rs`
-  `documented_defaults_match_the_binary_defaults` pins every documented default
-  against the code, and
-  `the_schema_is_versioned_ordered_and_validated_before_bind` drives the real
-  binary through `--check-config` for a valid versioned file, CLI precedence, an
-  unversioned file, `config-version 2`, a misplaced marker, an unknown directive
-  and an invalid value; `tests/config_file.rs` unit tests cover the parser, and
-  `tests/runtime_config.rs` covers the atomic runtime subset. Not claimed:
-  `redis.conf` compatibility, `CONFIG REWRITE`, file-triggered reload or a
-  runtime-mutable surface beyond the documented subset.- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+- [ ] **C13. Configuration compatibility is missing.** [P1]
+  There is no full `redis.conf` parser, `CONFIG REWRITE` or complete runtime
+  configuration surface. Startup historically used only a CLI subset; selected
+  `CONFIG GET/SET` options exist at runtime.
+  **Partial (2026-11-14): bounded startup file.** `--config PATH` (or `-c`)
+  reads a UTF-8 file of one directive/value pair per line, with comments,
+  quoting, `maxmemory`/`maxclients` aliases and the same validation as CLI
+  flags. It is not a general `redis.conf`: includes, multi-value directives,
+  `save`, replication, modules and other unsupported language fail closed before
+  bind; later CLI options override earlier file values. See
+  [startup configuration](configuration.md). `--check-config` checks merged
+  startup options without starting the server; it does not test resource opening.
+  `config-version 1` can explicitly declare the startup file format; unmarked
+  files retain version 1 behavior. A parser test checks the documented example.
+  Startup config reads stop at the 1 MiB limit plus one byte; this is a per-file
+  bound and does not set an I/O timeout or limit the number of files.
+  **Remaining:** a complete defaults inventory, `CONFIG REWRITE`, live
+  reload/rollback and the complete runtime-mutable surface are absent, and the
+  upstream configuration language is not accepted.
+  **Closes when:** the supported configuration schema is versioned, validated
+  before bind, documented with defaults/precedence, and runtime-mutable settings
+  are atomic and complete for the profile.
+
+- [x] **C14. Transaction semantics diverge from Redis.** [P1]
   **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
@@ -384,31 +300,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 2. Durability and recovery
 
-- [x] **D1. RDB, DUMP/RESTORE and migration interoperability are missing.** [P0]
-  **Complete (2026-11-26) by the exclusion branch: the profile excludes RDB/AOF
-  interchange and specifies a supported migration tool, which is now exercised
-  end-to-end.** `SAVE`/`BGSAVE` return explicit RDB-unsupported errors,
-  `LASTSAVE` is `0`, and `DUMP`/`RESTORE`/`MIGRATE` return one capability error
-  naming the journal/backup alternatives; these are asserted in default,
-  fixed-one and four-worker modes by `tests/boundaries.rs` and
-  `tests/unsupported_surface.rs`. The supported migration path is the bounded
-  offline DB 0 string import documented in
-  [persistence](persistence.md#import-a-bounded-offline-string-journal) and
-  [the profile](production-profile.md#migration-and-interchange):
-  `scripts/import_string_journal.py`, then `rillcache-backup create`/`verify`,
-  then a controlled first start. Evidence: `tests/migration_path.rs`
-  `documented_import_verify_and_start_path_preserves_strings_and_expiry` runs
-  that exact sequence with the real tools and asserts a binary value, an absolute
-  expiry and the key count on the booted server, while
-  `unsupported_records_and_existing_targets_fail_closed` proves a non-`SET`
-  record and an occupied target are refused without publishing. Not claimed:
-  native RDB/multipart-AOF conversion, live cutover, non-string or non-DB-0
-  data.
+- [ ] **D1. RDB, DUMP/RESTORE and migration interoperability are missing.** [P0]
+  `SAVE`/`BGSAVE` return explicit RDB-unsupported errors, `LASTSAVE` reports 0,
+  and `DUMP`/`RESTORE`/`MIGRATE` are absent. The append-only journal is a private
+  RESP command stream, not multipart AOF or RDB.
+  **Closes when:** pinned Redis/Valkey RDB import/export and `DUMP`/`RESTORE` work
+  for the declared types/versions with checksums, fail-closed behavior and
+  bidirectional native tests; or the profile explicitly excludes RDB/AOF
+  interchange and provides a supported migration tool.
 
-- [x] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
-  **Complete (2026-11-26) by the accepted start-pause SLO and the concurrent
-  pause measurement; the cooperative rewrite itself landed earlier.**
-  `BGREWRITEAOF` replies `+Background append only file rewriting started` after
+- [ ] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
+  **Partial (2026-11-05): cooperative rewrite implemented.** `BGREWRITEAOF` now
   replies `+Background append only file rewriting started` after materialising the
   key list, and the maintenance loop advances one bounded slice (≤512 keys or
   1 MiB) per tick between client commands. Changed keys are re-encoded as whole
@@ -431,120 +333,98 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
   the residual fsync. Completion time still scales with the dataset.
-  **Accepted SLO and measurement (2026-11-26).**
-  `tests/journal_rewrite_pause.rs` starts a journaling server, writes 5,000 then
-  40,000 keys, issues `BGREWRITEAOF`, keeps a second client writing during the
-  snapshot and a third measuring `PING` latency, and fails when the start pause,
-  the worst concurrent command stall or either progress counter breaks the
-  budget. Measured on the shared development host: start pause **3.9–5.6 ms** at
-  5,000 keys and **25.3–32.2 ms** at 40,000 keys, worst concurrent stall
-  **12–48 ms** and **64–130 ms**, with `aof_rewrite_keys_done` reaching both
-  snapshot totals and `aof_rewrite_bytes_written` growing to 708,000 and
-  5,738,000 bytes across `snapshot`, `reconcile`, `sync` and `commit`. Because the
-  start pause materialises one key name per live key it is linear in key count,
-  so the reviewed SLO recorded in
-  [persistence](../persistence.md#compaction-with-bgrewriteaof) accepts **≤1 s
-  start pause and ≤1 s worst concurrent stall for keyspaces up to 1,000,000
-  keys**; larger keyspaces are explicitly unmeasured and must not be assumed.
-  Limits that remain: no fork or copy-on-write page sharing, so pause and memory
-  scale with the live key count; completion time still scales with the dataset; a
-  sustained write storm lengthens reconciliation rounds, so byte progress has no
-  fixed total and cannot report a percentage. RDB, online backup and
-  point-in-time recovery remain D1, D5 and D10 items.
-  **Closes when (criterion):** the start pause is bounded independently of key
-  count or an accepted SLO is recorded, and progress reporting covers bytes/keys
-  completed.
+  **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
+  enormous keyspaces still need a measured pause SLO; a sustained write storm
+  lengthens reconciliation rounds, so byte progress has no fixed total and
+  cannot report a percentage. RDB and online backup remain separate items.
+  **Closes when:** the start pause is bounded independently of key count (or an
+  accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 
-- [x] **D3. Journal integrity and encryption at rest are Partial.** [P0]
-  **Complete (2026-11-27) with an external rollback anchor and a reviewed
-  integrity/encryption contract.** Evidence for head `2963471c`:
-  `Tests and offline CI` job 140250092595 in run
-  [45920581977](https://github.com/macel94/rillcache/actions/runs/45920581977)
-  exercises `tests/aof_anchor.rs` and the `rollback_anchor_*` engine tests. CRC32 checksums and the optional HMAC-SHA256
-  chain are unchanged. `rillcache-backup anchor` now re-verifies an authenticated
-  journal through the offline replay path and publishes a bounded (512-byte)
-  key-authenticated anchor committing to the exact verified byte length and
-  chain tag; it refuses to overwrite an existing anchor and writes owner-only
-  permissions. `--aof-anchor-file` makes startup require that boundary and tag,
-  so a shorter journal (whole-file rollback, restored older copy, removed
-  durable suffix) or a replaced/rewritten chain fails closed with an explicit
-  error, while normal growth and a crash-torn tail after the boundary still
-  replay. The anchor is read-only server input and never rewritten by the
-  server. Evidence: `tests/aof_anchor.rs` (tool writes the anchor, anchored
-  restart, growth accepted, truncation/rollback rejected, foreign-key anchor
-  rejected, malformed/empty/unanchored configurations fail closed) and
-  `src/engine/journal_tests.rs` `rollback_anchor_*` (extension, rollback,
-  truncation, empty journal, tampered/oversized/trailing anchors, MAC under a
-  foreign key, and rewrite invalidation). The reviewed contract is documented in
-  [persistence](persistence.md#rollback-and-truncation-anchor) and
-  [encryption/key management](persistence.md#encryption-at-rest-and-key-management):
-  application-level encryption at rest is an explicit exclusion delegated to
-  platform disk/volume encryption, key custody is an operator-managed file with
-  owner-only permissions and no in-process keyring, and rotation is an offline
-  verified rewrite plus a new anchor. This does not add timestamps, replay
-  counters, KMS integration, revocation or protection against an attacker who can
-  also replace the pinned anchor; those remain documented limits, not claims.
+- [ ] **D3. Journal integrity and encryption at rest are Partial.** [P0]
+  **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal
+  transaction is followed by a standard RESP ECHO marker containing the byte
+  length and CRC32. Legacy RESP-only journals remain readable and switch to a
+  checksummed segment on their next append; rewrite snapshots are checksummed as
+  one segment. Startup preflights all checksum groups before replay, fails closed
+  on valid-RESP corruption and truncates a torn final transaction to the previous
+  verified boundary. Tests cover a standard CRC32 vector, valid-RESP corruption,
+  legacy upgrade and a fully written transaction with a torn marker.
+  **Partial (2026-11-10): optional HMAC-SHA256 journal authentication.** With
+  `--aof-hmac-key-file`, a streaming keyed hash chain covers every appended
+  transaction, checksum record and rewrite slice; startup verifies the chain
+  before replay and fails closed on modified or reordered content, an insertion
+  before the final marker, a malformed marker or the wrong key. An empty journal starts with an anchor on its
+  first append. Existing journals require the explicit, one-time
+  `--aof-hmac-migrate` startup seal, which authenticates the already checksummed
+  prefix as-is; later starts without an anchor fail closed. A torn final
+  unauthenticated group is discarded to the last verified marker. The offline
+  backup tool accepts the key for create/verify/restore. Both key-file readers
+  enforce a byte limit during the read and reject oversized files. Tests cover restart,
+  wrong key, modified tags, migration refusal and completion, authenticated
+  rewrite plus post-rewrite appends, torn markers, partial next appends, and real
+  server/backup paths.
+  **Limit:** HMAC is not encryption. The key is a single operator-managed file with
+  no rotation/keyring, secure-store integration or file-permission enforcement;
+  a whole-journal replacement with an older valid file, and truncation of a
+  durable suffix, are not detectable without external anti-rollback state. If the
+  key is removed and new writes are appended, the next authenticated start
+  discards those unauthenticated writes. Legacy prefixes are only authenticated
+  after an explicit migration or rewrite.
+  **Closes when:** the profile has a reviewed encryption-at-rest and key-management
+  contract (or an explicit exclusion), and recovery authentication covers the
+  deployment's rollback/truncation threat model with documented external state.
 
-- [x] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
-  **Complete (2026-11-27) for real filesystem faults at every exercised
-  boundary, merged on `main` as `402aad9c`.** `tests/durability_crash.rs` keeps
-  the deterministic `SIGKILL`, `WAITAOF` and torn-tail drills.
-  `tests/durability_faults.rs` adds real kernel faults on a size-bounded tmpfs:
-  an `ENOSPC` append replies `-ERR append-only write failed: No space left on
-  device`, latches `aof_last_write_status:err`, refuses later mutations with the
-  failed-state error, recovers exactly the acknowledged prefix after `SIGKILL`
-  and drops the unacknowledged mutation; a kernel-truncated (short) write is
-  discarded on restart while the acknowledged prefix and later writes survive;
-  an `ENOSPC` rewrite latches `aof_last_bgrewrite_status:err`, leaves the live
-  journal byte-identical and still serving, and a retry after freeing space
-  compacts; and an unwritable data directory fails startup closed. Evidence:
-  `Real storage-fault drill` job 140275582381 in run
-  [45928548371](https://github.com/macel94/rillcache/actions/runs/45928548371)
-  for head `33e8a46b`; the protected `Tests and offline CI` check needs that job,
-  so a mount failure or fault regression fails closed instead of skipping. The
-  fault matrix, loss bounds and the applied-but-unacknowledged in-memory state
-  are documented in
-  [storage faults](persistence.md#storage-faults-and-acknowledgment). Not covered
-  and not claimed: device-level `EIO`, power loss, block rotation, filesystem
-  corruption, per-user quota and separate `fsync`-failure injection; these need
-  `dm-error`, hardware or a reviewed FUSE harness. This entry corrects the
-  checklist record for #458: the evidence merge landed but an authoring script
-  bug dropped the checkbox change from the squash.
+- [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
+  There is no fault-injection corpus for short writes, ENOSPC, quota, permission
+  loss, fsync failure, process kill or power loss at each journal/rewrite
+  boundary. The journal latches a failed state, but the full acknowledgment and
+  recovery contract is not proven.
+  **Partial evidence (2026-11-05):** `tests/durability_crash.rs` spawns the real
+  binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
+  write survives with `appendfsync always` (so the reply cannot precede the
+  durable append) and that `everysec` recovery yields a contiguous prefix with no
+  holes. A separate Linux drill kills the process after a local `WAITAOF`
+  acknowledgement with either `no` or `everysec` and checks binary values after
+  restart; it does not simulate device loss. The Linux torn-tail drill truncates
+  a disposable journal after process exit, then verifies that restart discards the final integrity
+  group for a multi-key `MSET` and that new writes survive another restart.
+  This models a torn integrity marker, not a real disk write failure. `EXEC`
+  currently commits queued writes as separate journal groups, so recovery from
+  a torn tail need not preserve an entire `EXEC` batch as specified by R118.
+  ENOSPC, quota, permission loss, fsync failure and power loss remain unverified.
+  **Closes when:** a crash/fault harness injects each failure at every boundary,
+  proves no applied-but-unlogged success reply, bounds the loss window, and
+  verifies restart recovery and visible failure states.
 
-- [x] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
-  **Complete (2026-11-27) with a measured quiescent-copy drill and an explicit
-  online-backup/PITR exclusion, merged on `main` as `7ffc294c`.**
-  `scripts/restore_drill.py` runs the real server and `rillcache-backup`:
-  it loads a deterministic mixed dataset (binary strings, collections, streams
-  with a consumer group, counters, absolute `PEXPIREAT` deadlines), snapshots the
-  exact state, asserts that an **online** `create` is refused and publishes no
-  archive, takes and verifies a quiescent archive, restores it into a separate
-  directory (asserting only the restored journal exists and the source journal is
-  byte-identical), starts a second instance from the restored journal and
-  compares the key set, per-key type/value bytes, absolute expirations, db0
-  `keys`/`expires`/`subexpiry` and `MEMORY STATS` `keys.count`/`dataset.bytes`
-  exactly (the clock-derived `avg_ttl` only inside a bounded elapsed window),
-  then repeats for three recovery points, applies the keep-newest-verified
-  retention rule and restores **each** retained archive into its own isolated
-  instance to reproduce its point. Measured on the hosted job for head
-  `568e81e2`: 2000-key dataset, `create` 27.839 ms, `verify` 26.068 ms,
-  `restore` 25.814 ms, isolated startup 17.213 ms, restore-to-serving 43.027 ms,
-  zero acknowledged writes lost for the quiescent copy, retention kept
-  `snapshot-2`/`snapshot-3` and pruned `snapshot-1`, and both retained archives
-  restored their points (2001 and 2002 keys). Evidence: `Isolated backup/restore
-  drill` job 140296768886 in run
-  [45935223577](https://github.com/macel94/rillcache/actions/runs/45935223577);
-  the protected `Tests and offline CI` check needs that job, so a regression
-  fails closed. The procedure, RPO/RTO definitions, retention rule and the
-  explicit online-backup/PITR exclusion contract with its freeze-and-verify
-  operations are documented in
-  [the restore drill](persistence.md#isolated-restore-drill-rporto-and-retention).
-  Not claimed: online/incremental backup, point-in-time recovery, a backup
-  scheduler, integrity beyond CRC32 plus the authenticated-journal checks, or a
-  deployment-specific SLO — those numbers must be re-measured on the operator's
-  hardware and archive size. This entry corrects the checklist record for #459:
-  the evidence merge landed before the checkbox commit, so the record is added
-  here rather than silently lost.
+- [ ] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
+  `rillcache-backup` now creates, verifies and restores versioned, bounded-memory
+  CRC32 archives from a quiescent AOF. Creation holds the normal exclusive journal
+  lock and syncs before copying; restore verifies the outer archive and replays an
+  isolated temporary AOF before no-overwrite publication. End-to-end tests cover
+  active-writer refusal, archive corruption, inner AOF corruption, strings, TTLs,
+  stream PEL state and a restart from the restored journal. The format contains
+  only the AOF; CRC32 is not authentication. Online copy, PITR, retention,
+  configuration/ACL capture and deployment-specific RPO/RTO remain open. Pass
+  `--aof-hmac-key-file` to create/verify/restore for authenticated journals.
+  Offline verification can stage the temporary journal on a chosen local volume
+  with `verify --temp-dir DIR`; it still requires scratch space for the payload.
+  Verification and restore reject a torn journal that startup replay would
+  otherwise shorten to a valid prefix, even if the outer CRC and length match.
+  Creation also rejects a torn source before publishing and preserves its bytes;
+  legacy, checksum and HMAC fixtures distinguish this from startup tail recovery.
+  The isolated offline rollback test checks exact binary data, absolute expiry,
+  key count and logical payload bytes while preserving the newer journal.
+  The same-binary authenticated restore test rejects a wrong key without
+  publishing or leaving staging files, then restores into the same directory
+  with the matching key and verifies the archive is unchanged. An insufficient
+  logical payload budget also rejects verify and restore without publication or
+  residue; retry at a sufficient budget restores both original binary values.
+  A two-process restore case checks that only one archive is published into a
+  shared offline destination, with both originals and the winning bytes intact.
+  **Closes when:** a documented backup/restore procedure has tested quiescent and
+  supported online copies, restores exact data/TTL/accounting into an isolated
+  instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
+  excluded from the production profile with a reviewed operational contract.
 
 - [x] **D6. Stream pending and consumer state survives restart.** [P0]
   **Complete (2026-11-11).** The journal rebuild emits `XGROUP CREATECONSUMER` for
@@ -567,26 +447,40 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [x] **D7. Signal-driven shutdown is partial.** [P0]
-  **Complete (2026-11-26) for the standalone supervisor contract across plain
-  Mio, plain Tokio and native TLS.** The standalone binary handles Unix
-  SIGINT/SIGTERM and Windows Ctrl-C, stops admission, joins workers and flushes
-  the journal within a configurable grace period (`--shutdown-deadline-ms`,
-  default 25 s, max 600 s, documented in
-  [startup defaults](getting-started.md#configure-only-what-you-need)); a second
-  signal or an expired deadline logs `forced termination: <reason>` and exits
-  nonzero. Existing subprocess tests prove bounded command drain of a withheld
-  8 MiB reply, cancellation of idle/incomplete-frame/subscribed/blocked clients
-  with no replay of incomplete work, forced termination on a second signal,
-  restart from the unchanged AOF with `appendfsync always`, and TLS drain with a
-  valid reply prefix. The previously untested branch — **deadline exhaustion
-  end-to-end** — is now covered by `tests/shutdown_deadline.rs`: with a 300 ms
-  deadline and an unread admitted reply that keeps the worker blocked, each of
-  the three transports exits within the test bound, logs the deadline reason,
-  exits nonzero, and restarts with the acknowledged 1 MiB value intact.
-  Retained limits: client receipt is not acknowledged, a reply that exceeds the
-  deadline may be truncated, and a forced timeout cannot guarantee the final
-  journal flush beyond the acknowledged fsync policy.
+- [ ] **D7. Signal-driven shutdown is partial.** [P0]
+  **Partial (2026-11-19):** the standalone binary handles Unix SIGINT/SIGTERM
+  and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
+  journal within a 25-second deadline; a second signal or expired deadline logs
+  forced termination and exits nonzero. Kubernetes now allows a 30-second grace
+  period. **Partial (2026-11-19):** shutdown stops listener admission and
+  half-closes client read sides; replies for already-dispatched commands are
+  written before those connections close, within the existing deadline.
+  Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
+  response and journal recovery in default and opt-in Tokio plain-TCP modes and
+  over TLS. All three transports also have a second-SIGTERM test that requires
+  a forced-termination log and nonzero exit while an admitted reply is unread.
+  On Linux, the Mio, Tokio and TLS forced-exit tests also restart from the
+  unchanged AOF directory and verify an acknowledged write under `appendfsync
+  always`. This does not cover unsynced writes or power loss. The 25-second
+  deadline outcome is separately unit-tested, not timed end-to-end for each
+  transport. A separate plain-TCP test in Mio and Tokio leaves the reply unread
+  past a single SIGTERM, verifies successful exit within five seconds and a
+  properly truncated reply, then checks on Linux that the acknowledged
+  `appendfsync always` value is intact after restarting. This exercises the
+  bounded client drain on working storage. The matching native TLS subprocess
+  test leaves its reply unread through one SIGTERM and verifies successful
+  exit within five seconds with only a valid reply prefix left to read. Neither
+  test exhausts the separate 25-second supervisor deadline.
+  Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
+  blocked clients connected through successful exit, then verify after restart
+  that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
+  **Retained gap:** this is not a full client drain; replies that exceed a
+  bounded transport write timeout or the shutdown deadline may be abandoned.
+  Client receipt is not acknowledged, and forced timeout cannot guarantee the
+  final journal flush. **Closes when:** all supported transports have verified
+  command-drain, cancellation, join and forced-timeout behavior within the
+  supervisor grace contract.
+
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
   Startup claims `<journal>.lock` with an exclusive create recording PID and
@@ -633,94 +527,40 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 3. Availability and topology
 
-- [x] **A1. Replication is missing.** [P0]
-  **Excluded by reviewed profile decision (2026-11-27), not implemented.**
-  Replication is removed from the declared profile: there is no full or partial
-  synchronization, consistent snapshot transfer, backlog, offsets, replica apply,
-  promotion or mixed-version interoperability, and the profile does not claim
-  any. The decision, rationale, alternatives and revisit triggers are recorded in
-  [the replication decision](replication.md#a1-profile-decision-replication-excluded),
-  together with the required honest single-node
-  [availability and data-loss statement](replication.md#single-node-availability-and-data-loss-statement)
-  (node loss = outage until a verified restore; the off-host archive is the
-  recovery point; two independent instances behind one address are prohibited).
-  The exclusion is enforced, not merely documented: `REPLICAOF`/`SLAVEOF`/
-  `PSYNC`/`SYNC`/`REPLCONF`/`FAILOVER` fail with the explicit unsupported error,
-  `SLAVEOF NO ONE` is the declared no-op, `ROLE`/`INFO replication` stay
-  `master`/`0`/`0` before and after local writes, `WAIT` acknowledges no replica,
-  `WAITAOF` describes only local journal state, and a second instance refuses to
-  attach and keeps its own keyspace. Evidence: `tests/replication_boundary.rs`
-  (all worker modes plus the two-instance isolation case) and the pinned-native
-  `Replication exclusion vs pinned replicas` job, which starts Redis 8.10.2 and
-  Valkey 9.1.2 with `--replicaof` against the candidate and requires
-  `master_link_status:down`, replica `DBSIZE 0`, no `+FULLRESYNC`/`+CONTINUE` and
-  an unchanged `master`/`0`/`0` candidate; the job is a declared dependency of
-  the required Tcl contexts. Failover/Sentinel (A2) remains open and is not
-  covered by this decision; cluster routing is excluded by the separate A3
-  decision.
+- [ ] **A1. Replication is missing.** [P0]
+  `PSYNC`, `SYNC`, `REPLCONF`, `REPLICAOF host port` and `SLAVEOF host port`
+  return explicit replication-unsupported errors. `ROLE`/`INFO replication`
+  truthfully report a standalone master; `WAIT` returns 0 and `WAITAOF` only
+  acknowledges the local journal. A native TCP test pins the standalone role
+  and zero replication offset after a local write and rejected reconfiguration.
+  **Closes when:** full and partial synchronization, a consistent snapshot,
+  bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
+  interop pass; acknowledged-write loss is documented.
 
-- [x] **A2. Sentinel/failover is missing.** [P0]
-  **Excluded by reviewed profile decision (2026-11-27); HA is outside the first
-  profile.** No Sentinel-compatible control plane, quorum detection, election,
-  promotion, fencing or client rediscovery exists and none is claimed. The
-  reviewed single-node boundary is recorded in the
-  [A2 decision](production-readiness/availability-and-topology.md#a2-profile-decision-sentinel-and-automatic-failover-excluded)
-  (rationale, rejected alternatives, revisit triggers, detection/recovery
-  contract and the hard rules against promoting stale copies or fronting two
-  writers). Enforced behavior: every `SENTINEL` form fails closed on the first
-  call, `FAILOVER` and `REPLICAOF`/`SLAVEOF` host forms return the explicit
-  replication-unsupported error, `REPLICAOF NO ONE`/`SLAVEOF NO ONE` are the
-  declared no-ops with no state change, and `ROLE`/`INFO replication` stay
-  `master` with `master_failover_state:no-failover`, zero replicas and no replid.
-  Evidence: `tests/failover_boundary.rs` (entry points, no-op promotion, reported
-  state, and a two-instance drill where killing the primary loses its address and
-  data while the survivor does not take over), plus the measured restore path from
-  the D5 drill. The replication link itself is the separate A1 decision and is not
-  claimed here. Recovery is the documented verified restore, never an election: RPO is
-  the newest off-host verified archive and RTO is the measured restore plus
-  validation before traffic. Upgrades/rollback (A4) and topology runbooks/failure
-  exercises (A5) remain open and are not covered by this decision.
+- [ ] **A2. Sentinel/failover is missing.** [P0]
+  There is no quorum failure detection, election, promotion, fencing, client
+  rediscovery or split-brain handling. A single process is a single point of
+  failure.
+  **Closes when:** a Sentinel-compatible control plane or equivalent is
+  implemented and tested with packet loss, partitions, stale configuration,
+  flapping nodes, leader loss, promotion and reconnect; RPO/RTO are stated.
 
-- [x] **A3. Cluster mode is missing.** [P0]
-  **Complete (2026-11-26) by the criterion's exclusion branch: the profile
-  explicitly excludes cluster clients.** There are no 16,384 slots, hash tags,
-  `MOVED`/`ASK` redirects, migration/importing state, cluster bus or cross-slot
-  rejection, and sharded Pub/Sub has no cluster routing. The profile and
-  compatibility boundary now state that cluster clients are excluded and why.
-  Evidence: `tests/boundaries.rs`
-  `cluster_surface_is_disabled_and_hash_tags_are_literal` runs in default,
-  fixed-one and four-worker modes, requires `-ERR This instance has cluster
-  support disabled` for `INFO`, `MYID`, `SLOTS`, `SHARDS`, `NODES`, `KEYSLOT`,
-  `COUNTKEYSINSLOT`, `GETKEYSINSLOT`, `ADDSLOTS`, `DELSLOTS`, `SETSLOT`,
-  `RESET`, `FAILOVER` and `REPLICATE`, keeps `CLUSTER HELP` explanatory and the
-  bare command an arity error, and proves `MGET` over different hash tags
-  returns both local values with no `CROSSSLOT`, `MOVED` or `ASK`. This is an
-  explicit exclusion, not cluster support, and does not imply topology discovery,
-  partition handling or rolling upgrades (A4).
-- [x] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
-  **Complete (2026-11-27) for a recorded exact-binary pair with a tested
-  upgrade/downgrade/rollback contract.** [`ci/upgrade-pins.json`](../ci/upgrade-pins.json)
-  pins the first pair — baseline commit `a98e2959`
-  (`0.1.0-rc-baseline-a4`) → current head (`0.1.0-rc-current`) — and states that
-  each future release must pin its predecessor. The reviewed policy, format
-  compatibility rule, rollback guarantee, failed-upgrade guarantee and traffic
-  cutover procedure are in the
-  [A4 policy](production-readiness/availability-and-topology.md#a4-upgrade-downgrade-and-rollback-policy).
-  `scripts/upgrade_drill.py` builds nothing itself: it takes both exact binaries
-  and proves (a) the baseline journal is preserved with a verified archive before
-  the attempt and never modified, (b) the target binary opens it and serves
-  identical data, absolute expirations and accounting, then appends its own
-  writes, (c) the baseline binary opens the upgraded journal and the observed
-  downgrade outcome matches the reviewed pin (`serves` for this pair), (d) an
-  upgrade killed after accepted writes still leaves the preserved journal and
-  archive restorable by the baseline binary while the target recovers its own
-  acknowledged prefix, and (e) rollback from the preserved archive restores the
-  exact pre-upgrade state. Measured locally on this pair (400 keys): baseline
-  journal 196,229 bytes, upgrade startup 15.062 ms, rollback restore 12.615 ms,
-  downgrade `serves`, zero failures. The fail-closed `Upgrade and rollback drill`
-  job builds both commits from source and runs the drill with the log's ordinary
-  test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
-  migration, downgrade outside the pinned pair, or mixed-version replication.
+- [ ] **A3. Cluster mode is missing.** [P0]
+  `CLUSTER` is disabled; there are no 16,384 slots, hash tags, `MOVED`/`ASK`
+  redirects, migration/importing state, cluster bus or cross-slot rejection.
+  Sharded Pub/Sub has no cluster routing. A native TCP test verifies explicit
+  rejection of the `SHARDS`, `SLOTS`, and `NODES` topology probes without
+  changing local data or advertising a replica.
+  **Closes when:** slot mapping, redirects, migration, cross-slot atomicity,
+  topology discovery, partition/rejoin and mixed-version rolling upgrade pass a
+  cluster corpus, or the profile explicitly excludes cluster clients.
+
+- [ ] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
+  There is no supported version-skew matrix, on-disk format migration policy,
+  downgrade procedure or canary/rollback evidence. The package is still `0.1.0`.
+  **Closes when:** the profile defines supported upgrade paths, format
+  compatibility and rollback; CI exercises old/new combinations and a failed
+  upgrade preserves recoverable data.
 
 - [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin
@@ -751,43 +591,28 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   differentially tested, or full category/subcommand/key/channel semantics are
   implemented; restricted users cannot enumerate or mutate keys outside policy.
 
-- [x] **S3. The audit path is not a complete custody chain.** [P0]
-  **Complete (2026-11-27) by the criterion's second branch: the audit path is
-  explicitly best-effort with documented compensating controls.** Denial records
-  are emitted to an optional local file and optional UDP syslog sink with no
-  sender authentication, transport encryption, federation, delivery guarantee,
-  retry, backpressure or aggregation; the collector never gates command
-  execution and exits nonzero with a redacted count summary when its output
-  fails. Per-line HMAC and a bounded keyring (first key signs, all verify) give
-  tamper evidence, not confidentiality or delivery. The profile now states the
-  boundary and the required compensating controls: an independently administered
-  append-only collector with its own retention, HMAC key custody and rotation,
-  restricted audit-file permissions, alerting on collector failure and on
-  missing expected traffic, and reliance on durable primary sources for custody.
-  Evidence: `tests/audit_syslog.rs`
-  `best_effort_shipping_never_gates_commands_or_crashes_without_a_reader` drives
-  128 denied commands with an unread sink and again after the sink is dropped,
-  with allowed commands succeeding throughout; `tests/audit_hmac.rs`,
-  `tests/audit_keyring.rs` and `tests/audit_collector.rs` cover signing, keyring
-  verification/rotation and bounded collector failure reporting. Not claimed:
-  authenticated/encrypted transport, durable delivery, aggregation or an
-  independent custody chain.- [x] **S4. Cross-process rate limiting is missing.** [P0]
-  **Complete (2026-11-26) by the external-control-plane branch of the
-  criterion; no distributed limiter is implemented or claimed.** Failed-auth
-  budgets remain process-local: `--auth-failure-limit` is per connection, and the
-  opt-in `--auth-source-limit`/`--auth-global-limit` lockouts are per process over
-  `--auth-source-window-ms`. The profile now requires an authoritative
-  external limiter for any deployment with more than one process, states that it
-  must run before `AUTH`, fail closed when unavailable, produce a visible
-  rejection and be configured identically for every replica, and notes that the
-  server budgets remain defence in depth. Shared-NAT throttling between clients
-  is documented as a consequence rather than hidden. Evidence:
-  `tests/auth_process_isolation.rs`
-  `authentication_lockout_is_not_shared_between_processes` starts two real
-  binaries with identical per-source budgets, locks 127.0.0.1 out of the first
-  (including after reconnect), and shows the second still authenticates, keeps
-  its own failure count and is unaffected. This does not claim username
-  lockout, distributed counters, or that one process's budgets protect another.
+- [ ] **S3. The audit path is not a complete custody chain.** [P0]
+  The UDP collector has no sender authentication, transport encryption,
+  federation, retry/backpressure, aggregation or delivery guarantee. Per-line
+  HMAC and manual keyring rotation exist, but full-chain signing/key-ID and hot
+  rotation do not. Collector output failures emit a redacted count summary and
+  exit nonzero. This does not retry or guarantee delivery.
+  **Closes when:** authenticated and encrypted transport, sender identity,
+  key-ID/hot rotation, durable delivery/backpressure and aggregation are
+  implemented and tested; or the audit path is explicitly best-effort with a
+  documented compensating control.
+
+- [ ] **S4. Cross-process rate limiting is missing.** [P0]
+  Failed-auth budgets remain process-local. Shared NAT addresses can throttle
+  each other; there is no cross-process/distributed policy or username lockout.
+  **Partial (2026-11-18):** when the bounded per-IP table fills, new sources
+  share an overflow budget instead of evicting tracked source state. **Partial
+  (2026-11-19):** opt-in `--auth-global-limit` counts failures across peers in
+  one process and locks credential attempts for the configured source window;
+  it defaults off and can itself deny legitimate users. Neither control is
+  shared between server processes. **Closes when:** a bounded shared/distributed
+  rate-limit design is implemented or the deployment requires an external
+  control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
   TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
@@ -823,48 +648,34 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `requirepass` or an ACL entry does not automatically deauthenticate existing
   connections, as in Redis.
 
-- [x] **S7. Tenant isolation is absent.** [P1]
-  **Complete (2026-11-27) by the criterion's exclusion branch: multi-tenant
-  deployment is explicitly excluded.** One process is one trust domain: ACL
-  users share the keyspace, logical payload budget, client limit, owner
-  CPU/threads, Pub/Sub and notification namespaces, authentication budgets and
-  process lifetime. The profile states what ACL does provide (key patterns deny
-  other users' data; keyspace-wide commands require an all-key grant) and what
-  it does not (no separate databases, quotas, memory budgets or network
-  identities; global eviction; shared failure domain; category-governed
-  `PUBSUB` introspection leaks channel names across users). The required
-  compensating control is one process per tenant with its own port,
-  credentials, network policy, resource limits and lifecycle, or an external
-  isolation layer. Evidence: `tests/tenant_boundary.rs` shows a scoped tenant
-  denied another tenant's key and keyspace-wide commands while the owner still
-  reads the value, a `+@pubsub`-only user observing the other tenant's channel
-  through `PUBSUB CHANNELS`, and the process-wide `maxclients` limit. Not
-  claimed: per-tenant quotas, databases, memory isolation or a multi-tenant
-  contract.
+- [ ] **S7. Tenant isolation is absent.** [P1]
+  All ACL users share one process, keyspace, memory budget and CPU. ACL rules do
+  not create separate databases, quotas or network identities.
+  **Closes when:** multi-tenant deployment is explicitly excluded, or per-tenant
+  isolation is implemented and tested.
 
-- [x] **S8. Secret handling needs hardening.** [P1]
-  **Complete (2026-11-27): the supported secret sources, permissions, rotation
-  and process-argument risks are documented and tested, and long random secrets
-  are required by guidance and enforced under the strict policy.** The security
-  guide now has a per-secret table (password file/inline, ACL file, journal HMAC
-  key, audit HMAC key and keyring, TLS private keys, client-certificate map,
-  rollback anchor) naming the source flag, the strict-mode permission rule and
-  the rotation path (`ACL LOAD`, atomic TLS generation reload, keyring
-  prepend/retire, explicit journal migration, restart), plus the process-argument
-  risk, the 256-bit random-secret requirement and the unsalted SHA-256 hash
-  caveat. `--secure-secret-files` refuses group/other-accessible files for every
-  one of those sources and requires at least 16 bytes for inline
-  `--requirepass`; `--check-config` runs the same validator before binding.
-  Evidence: `tests/secret_sources.rs`
-  `every_secret_source_requires_owner_only_permissions_in_strict_mode` drives the
-  real binary through `--check-config --secure-secret-files` for the password
-  file, ACL file, journal key and TLS key (owner-only accepted,
-  group/other-readable refused, permissive mode unchanged), and
-  `strict_mode_enforces_a_long_random_password_on_the_command_line` covers the
-  length rule; the existing unit tests cover the remaining fields. Not claimed:
-  secret-manager integration, owner-identity or entropy verification, automatic
-  audit of every deployment's permissions, or protection against an exposed ACL
-  file being brute-forced.
+- [ ] **S8. Secret handling needs hardening.** [P1]
+  Passwords can be passed on the command line, ACL hashes are unsalted
+  SHA-256 (Redis-compatible but fast to brute-force offline), and there is no
+  secret-manager integration or complete file-permission/rotation audit.
+  **Partial (2026-11-14): optional owner-only secret-file enforcement.**
+  `--secure-secret-files` refuses group/other-accessible password, ACL, audit
+  HMAC/keyring, AOF HMAC and TLS private-key files on Unix and enforces a
+  16-byte minimum password, and the security guide documents modes, a 256-bit
+  random-secret requirement, process-argument risk and rotate-then-revoke. Unit
+  tests cover loose/strict modes, short/long passwords and CLI parsing.
+  `--check-config --secure-secret-files` also checks Unix secret-file permissions
+  before startup, with redacted diagnostics suitable for preflight logs.
+  A startup file can opt in with `secure-secret-files yes`; the effective
+  setting follows file/CLI precedence and does not change the default.
+  Raw audit HMAC key files now have a byte-read bound shared by the server
+  and collector; this does not set a file I/O deadline or change rotation.
+  Secret-manager integration, enforced entropy/length for `--requirepass`, and
+  automatic audit of every deployment's permissions remain open.
+  **Closes when:** the supported secret sources, permissions, rotation and
+  process-argument risks are documented and tested, with long random secrets
+  required by deployment guidance or enforced.
+
 - [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
@@ -936,9 +747,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
-  only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
-  `LATENCY HISTOGRAM` reports the same bounded 32-bucket approximation as
-  `INFO latencystats`, not exact HDR percentiles.
+  only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
+  unsupported.
   **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
   and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
   `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
@@ -989,27 +799,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 
-- [x] **O5. Configuration reload is missing.** [P0]
-  **Complete (2026-11-27): mutable settings reload atomically, immutable changes
-  are rejected cleanly, and a failed reload retains the last valid
-  configuration.** `CONFIG SET` stages a candidate generation and validates every
-  name/value pair before publication, so a batch applies completely or not at
-  all. The profile now lists the mutable subset and the startup-only surface
-  (listeners, TLS material, worker topology, `dir`,
-  `appendonly`/`appendfilename`, ACL/audit/secret paths, limits, shutdown
-  deadline, `config-version`), and documents that startup-only or unknown names
-  return explicit errors (`appendonly and appendfilename are startup-only;
-  restart with the desired options`, `CONFIG SET option is unsupported or
-  invalid`) and that `CONFIG REWRITE` reports the startup file as read-only.
-  Evidence: `tests/runtime_config.rs`
-  `mutable_settings_reload_atomically_and_startup_only_names_fail_closed` runs in
-  default, fixed-one and four-worker modes: a two-setting batch applies
-  together; a batch mixing a valid value with `appendfilename` is rejected with
-  both prior values intact; a batch with a negative listpack value is rejected
-  with both prior values intact; `CONFIG REWRITE` fails explicitly; the server
-  keeps serving. TLS retains its separately documented atomic generation reload.
-  Not claimed: file-triggered reload, `CONFIG REWRITE`, or mutability beyond the
-  documented subset.- [ ] **O6. Slow-client and queue policy is incomplete.** [P1]
+- [ ] **O5. Configuration reload is missing.** [P0]
+  Listener/worker changes are startup-only; there is no general reload, atomic
+  configuration generation, rollback or validation report. TLS is a scoped
+  exception: a native test checks that one invalid SNI key rejects the
+  whole generation and that a repaired generation updates both default and
+  SNI stapled bytes. See also C13 and S5.
+  **Closes when:** mutable settings can be atomically reloaded, immutable changes
+  are rejected cleanly, and failed reloads retain the last valid configuration.
+
+- [ ] **O6. Slow-client and queue policy is incomplete.** [P1]
   Output is backpressured and bounded by connection limits, but there are no
   configurable slow-client thresholds, kill policy or fair-share guarantees for
   large replies, subscribers and blocked clients.
@@ -1049,26 +848,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 6. Resource safety and scalability
 
-- [x] **R1. The default data path is single-owner.** [P0]
-  **Complete (2026-11-27) by the criterion's first branch: the profile states a
-  single-owner capacity limit.** The default `Config` keeps `storage_owners`
-  unset, so data commands run on one owner thread and command-execution
-  parallelism is one CPU. `--storage-owners 2..=64` remains opt-in experimental:
-  its own measurements are below the one-owner path at pipeline 16 on the test
-  host, no protected benchmark gates multi-owner mode, and no scaling claim is
-  made. The profile now declares the enforced capacity envelope (one owner; 128
-  admitted clients by default with an explicit `max number of clients reached`
-  refusal; 64 MiB logical payload refused without partial application; 1 MiB
-  argument and 2 MiB frame bounds) and states that actual capacity is whichever
-  limit is reached first, excluding metadata, buffers, sockets and allocator
-  overhead from the payload budget. Evidence: `tests/owner_capacity.rs`
-  `the_declared_single_owner_envelope_is_the_default_and_enforced` asserts the
-  single-owner/128-client defaults and, in default, fixed-one and four-worker
-  modes, the explicit third-client refusal, continued service for admitted
-  clients and capacity release after a close; `tests/maxclients_info.rs` and the
-  storage-ownership tests cover reporting and owner-thread isolation. Not
-  claimed: a throughput SLO, multi-owner scaling, or cross-owner capacity
-  sharing.- [ ] **R2. The async Tokio transport is not promoted.** [P1]
+- [ ] **R1. The default data path is single-owner.** [P0]
+  `--storage-owners 1` is the default. Opt-in `--storage-owners N` exists, but its
+  own measurements show it below the one-owner path at pipeline 16 on the test
+  host; no protected benchmark gates multi-owner mode. The thread-per-core target
+  is not complete.
+  **Closes when:** the declared profile either states a single-owner capacity
+  limit or demonstrates multi-owner scaling with matched workloads, CPU budgets,
+  tails and cross-owner atomicity tests.
+
+- [ ] **R2. The async Tokio transport is not promoted.** [P1]
   The opt-in Tokio mode previously passed 18/20 protected conditions and was not
   promoted; default Mio/fixed-worker paths retain polling tradeoffs. No readiness
   or all-workload win is claimed.
@@ -1182,21 +971,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   contract are published.
 
 - [ ] **L3. Image signing, SBOM and provenance are missing.** [P1]
-  **Partial, awaiting protected review and first release evidence:** the container
-  workflow now scans each exact tested platform image into an SPDX SBOM, publishes
-  signed SBOM attestations for both platform digests and SLSA provenance for the
-  multi-platform index, then verifies them from a fresh read-only job after an
-  anonymous pull. Mutable aliases are promoted only after signing and must resolve
-  to the tested digest only after a fresh read-only consumer verifies the
-  attestations and anonymously pulls/runs the image. `SECURITY.md` documents
-  private reporting and best-effort
-  triage/disclosure; GitHub private vulnerability reporting is enabled. No main
-  run has yet exercised this changed workflow, and no vulnerability scan, license
-  review, supported release policy, or independent security sign-off is claimed.
-  **Closes when:** a protected post-merge publication run records the exact index
-  and child digests, the anonymous consumer verifies provenance and both SBOM
-  attestations, the vulnerability-response route is confirmed, and any required
-  reviewer decision and remaining scan/license disposition are recorded.
+  The container workflow explicitly sets `provenance: false` and `sbom: false`.
+  There is no signature, attestation, vulnerability scan or dependency/license
+  inventory for the image.
+  **Closes when:** signed digests, SBOM/provenance attestations and a documented
+  vulnerability-response process are part of release.
 
 - [ ] **L4. Release notes and migration guidance are missing.** [P1]
   There is no changelog, compatibility delta, migration guide or rollback note
@@ -1214,9 +993,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **L6. Production deployment artifacts are incomplete.** [P1]
   There are restricted Docker/Compose/Kubernetes examples but no HA topology,
   backup job, certificate rotation, systemd unit, Helm chart/operator, or
-  production configuration profiles. The optional Kubernetes password overlay
-  wires the same read-only Secret into the server and both health probes; it
-  does not add persistence, automatic rotation or live cluster evidence.
+  production configuration profiles.
   **Closes when:** the profile's deployment path has reviewed manifests and
   runbooks; examples do not imply unsupported HA/persistence guarantees.
 
@@ -1237,11 +1014,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
+- [ ] **V1. Only three upstream Tcl files are exercised.** [P0]
   The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` plus `unit/type/set`, `unit/bitfield`,
-  `unit/scan`, `unit/quit` and `unit/geo` embedded in each required keyspace
-  context. Modules, cluster, integration,
+  `unit/type/incr` and `unit/keyspace` only. Modules, cluster, integration,
   scripting, most data types and many protocol surfaces are outside it, and
   several tags/units are excluded.
   **Closes when:** the supported profile is covered by the upstream suite (or an
@@ -1258,10 +1033,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   DISCARD, queue-time EXECABORT, WATCH conflicts (including missing-key creation)
   and watch reset after abort against those pinned versions. A binary Pub/Sub
   corpus checks distinct active pattern counts in `NUMPAT` and `INFO STATS`
-  across duplicate subscriptions, shared patterns and last unsubscribe. The
-  corpus also checks `MSETNX` and `HSETNX` with binary data, rejected writes,
-  wrong types and preserved absolute deadlines. Broader Pub/Sub behavior,
-  ACL, TLS, persistence, exhaustive transaction/error cases
+  across duplicate subscriptions, shared patterns and last unsubscribe. Broader
+  Pub/Sub behavior, ACL, TLS, persistence, exhaustive transaction/error cases
   and full command coverage remain open.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
@@ -1296,16 +1069,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
-- [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
-  This change corrected known contradictions: sharded Pub/Sub and keyspace
-  notifications were described as absent after implementation; `BZMPOP`,
-  `SUBSTR` and AOF compaction were described as unsupported; rustls was described
-  as the sole dependency exception; and multi-owner execution was described as
-  unimplemented. `scripts/production_readiness.py --check` verifies this
-  inventory and its README links. Broader claim-to-test validation and CI
-  integration remain open.
-  **Closes when:** a documentation/link/claim check runs in CI and this canonical
-  file is linked from the README and indexes.
+- [x] **V5. Public documentation can still drift from executable behavior.** [P1]
+  **Complete (2026-11-27): the canonical inventory/link check now runs inside the
+  required CI graph, and the entry-point links plus the explicit not-ready status
+  are asserted as tests.** `tests/documentation.rs` gains
+  `canonical_readiness_inventory_and_links_are_checked_in_ci`, which executes
+  `scripts/production_readiness.py --check` (canonical checklist integrity, gap
+  ids, priority/status consistency and the direct README/`docs/README.md` links)
+  and the `scripts/test_production_readiness.py` regression suite (missing entry
+  links, malformed/duplicate/incomplete inventory, ready-status contradictions,
+  report/blocker separation), and
+  `public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_status`,
+  which asserts the canonical heading and `**Status: NOT PRODUCTION READY.**` line
+  and that both public entry points link the checklist. Because these are
+  integration tests, `make test` — and therefore the protected `Tests and offline
+  CI` check — fails if the check is removed, broken, unlinked or silently turned
+  ready. Evidence: the two tests execute and pass in that required run; they are
+  the same command an operator runs, so no separate CI wiring is needed.
+  Scope note: this closes the documentation/link/claim-check criterion, not the
+  room claim-by-claim behavioral verification; the remaining verification gaps
+  are tracked by V1, V2, V3, V4, V6 and V7 and are not claimed here.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
   The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
