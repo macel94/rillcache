@@ -5,3 +5,7 @@
 .env
 .env.*
 !.env.example
+
+# Model-suite and drill scratch journals must never be tracked.
+/appendonly.aof
+/target/appendonly.aof
