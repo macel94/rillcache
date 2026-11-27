@@ -837,7 +837,7 @@ impl Server {
         }
         .with_error_dialect(config.error_dialect);
         if let Some(bound) = memory_bound {
-            store.services().set_memory_bound(bound);
+            store.services_handle().set_memory_bound(bound);
         }
         if let Some(path) = &config.audit_log {
             store.attach_audit_log(path, config.audit_log_max_bytes)?;
