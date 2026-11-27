@@ -67,6 +67,12 @@ The evidence directory retains `result.json`, `summary.md`, one `cases.json` and
 `harness.log` per client, and the owned server logs with the exact argv and ACL
 path. Artifacts upload even on failure.
 
+The first hosted evidence run for head `e0807d9e` is `Pinned language-client
+matrix` job 140227942914 in run
+[45913387009](https://github.com/macel94/rillcache/actions/runs/45913387009):
+14/14 declared cases passed for each of the three pinned clients with no
+failures. Treat it as per-head evidence, not a standing compatibility claim.
+
 Validate the manifest offline without servers or client runs:
 
 ```sh

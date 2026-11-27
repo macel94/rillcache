@@ -59,7 +59,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | RESP3/session features (C6), language-client matrix (C7), notification coverage (C8) |
+| Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
@@ -191,18 +191,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client matrix has a documented, tested behavior, including malformed and
   fragmented frames.
 
-- [ ] **C7. Real client-library compatibility is incomplete.** [P0]
-  Pinned `redis-cli` RESP2/RESP3/AUTH and metadata interop is covered.
-  **Partial (2026-11-14):** the optional standalone
-  [redis-py 5.2.1 harness](redis-py-conformance.md) exercises RESP2/RESP3,
-  named ACL authentication, binary strings, pipelines/transactions, Pub/Sub and
-  reconnect against managed candidate servers in three synchronous modes.
-  This bounded harness is not a CI gate. TLS identity, negative/error paths,
-  Redis-version coverage, node-redis, go-redis and broader client behavior remain
-  unverified; arbitrary clients may issue unsupported discovery commands.
-  **Closes when:** a versioned language-client matrix runs handshake, AUTH/ACL,
-  RESP2/RESP3, pipelines, pub/sub, TLS identity, reconnect and error-path tests
-  against the supported profile, including redis-py, node-redis and go-redis.
+- [x] **C7. Real client-library compatibility is incomplete.** [P0]
+  **Complete (2026-11-27) with a versioned, pinned language-client matrix.**
+  [`ci/upstream/clients-v1.json`](../ci/upstream/clients-v1.json) (matrix
+  `rillcache-language-clients` v1) pins `redis-py` 5.2.1, `node-redis` 6.4.0 and
+  `go-redis` v9.14.0 and declares fourteen cases: handshake, named-user
+  AUTH/ACL allowance and denial, RESP2 and RESP3 round-trips (binary values,
+  counters, hash reads), pipeline, transaction, pub/sub, wrong-type and
+  unknown-command errors, an unauthenticated connection, reconnect, and TLS
+  positive plus wrong-identity rejection. `scripts/upstream/client_matrix.py`
+  validates the manifest against each pinned lock file, verifies the version each
+  client reports at runtime, and fails on a missing, failed, duplicated or
+  undeclared case. Hosted evidence for head `e0807d9e`: `Pinned language-client
+  matrix` job 140227942914 in run
+  [45913387009](https://github.com/macel94/rillcache/actions/runs/45913387009)
+  reports 14/14 cases for each of the three clients with no failures; the six
+  required Tcl contexts depend on that job. The RESP3 cases record that the
+  bounded RESP3 subset emits arrays rather than maps (C6), asserted and frozen
+  per client instead of hidden. This is compatibility evidence for the declared
+  case set and pinned versions: it is not a support window, does not cover other
+  client versions, pool-under-load, cluster routing, client-side caching, RESP3
+  push tracking or mutual TLS, and does not close C6.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
