@@ -1243,12 +1243,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** repeatable controlled-hardware runs and stated SLOs exist for
   the supported deployment profile.
 
-- [ ] **P3. Tail latency is reported as batch p99 only.** [P1]
-  The harness reports whole-batch p99 and warns not to divide by pipeline length.
-  There is no per-request p50/p95/p99/p999 distribution, coordinated-omission
-  handling or client-saturation analysis.
-  **Closes when:** per-request and batch tails are measured separately and the
-  SLO uses the correct unit.
+- [x] **P3. Tail latency is reported as batch p99 only.** [P1]
+  **Complete (2026-11-27): per-request and batch tails are reported separately and
+  the SLO unit is stated where the numbers are produced.** The advisory upstream
+  report now has an explicit **Latency unit** column (`per-request` at P=1,
+  `per-batch` at P>1), a **Per-request tails** table built only from P=1 aggregates
+  (`p50`/`p95`/`p99` per workload and server), and a footnote that batch numbers are
+  never divided by the pipeline depth nor quoted as per-command latency;
+  `docs/benchmarks.md` records the same contract and states that the merge gates
+  compare throughput only, so no latency SLO is inferred from the advisory report.
+  Enforcement: `scripts/upstream/performance.py` exposes `latency_unit()` and
+  `per_request_tails()`, and `scripts/upstream/test_performance_units.py` pins that
+  P>1 values are never used as per-request tails and that a missing tail is skipped
+  rather than reported as zero. Retained limits, stated in the document: no
+  coordinated-omission correction, no per-request `p99.9`, no client-side
+  saturation/queueing model, and no mixed-workload or second-hardware-generation
+  latency claim (`P1`, `P2`, `P5`, `P6` stay open). Not claimed: an accepted latency
+  SLO — that needs controlled hardware and owner acceptance.
 
 - [ ] **P4. Durability and topology performance are unmeasured.** [P1]
   There is no evidence for fsync policies, rewrite pauses, replication lag,
