@@ -108,6 +108,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **Eviction is LRU-approximate; LFU and idle stats are excluded.** `maxmemory`
+  applies to logical key/value bytes with `noeviction`, `allkeys/volatile-lru`,
+  `allkeys/volatile-random` or `volatile-ttl`. "LRU" tracks mutation order, not
+  reads; `OBJECT FREQ`/`IDLETIME` and `allkeys-lfu`/`volatile-lfu` are explicit
+  errors, and the policy is visible in `CONFIG GET` and `INFO memory`. See
+  [eviction policy](production-profile.md#eviction-and-access-statistics-policy).
 - **One process is one tenant.** Multi-tenant deployment is excluded: ACL users
   share the keyspace, payload budget, connection/CPU budget, Pub/Sub namespace,
   auth budgets and process lifetime. Scoped users cannot read other tenants'
