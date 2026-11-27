@@ -72,6 +72,15 @@ all_open_p0_listed() {
 }
 gate "every open P0 item is named as an accepted limitation" all_open_p0_listed
 
+# L7: publishing requires a recorded, anonymous, digest-pinned visibility check.
+# GHCR packages start private, so this must fail closed instead of shipping an
+# unpullable release.
+if (( publish == 1 )); then
+    gate "package visibility is verified public for ${tag}" \
+        python3 "$repo_root/scripts/check_package_visibility.py" \
+        --require-public --version "$version" --root "$repo_root"
+fi
+
 if (( fail > 0 )); then
     echo "refusing to release ${tag}: ${fail} gate(s) failed" >&2
     exit 1

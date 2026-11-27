@@ -1374,12 +1374,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   certificate-rotation automation or platform-specific packaging (those remain
   tracked by L2/L3/L5 and the external reviews).
 
-- [ ] **L7. First-package visibility is a manual release step.** [P2]
-  GHCR packages are private by default; the documented fix is a manual package
-  settings action. A release can therefore pass automation while remaining
-  unpullable.
-  **Closes when:** a release checklist and verification job make public
-  visibility an explicit, checked step.
+- [x] **L7. First-package visibility is a manual release step.** [P2]
+  **Complete (2026-11-27): the manual visibility action is an explicit, checked
+  release step, and it fails closed.** `docs/acceptance/package-visibility.md` is
+  the record: one row per released version with both tested platform digests, the
+  visibility state, the verifying maintainer, the date and the exact method (two
+  anonymous digest-pinned pulls), plus the ordered procedure for making the
+  package public. `scripts/cut-release.sh --publish` now runs
+  `scripts/check_package_visibility.py --require-public`, so a tag is refused
+  while any row is `unverified` or private; `--verify-remote --version <x.y.z>`
+  asks the GitHub API for the live package visibility and refuses when it is not
+  `public` or when the record disagrees. The required CI graph runs the checker in
+  record mode through `tests/documentation.rs`, together with its sixteen
+  regression tests, and fails when a released version has no row, a row names an
+  unreleased version, or a `public-verified` row lacks a digest, the verifier, the
+  date or the method. Honest current state, recorded rather than assumed: the
+  `0.1.0` row is `unverified`, because no anonymous digest-pinned pull has been
+  recorded, so the next publish is blocked until a maintainer does it. Not
+  claimed: that `ghcr.io/macel94/rillcache` is public today, or that an older
+  release is pullable.
 
 - [ ] **L8. Build reproducibility is asserted but not independently verified.** [P2]
   Dependencies are vendored and pins exist, but there is no reproducible-build
