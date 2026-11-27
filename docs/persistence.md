@@ -432,15 +432,28 @@ the rename leaves the previous journal intact; the temporary file is removed on 
 next start and never replayed. Killing the server mid-rewrite keeps every
 acknowledged write (covered by `tests/durability_crash.rs`).
 
-Measured on the development host with 20,000 keys of 64-byte values (2.5 MB
-journal): the old synchronous pass blocked command service for **130 ms**; the
-cooperative rewrite replies in **9–20 ms** (key-list materialisation), encodes
-**1.6–2.4 ms** per 512-key slice, commits in under 1 ms beyond its residual fsync,
-and completes the background pass for that dataset in roughly 4–5 s while clients
-are served between slices. Completion time and the start pause still scale with
-the keyspace: there is no fork, copy-on-write page sharing, or incremental
-generation beyond this. A write storm during the rewrite makes the reconciliation
-rounds longer; the slice size bounds each round, not the total.
+Measured on the development host with 64-byte values while a second client kept
+writing: the old synchronous pass blocked command service for **130 ms** at 20,000
+keys. Across runs, the cooperative rewrite replies in **3.9–5.6 ms** at 5,000
+keys and **25.3–32.2 ms** at 40,000 keys (key-list materialisation), keeps the
+worst concurrent command stall to **12–48 ms** and **64–130 ms** respectively on
+a shared host, encodes **1.6–2.4 ms** per 512-key slice, and completes while
+clients are served between slices. The same run
+reported `aof_rewrite_keys_done` reaching both snapshot totals and
+`aof_rewrite_bytes_written` growing to 708,000 and 5,738,000 bytes across the
+`snapshot`, `reconcile`, `sync` and `commit` phases.
+
+**Accepted start-pause SLO:** the start pause materialises one key name per live
+key, so it is linear in key count; the accepted bound is **at most 1 s start
+pause and at most 1 s worst concurrent command stall for keyspaces up to
+1,000,000 keys**, with larger keyspaces explicitly unmeasured.
+`tests/journal_rewrite_pause.rs` starts a journaling server, writes 5,000 and then
+40,000 keys, issues `BGREWRITEAOF`, keeps a second client writing during the
+snapshot and a third measuring `PING` latency, and fails when the start pause, the
+worst concurrent stall or either progress counter breaks that budget. Completion
+time still scales with the dataset: there is no fork, copy-on-write page sharing,
+or incremental generation beyond this. A write storm during the rewrite makes the
+reconciliation rounds longer; the slice size bounds each round, not the total.
 
 Automatic rewrite thresholds are configurable at runtime:
 

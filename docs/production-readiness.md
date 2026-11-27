@@ -41,6 +41,7 @@ Each capability now lives in its own area file so a feature PR edits one gate:
 | Container distribution | [container-distribution.md](production-readiness/container-distribution.md) |
 | Resource/operational safety | [resource-and-operational-safety.md](production-readiness/resource-and-operational-safety.md) |
 | Production evidence | [production-evidence.md](production-readiness/production-evidence.md) |
+| Command and subcommand differential matrix (C5) | [command-matrix.md](production-readiness/command-matrix.md) |
 
 ## Incremental delivery order
 
