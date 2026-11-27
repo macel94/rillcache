@@ -1356,11 +1356,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   transaction cases.
 
 - [ ] **V3. Independent human validation is missing.** [P0]
-  The project explicitly relies on AI-generated code and human test-based
-  validation, but there is no record of independent design, compatibility,
-  performance or security acceptance.
-  **Closes when:** named reviewers sign off the production profile, security
-  review, benchmark evidence and recovery drills.
+  **Partial, awaiting third-party signatures:** `docs/release-acceptance.md`
+  publishes the sign-off scopes and rules, `docs/acceptance/signoffs.tsv` is the
+  machine-checked registry for the exact candidate, and
+  `scripts/check_acceptance.py` (with negative controls in
+  `scripts/test_check_acceptance.py` and `make acceptance-check`) refuses
+  malformed rows, abbreviated candidates, missing evidence and a
+  maintainer-signed security scope. Signed today: `profile` and `release`, both by
+  the maintainer on candidate `d19c37cc`. Still not accepted: `security`
+  (`unassigned` - it requires an independent reviewer, which no in-repo artifact
+  can honestly produce), `performance` and `recovery` (`withheld` because the
+  P/R-series measurement criteria are still open).
+  **Closes when:** the independent security reviewer, the performance owner and
+  the recovery-drill reviewer each add a signed row for the release candidate.
 
 - [x] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,

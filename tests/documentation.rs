@@ -190,3 +190,44 @@ fn release_lifecycle_contract_is_published_and_enforced() {
         );
     }
 }
+
+/// V3: the acceptance registry parses, its controls pass, and the checker refuses
+/// a maintainer-signed security scope or an incomplete candidate.
+#[test]
+fn production_acceptance_registry_is_machine_checked() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("python3")
+        .arg("scripts/test_check_acceptance.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the acceptance-registry controls");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let registry = std::fs::read_to_string(manifest.join("docs/acceptance/signoffs.tsv"))
+        .expect("acceptance registry");
+    let header = registry.lines().next().unwrap_or_default();
+    assert_eq!(
+        header, "candidate\tscope\treviewer\treviewer_kind\tevidence\tsigned_at\tstate",
+        "registry header changed"
+    );
+    for scope in ["profile", "security", "performance", "recovery", "release"] {
+        assert!(
+            registry
+                .lines()
+                .any(|line| line.split('\t').nth(1) == Some(scope)),
+            "registry has no row for scope {scope}"
+        );
+    }
+    let doc = std::fs::read_to_string(manifest.join("docs/release-acceptance.md"))
+        .expect("acceptance process documentation");
+    assert!(
+        doc.contains("independent reviewer only"),
+        "security scope must stay independent"
+    );
+}
