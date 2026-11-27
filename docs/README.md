@@ -17,6 +17,8 @@ project's front page.
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
+| Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
+| See who accepted which production claim | [Production acceptance sign-offs](release-acceptance.md) |
 | Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) or its [published wiki](https://macel94.github.io/rillcache/) |
 
 ## Run and operate
