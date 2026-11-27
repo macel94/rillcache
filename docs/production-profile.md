@@ -52,6 +52,40 @@ The [original upstream Tcl hash diagnostic](upstream-ci.md#compatibility-contrac
 compares the pinned native Redis and Valkey controls with Rillcache. Its result
 is evidence for the selected files and revision, not approval of the hash row.
 
+## Runtime configuration changes
+
+Startup options are read once. Only a declared mutable subset can change while
+running, and `CONFIG SET` is the reload path: every name/value pair in one
+command is validated against a candidate generation before anything is
+published, so a batch either applies completely or leaves the previous
+generation untouched.
+
+- **Mutable at runtime:** the listpack/intset thresholds
+  (`list-max-listpack-size`, `hash-max-listpack-entries`,
+  `hash-max-listpack-value`, `set-max-intset-entries`,
+  `set-max-listpack-entries`, `set-max-listpack-value`,
+  `zset-max-listpack-entries`, `zset-max-listpack-value`), `maxclients`,
+  `maxmemory`, `maxmemory-policy`, `appendfsync`, `requirepass`,
+  `notify-keyspace-events`, `slowlog-log-slower-than`, `slowlog-max-len`,
+  `commandstats-enabled`, `latency-monitor-threshold`,
+  `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`.
+- **Startup-only, rejected at runtime:** listeners and TLS material, worker and
+  socket topology, `dir`, `appendfilename`/`appendonly`, ACL-file path, audit
+  destinations, secret/`requirepass` files, request/frame limits, shutdown
+  deadline and the `config-version` marker. `CONFIG SET` returns an explicit
+  error such as `appendonly and appendfilename are startup-only; restart with
+  the desired options`, and `CONFIG REWRITE` explains that the startup file is
+  read-only. `CONFIG GET` does not invent values for unsupported names.
+- **Failure retention:** an invalid value, an unknown name or a startup-only name
+  rejects the entire batch; previously applied values stay in effect.
+
+`tests/runtime_config.rs` binds this contract in default, fixed-one and
+four-worker modes: a two-setting batch applies together, a batch mixing a valid
+value with `appendfilename` is rejected with the prior values intact, a batch
+with a negative listpack value is rejected with the prior values intact, and
+`CONFIG REWRITE` fails explicitly. TLS keeps its separately documented atomic
+generation reload.
+
 ## Audit custody boundary and compensating controls
 
 The audit path is **best-effort** and is not a custody chain: denial lines are

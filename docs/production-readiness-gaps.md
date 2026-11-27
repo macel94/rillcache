@@ -850,16 +850,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 
-- [ ] **O5. Configuration reload is missing.** [P0]
-  Listener/worker changes are startup-only; there is no general reload, atomic
-  configuration generation, rollback or validation report. TLS is a scoped
-  exception: a native test checks that one invalid SNI key rejects the
-  whole generation and that a repaired generation updates both default and
-  SNI stapled bytes. See also C13 and S5.
-  **Closes when:** mutable settings can be atomically reloaded, immutable changes
-  are rejected cleanly, and failed reloads retain the last valid configuration.
-
-- [ ] **O6. Slow-client and queue policy is incomplete.** [P1]
+- [x] **O5. Configuration reload is missing.** [P0]
+  **Complete (2026-11-27): mutable settings reload atomically, immutable changes
+  are rejected cleanly, and a failed reload retains the last valid
+  configuration.** `CONFIG SET` stages a candidate generation and validates every
+  name/value pair before publication, so a batch applies completely or not at
+  all. The profile now lists the mutable subset and the startup-only surface
+  (listeners, TLS material, worker topology, `dir`,
+  `appendonly`/`appendfilename`, ACL/audit/secret paths, limits, shutdown
+  deadline, `config-version`), and documents that startup-only or unknown names
+  return explicit errors (`appendonly and appendfilename are startup-only;
+  restart with the desired options`, `CONFIG SET option is unsupported or
+  invalid`) and that `CONFIG REWRITE` reports the startup file as read-only.
+  Evidence: `tests/runtime_config.rs`
+  `mutable_settings_reload_atomically_and_startup_only_names_fail_closed` runs in
+  default, fixed-one and four-worker modes: a two-setting batch applies
+  together; a batch mixing a valid value with `appendfilename` is rejected with
+  both prior values intact; a batch with a negative listpack value is rejected
+  with both prior values intact; `CONFIG REWRITE` fails explicitly; the server
+  keeps serving. TLS retains its separately documented atomic generation reload.
+  Not claimed: file-triggered reload, `CONFIG REWRITE`, or mutability beyond the
+  documented subset.- [ ] **O6. Slow-client and queue policy is incomplete.** [P1]
   Output is backpressured and bounded by connection limits, but there are no
   configurable slow-client thresholds, kill policy or fair-share guarantees for
   large replies, subscribers and blocked clients.

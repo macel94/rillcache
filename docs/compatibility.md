@@ -104,6 +104,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **Runtime changes are atomic and limited to a declared subset.** `CONFIG SET`
+  validates every pair before publishing, rejects startup-only names such as
+  `appendonly`/`appendfilename` and unknown names with an explicit error, and
+  leaves the previous values in effect when any pair fails. `CONFIG REWRITE` is
+  not supported. See
+  [runtime configuration](production-profile.md#runtime-configuration-changes).
 - **Audit records are best-effort and need compensating controls.** Denials go to
   an optional file and UDP syslog sink without sender authentication, encryption,
   delivery guarantee, retry or aggregation; the audit path never gates commands
