@@ -840,28 +840,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reads the value, a `+@pubsub`-only user observing the other tenant's channel
   through `PUBSUB CHANNELS`, and the process-wide `maxclients` limit. Not
   claimed: per-tenant quotas, databases, memory isolation or a multi-tenant
-  contract.- [ ] **S8. Secret handling needs hardening.** [P1]
-  Passwords can be passed on the command line, ACL hashes are unsalted
-  SHA-256 (Redis-compatible but fast to brute-force offline), and there is no
-  secret-manager integration or complete file-permission/rotation audit.
-  **Partial (2026-11-14): optional owner-only secret-file enforcement.**
-  `--secure-secret-files` refuses group/other-accessible password, ACL, audit
-  HMAC/keyring, AOF HMAC and TLS private-key files on Unix and enforces a
-  16-byte minimum password, and the security guide documents modes, a 256-bit
-  random-secret requirement, process-argument risk and rotate-then-revoke. Unit
-  tests cover loose/strict modes, short/long passwords and CLI parsing.
-  `--check-config --secure-secret-files` also checks Unix secret-file permissions
-  before startup, with redacted diagnostics suitable for preflight logs.
-  A startup file can opt in with `secure-secret-files yes`; the effective
-  setting follows file/CLI precedence and does not change the default.
-  Raw audit HMAC key files now have a byte-read bound shared by the server
-  and collector; this does not set a file I/O deadline or change rotation.
-  Secret-manager integration, enforced entropy/length for `--requirepass`, and
-  automatic audit of every deployment's permissions remain open.
-  **Closes when:** the supported secret sources, permissions, rotation and
-  process-argument risks are documented and tested, with long random secrets
-  required by deployment guidance or enforced.
+  contract.
 
+- [x] **S8. Secret handling needs hardening.** [P1]
+  **Complete (2026-11-27): the supported secret sources, permissions, rotation
+  and process-argument risks are documented and tested, and long random secrets
+  are required by guidance and enforced under the strict policy.** The security
+  guide now has a per-secret table (password file/inline, ACL file, journal HMAC
+  key, audit HMAC key and keyring, TLS private keys, client-certificate map,
+  rollback anchor) naming the source flag, the strict-mode permission rule and
+  the rotation path (`ACL LOAD`, atomic TLS generation reload, keyring
+  prepend/retire, explicit journal migration, restart), plus the process-argument
+  risk, the 256-bit random-secret requirement and the unsalted SHA-256 hash
+  caveat. `--secure-secret-files` refuses group/other-accessible files for every
+  one of those sources and requires at least 16 bytes for inline
+  `--requirepass`; `--check-config` runs the same validator before binding.
+  Evidence: `tests/secret_sources.rs`
+  `every_secret_source_requires_owner_only_permissions_in_strict_mode` drives the
+  real binary through `--check-config --secure-secret-files` for the password
+  file, ACL file, journal key and TLS key (owner-only accepted,
+  group/other-readable refused, permissive mode unchanged), and
+  `strict_mode_enforces_a_long_random_password_on_the_command_line` covers the
+  length rule; the existing unit tests cover the remaining fields. Not claimed:
+  secret-manager integration, owner-identity or entropy verification, automatic
+  audit of every deployment's permissions, or protection against an exposed ACL
+  file being brute-forced.
 - [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
