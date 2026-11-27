@@ -1088,12 +1088,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   clients and capacity release after a close; `tests/maxclients_info.rs` and the
   storage-ownership tests cover reporting and owner-thread isolation. Not
   claimed: a throughput SLO, multi-owner scaling, or cross-owner capacity
-  sharing.- [ ] **R2. The async Tokio transport is not promoted.** [P1]
-  The opt-in Tokio mode previously passed 18/20 protected conditions and was not
-  promoted; default Mio/fixed-worker paths retain polling tradeoffs. No readiness
-  or all-workload win is claimed.
-  **Closes when:** the async path clears the same gates as the default and is
-  selected by policy, or it is explicitly a non-default experimental option.
+  sharing.
+- [x] **R2. The async Tokio transport is not promoted.** [P1]
+  **Complete (2026-11-27) by the reviewed exclusion path: the async transport is
+  an explicitly non-default, experimental option outside the declared profile.**
+  The reviewed decision, its measurement basis (18/20 on the original protected
+  gate, 10/10 on the later comparison, losing candidate reverted) and the
+  operational contract are recorded in
+  [the async transport review record](async-transport.md#r2-review-record-opt-in-experimental-transport-outside-the-production-profile),
+  and the profile lists it under explicit exclusions: selection requires
+  `--io-mode tokio`, the default Mio/fixed-worker paths are the supported modes,
+  and no async result substitutes for the protected default-mode checks. Evidence:
+  `tests/network_modes.rs` runs the mode matrix (wire errors, blocking and
+  Pub/Sub shutdown, dynamic ACL, per-user connection caps) on the default Mio,
+  opt-in Tokio and fixed-worker modes in the required CI graph, and `make
+  test-async` keeps the transport and one-CPU constrained suites compiling and
+  passing through the async engine. Not claimed: any readiness, all-workload or
+  latency win for async, or permission to select it for the declared profile; a
+  promotion still requires a source change that clears every protected condition
+  on the same head plus a reviewed profile update.
 
 - [ ] **R3. Fixed-worker and patient polling policy lacks a hard latency contract.** [P1]
   Fixed workers use nonblocking polling with a 1 ms idle wait, a bounded active
