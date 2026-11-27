@@ -1108,7 +1108,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client floods 2,000 `PING`s, and 8× the worker count in concurrent clients all
   served, for both `--threads 1` and `--threads 4`. Not claimed: a CPU or latency
   SLO, real-time deadlines, fair-share or preemption; idle/contended CPU remains a
-  benchmark-study measurement.- [ ] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
+  benchmark-study measurement.
+
+- [ ] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
   `KEYS`, `SORT`, `SCAN` snapshots, geospatial searches, large collection
   operations and full-state rewrites can hold the execution turn for a long time.
   There is no per-command deadline, cancellation or CPU quota.
