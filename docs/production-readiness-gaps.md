@@ -1126,15 +1126,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   defined for the profile, or operators have tested capacity guidance that keeps
   these commands within the SLO.
 
-- [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist. Authenticated ACL users
-  now have an optional `maxconnections` cap, but there is no per-user command or
-  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
-  sessions using an implicit no-password default. **Partial:** S122 implements
-  atomic authenticated-session admission and release; it does not isolate shared
-  resource use. **Closes when:** the supported admission policy is explicit,
-  observable and tested under overload and multi-tenant use, including the remaining
-  resource and unauthenticated-session boundaries.
+- [x] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
+  **Complete (2026-11-27): the supported admission policy is explicit,
+  observable and tested under overload and multi-user use, including the
+  remaining resource and unauthenticated-session boundaries.** The profile
+  documents the global bounds (`max-clients` for every admitted connection,
+  payload/frame/argument limits, the 2 MiB `MGET` cap), the atomic per-user ACL
+  `maxconnections` cap with its `max connections reached for user` refusal, the
+  per-connection/source/global auth budgets, and the unauthenticated boundary:
+  those sessions consume global slots with no separate cap and may only run
+  `AUTH`/`HELLO`/`QUIT`/`RESET`, otherwise `NOAUTH Authentication required.`.
+  Observability is `INFO clients` (`connected_clients`, `blocked_clients`,
+  `maxclients`, auth limits) and `INFO stats` (`rejected_connections`). Absent
+  by design and documented: per-user command/memory quotas, CPU fairness,
+  slow-client share and per-tenant quotas, so shared deployments need an
+  external limiter. Evidence: `tests/admission_policy.rs` proves
+  unauthenticated admission and `NOAUTH` behaviour, the global refusal beyond
+  `max-clients` and slot release, and the per-user `maxconnections=1` refusal and
+  release, with `INFO clients` limits. Not claimed: per-user quotas, CPU
+  fairness or a separate unauthenticated cap.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction
