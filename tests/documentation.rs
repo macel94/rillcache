@@ -139,7 +139,10 @@ fn release_lifecycle_contract_is_published_and_enforced() {
         "Upgrade expectations",
         "Release gates",
     ] {
-        assert!(lifecycle.contains(section), "release contract is missing {section}");
+        assert!(
+            lifecycle.contains(section),
+            "release contract is missing {section}"
+        );
     }
 
     let script = manifest.join("scripts/cut-release.sh");
@@ -151,8 +154,17 @@ fn release_lifecycle_contract_is_published_and_enforced() {
 
     let notes = std::fs::read_to_string(manifest.join("docs/releases/v0.1.0.md"))
         .expect("versioned release notes");
-    for section in ["Candidate", "Compatibility profile", "Migration", "Rollback", "Support window"] {
-        assert!(notes.contains(section), "release notes are missing {section}");
+    for section in [
+        "Candidate",
+        "Compatibility profile",
+        "Migration",
+        "Rollback",
+        "Support window",
+    ] {
+        assert!(
+            notes.contains(section),
+            "release notes are missing {section}"
+        );
     }
 
     let checklist = std::fs::read_to_string(manifest.join("docs/production-readiness-gaps.md"))
