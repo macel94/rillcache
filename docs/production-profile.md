@@ -183,6 +183,38 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Slow-client and queue policy
+
+Every admitted connection has a bounded queue and bounded reply work; a slow
+reader cannot block the owner, the publisher or other clients.
+
+- **Pub/Sub:** each subscriber owns a 1,024-frame queue. Publishing is
+  non-blocking; when the queue is full the subscriber is removed and the attempt
+  is counted in `INFO stats` as `pubsub_queue_full_drops` (process lifetime,
+  excludes disconnected queues and socket write failures). Other subscribers
+  keep receiving.
+- **Per-connection output:** replies are written in bounded chunks from a
+  per-connection buffer and are never written by another thread, so a client
+  that stops reading affects only its own connection; its queue drains or the
+  connection is removed by the socket policy, not by unbounded buffering.
+- **Large multi-key replies:** `MGET` is refused with `ERR MGET reply limit
+  exceeded` when the reply would exceed 2 MiB, preventing duplicate-key
+  amplification; `max-bulk-bytes`/`max-frame-bytes` bound requests and
+  `max-clients` bounds admissions (see the capacity envelope).
+- **Blocked clients:** `BLPOP`-class waiters are bounded by `max-clients` and
+  `CLIENT UNBLOCK`/`CLIENT KILL`/pause; they hold no reply buffer while waiting.
+
+This profile does **not** provide configurable slow-client length/rate
+thresholds, a per-client kill policy, fair-share guarantees between clients, or
+per-tenant quotas; a single client can still consume its share of owner CPU
+while admitted. Operators that need those controls must place admission and
+rate limiting in front of the server.
+
+`tests/queue_policy.rs` pins the behaviour in default, fixed-one and
+four-worker modes: a non-reading subscriber is dropped and counted once its
+queue fills while the publisher and a healthy subscriber continue, and an 8×512
+KiB `MGET` is refused at the documented bound with the value intact.
+
 ## Eviction and access-statistics policy
 
 The selected eviction policies are `noeviction` (default), `allkeys-lru`,
