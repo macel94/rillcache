@@ -30,11 +30,149 @@ const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
 const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
 const MAX_AUTH_KEY_BYTES: usize = 1024;
 
+/// Upper bound for the bounded, text-encoded rollback anchor file.
+pub const AOF_ANCHOR_MAX_BYTES: usize = 512;
+const AOF_ANCHOR_MAGIC: &[u8] = b"rillcache-aof-anchor-v1\n";
+const AOF_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-anchor-mac-v1\0";
+
+/// External commitment to an authenticated journal prefix.
+///
+/// The anchor records the verified byte length and the keyed chain tag at that
+/// exact boundary, plus a MAC over both. A later start with the same key must
+/// find that boundary and tag, so a whole-journal rollback or a truncation of a
+/// durable suffix fails closed. Anchors are read-only server input: an operator
+/// creates one with `rillcache-backup anchor` after a verified checkpoint and
+/// pins it outside the data directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalAnchor {
+    verified_len: u64,
+    tag: [u8; 32],
+    mac: [u8; 32],
+}
+
+impl JournalAnchor {
+    pub fn create(key: &[u8], verified_len: u64, tag: [u8; 32]) -> Self {
+        let mac = anchor_mac(key, verified_len, &tag);
+        Self {
+            verified_len,
+            tag,
+            mac,
+        }
+    }
+
+    pub fn verified_len(&self) -> u64 {
+        self.verified_len
+    }
+
+    pub fn tag(&self) -> [u8; 32] {
+        self.tag
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(160);
+        out.extend_from_slice(AOF_ANCHOR_MAGIC);
+        out.extend_from_slice(format!("length {}\n", self.verified_len).as_bytes());
+        out.extend_from_slice(format!("tag {}\n", super::sha256::hex32(&self.tag)).as_bytes());
+        out.extend_from_slice(format!("mac {}\n", super::sha256::hex32(&self.mac)).as_bytes());
+        out
+    }
+
+    pub fn decode(key: &[u8], bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() > AOF_ANCHOR_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal rollback anchor exceeds its size bound",
+            ));
+        }
+        let text = bytes.strip_prefix(AOF_ANCHOR_MAGIC).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file is not a Rillcache journal rollback anchor",
+            )
+        })?;
+        let text = std::str::from_utf8(text)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "anchor is not valid UTF-8"))?;
+        let mut lengths = text.lines().filter(|line| !line.is_empty());
+        let length = lengths.next().and_then(|line| line.strip_prefix("length "));
+        let tag = lengths.next().and_then(|line| line.strip_prefix("tag "));
+        let mac = lengths.next().and_then(|line| line.strip_prefix("mac "));
+        let (Some(length), Some(tag), Some(mac)) = (length, tag, mac) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "anchor must contain exactly length, tag and mac lines",
+            ));
+        };
+        if lengths.next().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "anchor contains trailing data",
+            ));
+        }
+        let verified_len = length.parse::<u64>().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "anchor length is not a u64")
+        })?;
+        let tag = super::sha256::parse_hex32(tag).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "anchor tag is not a sha256 digest",
+            )
+        })?;
+        let stored = super::sha256::parse_hex32(mac).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "anchor mac is not a sha256 digest",
+            )
+        })?;
+        let computed = anchor_mac(key, verified_len, &tag);
+        if !super::sha256::constant_time_eq(&computed, &stored) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal rollback anchor does not authenticate under the configured key",
+            ));
+        }
+        Ok(Self {
+            verified_len,
+            tag,
+            mac: stored,
+        })
+    }
+
+    /// Read a bounded anchor file; an oversized or unreadable file fails closed.
+    pub fn load(key: &[u8], path: &Path) -> io::Result<Self> {
+        let bytes = File::open(path)
+            .and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take((AOF_ANCHOR_MAX_BYTES + 2) as u64)
+                    .read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot read journal rollback anchor {}: {error}",
+                        path.display()
+                    ),
+                )
+            })?;
+        Self::decode(key, &bytes)
+    }
+}
+
+fn anchor_mac(key: &[u8], verified_len: u64, tag: &[u8; 32]) -> [u8; 32] {
+    let mut hmac = super::sha256::HmacSha256::new(key);
+    hmac.update(AOF_ANCHOR_DOMAIN);
+    hmac.update(&verified_len.to_le_bytes());
+    hmac.update(tag);
+    hmac.finish()
+}
+
 /// Optional keyed authentication for journal transactions.
 #[derive(Clone)]
 pub struct JournalAuth {
     key: Vec<u8>,
     pub(crate) migrate: bool,
+    anchor: Option<JournalAnchor>,
 }
 
 impl JournalAuth {
@@ -45,7 +183,21 @@ impl JournalAuth {
                 "journal authentication key must be 16..=1024 bytes",
             ));
         }
-        Ok(Self { key, migrate })
+        Ok(Self {
+            key,
+            migrate,
+            anchor: None,
+        })
+    }
+
+    /// Require startup to verify this external rollback anchor.
+    pub fn with_anchor(mut self, anchor: JournalAnchor) -> Self {
+        self.anchor = Some(anchor);
+        self
+    }
+
+    pub fn anchor(&self) -> Option<&JournalAnchor> {
+        self.anchor.as_ref()
     }
 }
 
@@ -580,8 +732,10 @@ pub(super) struct Journal {
     checksum_nonce: Option<String>,
     auth_key: Option<Vec<u8>>,
     auth_migrate: bool,
+    auth_anchor: Option<JournalAnchor>,
     repair_tail: bool,
     auth_tag: Option<[u8; 32]>,
+    auth_commit: Option<(u64, [u8; 32])>,
     size: u64,
     rewrite_base: u64,
 }
@@ -645,9 +799,9 @@ impl Journal {
         }
         let file = options.open(path)?;
         let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-        let (auth_key, auth_migrate) = match auth {
-            Some(auth) => (Some(auth.key), auth.migrate),
-            None => (None, false),
+        let (auth_key, auth_migrate, auth_anchor) = match auth {
+            Some(auth) => (Some(auth.key), auth.migrate, auth.anchor),
+            None => (None, false, None),
         };
         Ok(Self {
             file,
@@ -665,8 +819,10 @@ impl Journal {
             checksum_nonce: None,
             auth_key,
             auth_migrate: auth_migrate && repair_tail,
+            auth_anchor,
             repair_tail,
             auth_tag: None,
+            auth_commit: None,
             size,
             rewrite_base: size,
         })
@@ -833,7 +989,17 @@ impl Journal {
         };
         let size = self.file.metadata().map(|meta| meta.len()).unwrap_or(0);
         if size == 0 {
+            if let Some(anchor) = self.auth_anchor {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "append-only journal is empty but the rollback anchor commits {} verified bytes; refusing a rolled-back journal",
+                        anchor.verified_len()
+                    ),
+                ));
+            }
             self.auth_tag = None;
+            self.auth_commit = None;
             self.file.seek(SeekFrom::Start(0))?;
             return Ok(());
         }
@@ -846,6 +1012,7 @@ impl Journal {
         let mut last_marker_end = 0u64;
         let mut anchor_tag: Option<[u8; 32]> = None;
         let mut previous_tag: Option<[u8; 32]> = None;
+        let mut anchored_tag: Option<[u8; 32]> = None;
         let mut anchor_hasher = Some({
             let mut hmac = super::sha256::HmacSha256::new(&key);
             hmac.update(AUTH_ANCHOR_DOMAIN);
@@ -914,6 +1081,12 @@ impl Journal {
                                 consumed += used;
                                 offset = offset.saturating_add(used as u64);
                                 last_marker_end = offset;
+                                if self
+                                    .auth_anchor
+                                    .is_some_and(|anchor| anchor.verified_len() == offset)
+                                {
+                                    anchored_tag = Some(computed);
+                                }
                             }
                             Some(AuthMarker::Record(tag)) => {
                                 if anchor_tag.is_none() {
@@ -944,6 +1117,12 @@ impl Journal {
                                 consumed += used;
                                 offset = offset.saturating_add(used as u64);
                                 last_marker_end = offset;
+                                if self
+                                    .auth_anchor
+                                    .is_some_and(|anchor| anchor.verified_len() == offset)
+                                {
+                                    anchored_tag = Some(computed);
+                                }
                             }
                             Some(AuthMarker::Malformed) => {
                                 return Err(io::Error::new(
@@ -983,6 +1162,26 @@ impl Journal {
             self.write_auth_anchor(&key)?;
             return Ok(());
         }
+        if let Some(anchor) = self.auth_anchor {
+            let Some(observed) = anchored_tag else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "journal is shorter than the rollback anchor: no authenticated boundary at {} bytes (last verified boundary is {last_marker_end}); refusing a truncated or rolled-back journal",
+                        anchor.verified_len()
+                    ),
+                ));
+            };
+            if !super::sha256::constant_time_eq(&observed, &anchor.tag()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "journal authentication chain differs from the rollback anchor at {} bytes; the journal was replaced or rewritten, so review it and re-create the anchor",
+                        anchor.verified_len()
+                    ),
+                ));
+            }
+        }
         if size > last_marker_end {
             // A crash can tear the final transaction/marker after its checksum
             // group. Discard that unacknowledged suffix; authenticated history up
@@ -991,8 +1190,17 @@ impl Journal {
             self.size = last_marker_end;
         }
         self.auth_tag = previous_tag;
+        self.auth_commit = previous_tag.map(|tag| (last_marker_end, tag));
         self.file.seek(SeekFrom::End(0))?;
         Ok(())
+    }
+
+    /// Verified authenticated boundary and chain tag of this journal, if any.
+    ///
+    /// This is read-only evidence for the offline anchor tool: it is the exact
+    /// (length, tag) pair a rollback anchor must commit to.
+    pub(super) fn auth_commitment(&self) -> Option<(u64, [u8; 32])> {
+        self.auth_commit
     }
 
     /// Seal the existing checksum-verified prefix once, enabling authentication

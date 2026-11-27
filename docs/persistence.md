@@ -172,8 +172,8 @@ database effect if the RESP journal is inspected or replayed by another
 Redis-compatible server.
 
 CRC32 detects accidental corruption, not a malicious editor that recomputes the
-checksum. Encryption at rest and key ownership/rotation remain open in production
-gap D3; optional record authentication is described next.
+checksum. Optional record authentication, the external rollback anchor and the
+encryption-at-rest/key-management contract are described in the next sections.
 
 ## Journal authentication
 
@@ -229,6 +229,93 @@ archive validation. Without it, backup verification still checks the outer CRC a
 checksums but cannot detect keyed modification. `create` refuses a nonempty
 journal that has no anchor when a key is supplied; run the server once with
 `--aof-hmac-migrate` after stopping it, then stop the server and take the backup.
+
+## Rollback and truncation anchor
+
+The keyed chain proves that the transactions it covers were written by the key
+holder and were not edited or reordered. It cannot, by itself, distinguish a
+valid journal from an older complete journal that was copied back over it, or
+from a durable suffix that was removed before the next start. Detection needs
+state outside the journal, so the profile supports an explicit external anchor.
+
+1. Stop the server and verify the journal with the offline tool, which replays
+   the authenticated journal under the exclusive ownership lock:
+
+   ```text
+   rillcache-backup anchor --dir /data --filename appendonly.aof \
+     --aof-hmac-key-file /run/secrets/rillcache-aof.key --output /run/anchors/aof.anchor
+   ```
+
+   The tool refuses to overwrite an existing anchor, writes the new file with
+   owner-only permissions, and prints the verified byte length and chain tag.
+   The anchor commits to the exact authenticated boundary (verified length plus
+   the keyed chain tag at that boundary) and is itself MACed under the journal
+   key, so it cannot be minted or edited without that key.
+
+2. Pin the anchor outside the data volume: read-only operator storage, a
+   configuration management record, or an append-only/WORM bucket. Anyone who can
+   rewrite both the journal and the anchor defeats the protection, so treat the
+   anchor like a signed release artifact.
+
+3. Start the server with `--aof-anchor-file PATH` (requires
+   `--aof-hmac-key-file` and `--appendonly yes`). Startup verification scans the
+   authenticated chain as before and additionally requires:
+
+   - an authenticated boundary at exactly the anchored length; a shorter journal
+     (rollback, restored older copy, or removed durable suffix) fails closed;
+   - the chain tag at that boundary equals the anchored tag; a replaced or
+     rewritten journal fails closed;
+   - an empty journal with an anchor fails closed.
+
+   Growth beyond the anchored boundary is normal and allowed. A crash-torn tail
+   after the anchored boundary is still discarded to the last verified marker.
+
+The anchor is read-only server input: the server never rewrites it, so a clean
+shutdown cannot silently bless a rolled-back state. After an approved
+`BGREWRITEAOF` (which replaces the chain and therefore invalidates the old
+anchor), review the rewrite, remove the old anchor explicitly, and run
+`rillcache-backup anchor` again. Every documented rollback drill must supply the
+pinned anchor when it restarts the server.
+
+Limits: the anchor protects the authenticated prefix only, does not add
+timestamps or replay counters beyond the chain tag, and cannot detect a rollback
+that also replaces the pinned anchor. It is not encryption and does not hide
+journal content.
+
+## Encryption at rest and key management
+
+Application-level journal encryption is an **explicit exclusion** for this
+profile. The journal is plain RESP and stays readable by a Redis-compatible tool
+with the key material's cooperation; encryption at rest is delegated to the
+platform:
+
+- run the data directory on full-disk or volume encryption (LUKS/dm-crypt,
+  cloud volume encryption) whose key is held by the platform, not beside the
+  journal; a stolen disk or snapshot then contains ciphertext;
+- keep the directory and journal owner-only (`--secure-secret-files` enforces
+  this for configured secret files on Unix), and never place the journal, the
+  HMAC key and the rollback anchor in one archive or one bucket policy;
+- share or network filesystems remain unsupported: there is no distributed
+  lease, so a second writer could bypass single-process ownership.
+
+Key custody and rotation:
+
+- the HMAC key is an operator-managed 16..=1024-byte file loaded once at
+  startup, readable at most 1027 bytes, never reported by `CONFIG GET`/`INFO`
+  and never accepted from a process argument by the documented deployment;
+- custody belongs to a secret store or orchestrator that mounts the file
+  read-only for the service account; back it up separately from the journal and
+  never commit it;
+- the server has no keyring, live rotation or key-version negotiation. Rotation
+  is an offline procedure: stop the server, take a verified backup, start with
+  `BGREWRITEAOF` under the new key after the documented migration review, and
+  re-create the rollback anchor; keep the old key until the previous archives
+  and anchors are retired. Any rotation without the offline rewrite is refused
+  by the chain check rather than silently re-keying.
+
+These controls do not constitute an independent security review, a KMS
+integration, key revocation, or confidentiality against a host-level attacker;
+those remain open in the readiness checklist.
 
 ## Single-process ownership
 
@@ -524,11 +611,15 @@ activity (for consumers that were deleted or renamed) is not retained.
 
 ## Deliberate gaps
 
-- No RDB import/export, manifest/multi-part AOF, encryption at rest, key rotation
-  or replication of the log. New RESP transactions have CRC32 checksums, and an
-  optional HMAC-SHA256 chain authenticates transaction content/order when a key is
-  configured. HMAC is not encryption, does not protect a whole-file replacement by
-  an attacker with the key, and is not an anti-rollback mechanism.
+- No RDB import/export, manifest/multi-part AOF, application-level encryption at
+  rest, live key rotation/keyring or replication of the log. New RESP transactions
+  have CRC32 checksums, an optional HMAC-SHA256 chain authenticates transaction
+  content/order when a key is configured, and an optional key-authenticated
+  external rollback anchor detects a whole-journal rollback or a removed durable
+  suffix. Encryption at rest is delegated to platform disk/volume encryption and
+  key rotation remains an offline rewrite procedure; HMAC and the anchor do not
+  provide confidentiality, and an attacker who can also replace the pinned anchor
+  defeats rollback detection.
   `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
   rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.

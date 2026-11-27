@@ -40,6 +40,11 @@ allowed.
   or `--secure-secret-files=no`; the existing bare flag means `yes`.
 - `aof-hmac-migrate` accepts `yes` (request migration) or `no` (no request;
   does not cancel an earlier request).
+- `aof-anchor-file` names the read-only external rollback anchor created by
+  `rillcache-backup anchor`; it requires `appendonly yes` and
+  `aof-hmac-key-file`, and a start fails closed when the journal is shorter than
+  the anchored boundary or its chain tag differs. See
+  [persistence](persistence.md#rollback-and-truncation-anchor).
 - The file must be valid UTF-8 and at most 1 MiB. The reader stops after at
   most 1 MiB plus one byte and rejects oversized input before parsing any
   directives. All file arguments in one invocation share a 4 MiB total budget;

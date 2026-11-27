@@ -249,6 +249,8 @@ pub struct Config {
     pub aof_hmac_key_file: Option<PathBuf>,
     /// One-time startup migration that seals an existing journal prefix.
     pub aof_hmac_migrate: bool,
+    /// Optional read-only external rollback anchor required at startup.
+    pub aof_anchor_file: Option<PathBuf>,
     /// Enable the append-only command journal.
     pub appendonly: bool,
     /// Journal basename inside `dir`; no path separators.
@@ -386,6 +388,7 @@ impl Default for Config {
             audit_hmac_keyring_file: None,
             aof_hmac_key_file: None,
             aof_hmac_migrate: false,
+            aof_anchor_file: None,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
@@ -476,8 +479,17 @@ impl Config {
                 .aof_hmac_key_file
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
+            || self
+                .aof_anchor_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.aof_anchor_file.is_some() && self.aof_hmac_key_file.is_none())
+            || (self.aof_hmac_migrate && self.aof_anchor_file.is_some())
             || (self.aof_hmac_migrate && self.aof_hmac_key_file.is_none())
-            || ((self.aof_hmac_key_file.is_some() || self.aof_hmac_migrate) && !self.appendonly)
+            || ((self.aof_hmac_key_file.is_some()
+                || self.aof_hmac_migrate
+                || self.aof_anchor_file.is_some())
+                && !self.appendonly)
             || self
                 .storage_owners
                 .is_some_and(|count| !(1..=64).contains(&count))
@@ -555,7 +567,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, a mapping file requires the mTLS CA and reload trigger and cannot be combined with inline mappings, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, and a rollback anchor needs both authentication and the journal, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, a mapping file requires the mTLS CA and reload trigger and cannot be combined with inline mappings, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -587,6 +599,7 @@ impl Config {
                 &self.audit_hmac_key_file,
                 &self.audit_hmac_keyring_file,
                 &self.aof_hmac_key_file,
+                &self.aof_anchor_file,
                 &self.tls_key_file,
                 &self.tls_reload_trigger,
                 &self.tls_client_cert_users_file,
@@ -670,6 +683,21 @@ impl Config {
             .transpose()
     }
 
+    /// Read the bounded, key-authenticated rollback anchor. It is never written
+    /// by the server: the operator pins it outside the data directory.
+    fn load_aof_anchor(&self, key: &[u8]) -> io::Result<Option<crate::engine::JournalAnchor>> {
+        self.aof_anchor_file
+            .as_ref()
+            .map(|path| crate::engine::JournalAnchor::load(key, path))
+            .transpose()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("invalid AOF rollback anchor: {error}"),
+                )
+            })
+    }
+
     fn load_audit_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
         if let Some(path) = &self.audit_hmac_keyring_file {
             let keys = crate::engine::read_audit_keyring(path).map_err(|error| {
@@ -743,9 +771,17 @@ impl Server {
         let audit_hmac_key = config.load_audit_hmac_key()?;
         let aof_hmac_key = config.load_aof_hmac_key()?;
         let mut store = if config.appendonly {
-            let journal_auth = aof_hmac_key
-                .map(|key| JournalAuth::new(key, config.aof_hmac_migrate))
-                .transpose()?;
+            let journal_auth = match aof_hmac_key {
+                Some(key) => {
+                    let anchor = config.load_aof_anchor(&key)?;
+                    let auth = JournalAuth::new(key, config.aof_hmac_migrate)?;
+                    Some(match anchor {
+                        Some(anchor) => auth.with_anchor(anchor),
+                        None => auth,
+                    })
+                }
+                None => None,
+            };
             Store::with_auth_and_journal(
                 config.max_data_bytes,
                 auth,
