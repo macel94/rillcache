@@ -417,6 +417,37 @@ describes current behavior, not a second checklist.
   mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;
   later password rotation uses authenticated `CONFIG SET`, and user changes use
   `ACL SETUSER` plus `ACL SAVE`.
+## Secret sources, permissions and rotation
+
+Every secret this server reads has one source flag, one permission rule under
+`--secure-secret-files`, and one rotation path. The same validator runs for
+startup and `--check-config`, so preflight and production agree.
+
+| Secret | Source | Strict-mode rule | Rotation |
+| --- | --- | --- | --- |
+| Default-user password | `--requirepass` (process arguments) or `--requirepass-file` | File must be regular with no group/other bits; an inline `--requirepass` must be at least 16 bytes | Restart with the new value; rotate-then-revoke per the guidance below |
+| ACL users and hashes | `--aclfile` | Regular file, owner-only | `ACL LOAD` (parsed fully before publishing) or restart; failed load keeps the previous rules |
+| Journal authentication key | `--aof-hmac-key-file` | Regular file, owner-only | Restart with the new key; migration is explicit, never implicit |
+| Audit per-line HMAC key | `--audit-hmac-key-file` | Regular file, owner-only in both server and collector | Restart; collector keeps the previous key available while old lines are verified |
+| Audit keyring | `--audit-hmac-keyring-file` | Regular file, owner-only; 16..=1024 bytes per key, at most eight keys | Replace the file and restart/reload the collector: the first key signs, all listed keys verify, so rotate by prepending the new key and dropping the retired one later |
+| TLS private key (default, SNI) | `--tls-key-file`, `--tls-sni-key-file` | Regular file, owner-only | Atomic TLS generation reload: an invalid key rejects the whole generation and keeps the previous one |
+| Client-certificate ACL map | `--tls-client-cert-users-file` | Regular file, owner-only | Reloads with the TLS generation; invalid or unknown ACL mappings retain the last good generation |
+| Rollback anchor | `--aof-anchor-file` | Regular file, owner-only | Created by `rillcache-backup anchor`; rotation is a backup-and-replace operation |
+
+Inline `--requirepass` and `--requirepass-file` content appear in process
+arguments or on disk; prefer the file form with owner-only permissions and a
+256-bit random secret. `--secure-secret-files` enforces mode bits and a minimum
+length, not owner identity, entropy, secret-manager custody or automatic
+rotation of every deployment. ACL password hashes are Redis-compatible unsalted
+SHA-256, so an exposed ACL file is offline-bruteforceable; protect it as a
+secret and prefer long random passwords.
+
+`tests/secret_sources.rs` drives the real binary through
+`--check-config --secure-secret-files` for the password file, ACL file, journal
+key and TLS key: owner-only files are accepted, group/other-readable files are
+refused, permissive mode is unchanged, and a short inline `--requirepass` is
+rejected while a 16-byte one is accepted.
+
 - **Owner-only secret files.** `--secure-secret-files` (Unix) refuses to start
   when a configured `--requirepass-file`, `--aclfile`, audit HMAC/keyring,
   AOF HMAC or TLS private-key path is not a regular file with no group/other
