@@ -348,30 +348,28 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   See [Pub/Sub](pubsub.md), [streams](streams.md) and
   [compatibility boundaries](compatibility.md#important-boundaries).
 
-- [ ] **C13. Configuration compatibility is missing.** [P1]
-  There is no full `redis.conf` parser, `CONFIG REWRITE` or complete runtime
-  configuration surface. Startup historically used only a CLI subset; selected
-  `CONFIG GET/SET` options exist at runtime.
-  **Partial (2026-11-14): bounded startup file.** `--config PATH` (or `-c`)
-  reads a UTF-8 file of one directive/value pair per line, with comments,
-  quoting, `maxmemory`/`maxclients` aliases and the same validation as CLI
-  flags. It is not a general `redis.conf`: includes, multi-value directives,
-  `save`, replication, modules and other unsupported language fail closed before
-  bind; later CLI options override earlier file values. See
-  [startup configuration](configuration.md). `--check-config` checks merged
-  startup options without starting the server; it does not test resource opening.
-  `config-version 1` can explicitly declare the startup file format; unmarked
-  files retain version 1 behavior. A parser test checks the documented example.
-  Startup config reads stop at the 1 MiB limit plus one byte; this is a per-file
-  bound and does not set an I/O timeout or limit the number of files.
-  **Remaining:** a complete defaults inventory, `CONFIG REWRITE`, live
-  reload/rollback and the complete runtime-mutable surface are absent, and the
-  upstream configuration language is not accepted.
-  **Closes when:** the supported configuration schema is versioned, validated
-  before bind, documented with defaults/precedence, and runtime-mutable settings
-  are atomic and complete for the profile.
-
-- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+- [x] **C13. Configuration compatibility is missing.** [P1]
+  **Complete (2026-11-27) for the declared Rillcache startup schema; this is not
+  `redis.conf` support.** The schema is versioned (`config-version 1` must be the
+  first directive; later, repeated or unsupported versions fail with a
+  line-numbered error; unmarked files keep version 1), validated before the
+  listener binds (unknown directives, invalid values, bad UTF-8, oversize and
+  forbidden directives fail closed), and documented with precedence
+  (last-wins in argument order, later CLI options override earlier files) and a
+  defaults/mutability table whose values a test compares with
+  `Config::default()`. Runtime mutability is atomic and limited to the
+  documented subset via `CONFIG SET` (see O5); `CONFIG REWRITE`, live file
+  reload, includes and the upstream language remain unsupported and are stated
+  as such. Evidence: `tests/config_schema.rs`
+  `documented_defaults_match_the_binary_defaults` pins every documented default
+  against the code, and
+  `the_schema_is_versioned_ordered_and_validated_before_bind` drives the real
+  binary through `--check-config` for a valid versioned file, CLI precedence, an
+  unversioned file, `config-version 2`, a misplaced marker, an unknown directive
+  and an invalid value; `tests/config_file.rs` unit tests cover the parser, and
+  `tests/runtime_config.rs` covers the atomic runtime subset. Not claimed:
+  `redis.conf` compatibility, `CONFIG REWRITE`, file-triggered reload or a
+  runtime-mutable surface beyond the documented subset.- [x] **C14. Transaction semantics diverge from Redis.** [P1]
   **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
