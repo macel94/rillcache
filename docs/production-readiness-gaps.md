@@ -61,7 +61,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
-| Availability and topology | Missing | No replication, failover, Sentinel or cluster |
+| Availability and topology | Excluded / open | Replication, cluster and failover excluded; recorded-pair upgrades/rollback complete (A4); topology runbooks and failure exercises (A5) still open |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
@@ -633,23 +633,53 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 3. Availability and topology
 
-- [ ] **A1. Replication is missing.** [P0]
-  `PSYNC`, `SYNC`, `REPLCONF`, `REPLICAOF host port` and `SLAVEOF host port`
-  return explicit replication-unsupported errors. `ROLE`/`INFO replication`
-  truthfully report a standalone master; `WAIT` returns 0 and `WAITAOF` only
-  acknowledges the local journal. A native TCP test pins the standalone role
-  and zero replication offset after a local write and rejected reconfiguration.
-  **Closes when:** full and partial synchronization, a consistent snapshot,
-  bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
-  interop pass; acknowledged-write loss is documented.
+- [x] **A1. Replication is missing.** [P0]
+  **Excluded by reviewed profile decision (2026-11-27), not implemented.**
+  Replication is removed from the declared profile: there is no full or partial
+  synchronization, consistent snapshot transfer, backlog, offsets, replica apply,
+  promotion or mixed-version interoperability, and the profile does not claim
+  any. The decision, rationale, alternatives and revisit triggers are recorded in
+  [the replication decision](replication.md#a1-profile-decision-replication-excluded),
+  together with the required honest single-node
+  [availability and data-loss statement](replication.md#single-node-availability-and-data-loss-statement)
+  (node loss = outage until a verified restore; the off-host archive is the
+  recovery point; two independent instances behind one address are prohibited).
+  The exclusion is enforced, not merely documented: `REPLICAOF`/`SLAVEOF`/
+  `PSYNC`/`SYNC`/`REPLCONF`/`FAILOVER` fail with the explicit unsupported error,
+  `SLAVEOF NO ONE` is the declared no-op, `ROLE`/`INFO replication` stay
+  `master`/`0`/`0` before and after local writes, `WAIT` acknowledges no replica,
+  `WAITAOF` describes only local journal state, and a second instance refuses to
+  attach and keeps its own keyspace. Evidence: `tests/replication_boundary.rs`
+  (all worker modes plus the two-instance isolation case) and the pinned-native
+  `Replication exclusion vs pinned replicas` job, which starts Redis 8.10.2 and
+  Valkey 9.1.2 with `--replicaof` against the candidate and requires
+  `master_link_status:down`, replica `DBSIZE 0`, no `+FULLRESYNC`/`+CONTINUE` and
+  an unchanged `master`/`0`/`0` candidate; the job is a declared dependency of
+  the required Tcl contexts. Failover/Sentinel (A2) remains open and is not
+  covered by this decision; cluster routing is excluded by the separate A3
+  decision.
 
-- [ ] **A2. Sentinel/failover is missing.** [P0]
-  There is no quorum failure detection, election, promotion, fencing, client
-  rediscovery or split-brain handling. A single process is a single point of
-  failure.
-  **Closes when:** a Sentinel-compatible control plane or equivalent is
-  implemented and tested with packet loss, partitions, stale configuration,
-  flapping nodes, leader loss, promotion and reconnect; RPO/RTO are stated.
+- [x] **A2. Sentinel/failover is missing.** [P0]
+  **Excluded by reviewed profile decision (2026-11-27); HA is outside the first
+  profile.** No Sentinel-compatible control plane, quorum detection, election,
+  promotion, fencing or client rediscovery exists and none is claimed. The
+  reviewed single-node boundary is recorded in the
+  [A2 decision](production-readiness/availability-and-topology.md#a2-profile-decision-sentinel-and-automatic-failover-excluded)
+  (rationale, rejected alternatives, revisit triggers, detection/recovery
+  contract and the hard rules against promoting stale copies or fronting two
+  writers). Enforced behavior: every `SENTINEL` form fails closed on the first
+  call, `FAILOVER` and `REPLICAOF`/`SLAVEOF` host forms return the explicit
+  replication-unsupported error, `REPLICAOF NO ONE`/`SLAVEOF NO ONE` are the
+  declared no-ops with no state change, and `ROLE`/`INFO replication` stay
+  `master` with `master_failover_state:no-failover`, zero replicas and no replid.
+  Evidence: `tests/failover_boundary.rs` (entry points, no-op promotion, reported
+  state, and a two-instance drill where killing the primary loses its address and
+  data while the survivor does not take over), plus the measured restore path from
+  the D5 drill. The replication link itself is the separate A1 decision and is not
+  claimed here. Recovery is the documented verified restore, never an election: RPO is
+  the newest off-host verified archive and RTO is the measured restore plus
+  validation before traffic. Upgrades/rollback (A4) and topology runbooks/failure
+  exercises (A5) remain open and are not covered by this decision.
 
 - [x] **A3. Cluster mode is missing.** [P0]
   **Complete (2026-11-26) by the criterion's exclusion branch: the profile
@@ -666,12 +696,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   bare command an arity error, and proves `MGET` over different hash tags
   returns both local values with no `CROSSSLOT`, `MOVED` or `ASK`. This is an
   explicit exclusion, not cluster support, and does not imply topology discovery,
-  partition handling or rolling upgrades (A4).- [ ] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
-  There is no supported version-skew matrix, on-disk format migration policy,
-  downgrade procedure or canary/rollback evidence. The package is still `0.1.0`.
-  **Closes when:** the profile defines supported upgrade paths, format
-  compatibility and rollback; CI exercises old/new combinations and a failed
-  upgrade preserves recoverable data.
+  partition handling or rolling upgrades (A4).
+- [x] **A4. Rolling upgrade, rollback and mixed-version compatibility are missing.** [P0]
+  **Complete (2026-11-27) for a recorded exact-binary pair with a tested
+  upgrade/downgrade/rollback contract.** [`ci/upgrade-pins.json`](../ci/upgrade-pins.json)
+  pins the first pair — baseline commit `a98e2959`
+  (`0.1.0-rc-baseline-a4`) → current head (`0.1.0-rc-current`) — and states that
+  each future release must pin its predecessor. The reviewed policy, format
+  compatibility rule, rollback guarantee, failed-upgrade guarantee and traffic
+  cutover procedure are in the
+  [A4 policy](production-readiness/availability-and-topology.md#a4-upgrade-downgrade-and-rollback-policy).
+  `scripts/upgrade_drill.py` builds nothing itself: it takes both exact binaries
+  and proves (a) the baseline journal is preserved with a verified archive before
+  the attempt and never modified, (b) the target binary opens it and serves
+  identical data, absolute expirations and accounting, then appends its own
+  writes, (c) the baseline binary opens the upgraded journal and the observed
+  downgrade outcome matches the reviewed pin (`serves` for this pair), (d) an
+  upgrade killed after accepted writes still leaves the preserved journal and
+  archive restorable by the baseline binary while the target recovers its own
+  acknowledged prefix, and (e) rollback from the preserved archive restores the
+  exact pre-upgrade state. Measured locally on this pair (400 keys): baseline
+  journal 196,229 bytes, upgrade startup 15.062 ms, rollback restore 12.615 ms,
+  downgrade `serves`, zero failures. The fail-closed `Upgrade and rollback drill`
+  job builds both commits from source and runs the drill with the log's ordinary
+  test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
+  migration, downgrade outside the pinned pair, or mixed-version replication.
 
 - [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin
