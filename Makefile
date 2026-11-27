@@ -60,6 +60,11 @@ test:
 test-storage-faults:
 	RILLCACHE_MOUNT_FAULTS=1 $(CARGO) test $(CARGO_FLAGS) --release --test durability_faults -- --test-threads=1 --nocapture
 
+# Measured quiescent-copy, isolated-restore, retention and RPO/RTO drill (D5).
+restore-drill:
+	$(CARGO) build $(CARGO_FLAGS) --release --bins
+	python3 scripts/restore_drill.py --server target/release/rillcache --backup target/release/rillcache-backup --output target/restore-drill
+
 test-async:
 	printf '\nTesting opt-in async Tokio engine\n'
 	RILLCACHE_TEST_THREADS=tokio $(CARGO) test $(CARGO_FLAGS) --test server --test network_modes

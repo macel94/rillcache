@@ -371,6 +371,80 @@ is unsupported and is explicitly excluded by the
 [standalone production profile](production-profile.md). Keep journals on local
 storage or guarantee single-process access externally.
 
+## Isolated restore drill, RPO/RTO and retention
+
+`scripts/restore_drill.py` is the repeatable D5 drill. `make restore-drill`
+builds the server and the offline tool, then runs it; the required `Tests and
+offline CI` graph depends on the `Isolated backup/restore drill` job, so a
+regression in the procedure fails a protected check. Artifacts retain
+`result.json` and `summary.md` for the exact tested head.
+
+The drill performs this sequence with the real binaries:
+
+1. start an isolated source instance (`appendonly yes`, `appendfsync always`) and
+   load a deterministic mixed dataset — binary strings, lists, hashes, sets,
+   sorted sets, streams with a consumer group, counters and absolute
+   `PEXPIREAT` deadlines;
+2. snapshot the source exactly: key set, per-key `TYPE`/value bytes,
+   `PEXPIRETIME`, `DBSIZE`-equivalent keyspace line and `MEMORY STATS`
+   (`keys.count`, `dataset.bytes`);
+3. attempt an **online** copy while the source serves and assert that `create`
+   is refused and publishes no archive (the exclusion below is enforced, not
+   only documented);
+4. stop the source cleanly, `create` a quiescent archive, `verify` it, then
+   `restore` it into a separate directory and confirm that only the restored
+   journal exists (no staging residue) and that the source journal is unchanged;
+5. start a second instance **from the restored journal** and compare the exact
+   state captured in step 2 — per-key absolute expirations must be identical,
+   so TTLs cannot silently reset or drift; `db0:keys`/`expires`/`subexpiry` and
+   the payload accounting must match exactly, while the clock-derived `avg_ttl`
+   aggregate is accepted only inside a bounded elapsed-time window;
+6. repeat for a second and third recovery point (mutations after the previous
+   archive) so archives represent distinct points in time;
+7. apply the retention rule (keep the newest `--retain` verified archives, delete
+   the rest), verify every retained archive, and restore each retained archive
+   into its own isolated instance and re-compare the state for that point.
+
+Measured bounds are recorded per run. On the drill job's host and the default
+2000-key dataset the components are tens to low hundreds of milliseconds
+(`create`, `verify`, `restore`, isolated startup, restore-to-serving); the
+artifact contains the exact numbers for the tested head and is the evidence — no
+fixed latency promise is implied. Capacity, disk speed and archive size scale
+them.
+
+**Recovery point objective (RPO).** The supported procedure is quiescent: stop
+the writer, then copy. An acknowledged write is in the journal before its reply
+(`appendfsync always`), so a quiescent copy loses **zero acknowledged writes**;
+the drill asserts exact equality of the restored state. There is no supported
+online copy and no point-in-time recovery: `create` refuses a live writer, the
+archive contains only the journal, and there is no history replay from which to
+choose an earlier instant. A deployment that needs a smaller window must
+schedule a freeze or accept the last archive it took.
+
+**Recovery time objective (RTO).** The measured restore path is
+`restore` + isolated startup + validation; validation is mandatory before
+traffic because it is what proves the data, TTLs and accounting survived. Treat
+the drill's measured restore-to-serving time for the archive size in use as the
+planning input, and re-run the drill on the deployment's own hardware and dataset
+size before setting an SLO.
+
+**Retention.** Default rule: keep the newest two verified archives per dataset
+and delete older ones; the drill proves that the pruned archive is gone, that
+every retained archive verifies, and that each retained archive still restores
+its own recovery point. Operators must copy retained archives (and the matching
+rollback anchors) to storage outside the data volume and its backup domain;
+`verify` before every restore, and never treat an unverified archive as a
+backup. There is no automatic scheduler, no online rotation and no archive
+integrity beyond CRC32 plus the authenticated-journal checks described above.
+
+**Explicit exclusion for online backup and PITR.** The production profile does
+not support online copies, incremental backups, replication-based snapshots or
+point-in-time recovery. The operational contract is: schedule a bounded freeze,
+stop the process cleanly, verify the archive, restore and validate in isolation
+before switching traffic, and retain verified archives per the rule above. The
+drill asserts the refusal of an online copy so the exclusion cannot silently
+regress into an unsafe partial feature.
+
 ## Import a bounded offline string journal
 
 For a deliberately exported DB 0 string dataset, `scripts/import_string_journal.py`
