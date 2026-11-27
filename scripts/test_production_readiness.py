@@ -1,3 +1,4 @@
+import re
 import contextlib
 import io
 import json
@@ -62,6 +63,28 @@ class ProductionReadinessTests(unittest.TestCase):
         ):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 inventory(broken)
+
+
+    def test_rejects_a_gap_item_glued_onto_the_previous_paragraph(self):
+        # A merge has repeatedly produced "<text>.- [ ] **O3. ..." which parses as
+        # prose and silently removes the item from the inventory.
+        text = checklist().replace(
+            "- [ ] **C1. ",
+            "preceding paragraph text.- [ ] **C1. ",
+        )
+        with self.assertRaisesRegex(ValueError, "glued"):
+            inventory(text)
+
+    def test_rejects_a_gap_in_an_area_sequence(self):
+        # Deleting a middle item must fail even when the remaining ids parse.
+        text = re.sub(
+            r"(?m)^- \[ \] \*\*C1\..*$",
+            lambda match: match.group(0) + "\n- [ ] **C3. Skipped two.** [P0]",
+            checklist(),
+            count=1,
+        )
+        with self.assertRaisesRegex(ValueError, "not contiguous"):
+            inventory(text)
 
     def test_rejects_ready_assertion_with_blockers(self):
         with self.assertRaisesRegex(ValueError, "contradicts open P0/P1"):
