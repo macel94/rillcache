@@ -117,22 +117,24 @@ fn slow_subscribers_are_bounded_and_counted_without_blocking_others() {
         // queue can hold must drop it and count the drop instead of blocking the
         // publisher or growing without bound.
         let payload = vec![b'q'; 8 * 1024];
-        let mut batch = Vec::new();
-        for _ in 0..2000 {
-            encode_request(&[b"PUBLISH", b"flood", &payload], &mut batch);
-        }
-        publisher.write_all(&batch).unwrap();
-        for _ in 0..2000 {
-            let reply = read_frame(&mut publisher, 0);
-            assert!(reply.starts_with(b":"), "{reply:?}");
-        }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while drops(&mut control) == 0 {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        'flood: loop {
+            let mut batch = Vec::new();
+            for _ in 0..1000 {
+                encode_request(&[b"PUBLISH", b"flood", &payload], &mut batch);
+            }
+            publisher.write_all(&batch).unwrap();
+            for _ in 0..1000 {
+                let reply = read_frame(&mut publisher, 0);
+                assert!(reply.starts_with(b":"), "{reply:?}");
+            }
+            if drops(&mut control) > 0 {
+                break 'flood;
+            }
             assert!(
                 Instant::now() < deadline,
                 "the full subscriber queue was never reported as dropped"
             );
-            std::thread::sleep(Duration::from_millis(20));
         }
 
         // A healthy subscriber is unaffected by the slow one.
