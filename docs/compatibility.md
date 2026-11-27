@@ -52,7 +52,10 @@ show what has actually been checked, including exclusions and failures.
   failover and Redis Cluster routing are not supported. `ROLE` reports a
   standalone master with no replicas or replication stream; it does not imply
   replica or failover support. Cluster clients that need `CLUSTER SHARDS`,
-  `SLOTS`, or `NODES` cannot connect as a cluster. Sharded-channel pub/sub is a
+  `SLOTS`, `NODES`, `KEYSLOT`, `MOVED`/`ASK` redirects, `CROSSSLOT` semantics,
+  hash tags or topology refresh cannot connect as a cluster: every `CLUSTER`
+  subcommand except `HELP` returns `ERR This instance has cluster support
+  disabled`, and multi-key commands over different hash tags run locally. Sharded-channel pub/sub is a
   messaging namespace, not a distributed cluster.
   See [replication status](replication.md) and [unsupported capabilities](unsupported.md).
 - **Command discovery is not a compatibility matrix.** Hosted RESP2 tests
