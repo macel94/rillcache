@@ -80,6 +80,8 @@ is in `rillcache --help`.
 | --- | --- | --- |
 | `max-clients` | `128` | mutable (`CONFIG SET maxclients`) |
 | `max-data-bytes` | `67108864` (64 MiB) | mutable (`CONFIG SET maxmemory`) |
+| `memory-bound-bytes` | unset | startup-only |
+| `memory-bound-headroom-bytes` | unset | startup-only |
 | `appendfsync` | `everysec` | mutable (`CONFIG SET appendfsync`) |
 | `max-bulk-bytes` | `1048576` (1 MiB) | startup-only |
 | `max-frame-bytes` | `2097152` (2 MiB) | startup-only |
@@ -92,6 +94,13 @@ is in `rillcache --help`.
 | `auth-source-window-ms` | `60000` | startup-only |
 | `appendonly` | `no` | startup-only |
 | `storage-owners` | one owner | startup-only |
+
+The optional resident-memory bound is a pair: `memory-bound-bytes` and
+`memory-bound-headroom-bytes` must be given together, the headroom must be
+positive and smaller than the bound, and the bound must fit inside a readable
+cgroup limit. Startup fails closed otherwise and the derived payload budget caps
+`max-data-bytes`; see
+[the memory bound](production-profile.md#resident-memory-bound-and-headroom-guidance).
 
 Mutability here means "changeable at runtime through `CONFIG SET`". That
 command validates every pair before publishing and the documented mutable subset

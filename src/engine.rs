@@ -50,7 +50,7 @@ mod notify;
 mod options;
 mod owner_actor;
 mod partition;
-mod process_memory;
+pub(crate) mod process_memory;
 mod pubsub;
 mod router;
 mod scan;
@@ -309,6 +309,8 @@ pub struct ServerServices {
     /// Set once a multi-owner router (not a single local owner) serves requests.
     multi_owner: std::sync::atomic::AtomicBool,
     dataset_override: std::sync::Mutex<Option<DatasetStats>>,
+    /// Declared resident-memory bound resolved at bind time, for INFO reporting.
+    memory_bound: std::sync::RwLock<Option<crate::memory_bound::MemoryBound>>,
     error_dialect: RwLock<ErrorDialect>,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -401,6 +403,18 @@ impl ServerServices {
         }
     }
 
+    /// Record the declared resident-memory bound resolved at bind time.
+    pub(crate) fn set_memory_bound(&self, bound: crate::memory_bound::MemoryBound) {
+        if let Ok(mut guard) = self.memory_bound.write() {
+            *guard = Some(bound);
+        }
+    }
+
+    /// The declared resident-memory bound, if one was configured.
+    pub(crate) fn memory_bound(&self) -> Option<crate::memory_bound::MemoryBound> {
+        self.memory_bound.read().ok().and_then(|guard| *guard)
+    }
+
     /// Publish the fixed startup layout so diagnostics and routing agree.
     pub(crate) fn set_router(&self, router: shard::ShardRouter) {
         if let Ok(mut shared) = self.router.write() {
@@ -428,6 +442,7 @@ impl ServerServices {
             payload_committed: std::sync::atomic::AtomicUsize::new(0),
             multi_owner: std::sync::atomic::AtomicBool::new(false),
             dataset_override: std::sync::Mutex::new(None),
+            memory_bound: std::sync::RwLock::new(None),
             error_dialect: RwLock::new(ErrorDialect::default()),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
