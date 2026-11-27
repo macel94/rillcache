@@ -355,3 +355,43 @@ fn package_visibility_is_recorded_and_gated_before_publish() {
         String::from_utf8_lossy(&unit.stderr)
     );
 }
+
+/// P7: the published version matrix and load model are tied to the pinned files.
+/// The checker fails when a pinned upstream or client version drifts, when the page
+/// names an unpinned entry, when an exercising workflow is missing, or when the
+/// retained limits (single hardware generation, no saturation model, competitors
+/// are not gates) are dropped.
+#[test]
+fn published_version_matrix_matches_the_pinned_files() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_compat_matrix.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline compatibility-matrix check");
+    assert!(
+        check.status.success(),
+        "compatibility matrix check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Compatibility matrix valid"),
+        "unexpected compatibility matrix output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_compat_matrix"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the compatibility-matrix regression tests");
+    assert!(
+        unit.status.success(),
+        "compatibility matrix regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
