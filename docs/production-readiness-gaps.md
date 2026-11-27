@@ -985,16 +985,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 6. Resource safety and scalability
 
-- [ ] **R1. The default data path is single-owner.** [P0]
-  `--storage-owners 1` is the default. Opt-in `--storage-owners N` exists, but its
-  own measurements show it below the one-owner path at pipeline 16 on the test
-  host; no protected benchmark gates multi-owner mode. The thread-per-core target
-  is not complete.
-  **Closes when:** the declared profile either states a single-owner capacity
-  limit or demonstrates multi-owner scaling with matched workloads, CPU budgets,
-  tails and cross-owner atomicity tests.
-
-- [ ] **R2. The async Tokio transport is not promoted.** [P1]
+- [x] **R1. The default data path is single-owner.** [P0]
+  **Complete (2026-11-27) by the criterion's first branch: the profile states a
+  single-owner capacity limit.** The default `Config` keeps `storage_owners`
+  unset, so data commands run on one owner thread and command-execution
+  parallelism is one CPU. `--storage-owners 2..=64` remains opt-in experimental:
+  its own measurements are below the one-owner path at pipeline 16 on the test
+  host, no protected benchmark gates multi-owner mode, and no scaling claim is
+  made. The profile now declares the enforced capacity envelope (one owner; 128
+  admitted clients by default with an explicit `max number of clients reached`
+  refusal; 64 MiB logical payload refused without partial application; 1 MiB
+  argument and 2 MiB frame bounds) and states that actual capacity is whichever
+  limit is reached first, excluding metadata, buffers, sockets and allocator
+  overhead from the payload budget. Evidence: `tests/owner_capacity.rs`
+  `the_declared_single_owner_envelope_is_the_default_and_enforced` asserts the
+  single-owner/128-client defaults and, in default, fixed-one and four-worker
+  modes, the explicit third-client refusal, continued service for admitted
+  clients and capacity release after a close; `tests/maxclients_info.rs` and the
+  storage-ownership tests cover reporting and owner-thread isolation. Not
+  claimed: a throughput SLO, multi-owner scaling, or cross-owner capacity
+  sharing.- [ ] **R2. The async Tokio transport is not promoted.** [P1]
   The opt-in Tokio mode previously passed 18/20 protected conditions and was not
   promoted; default Mio/fixed-worker paths retain polling tradeoffs. No readiness
   or all-workload win is claimed.
