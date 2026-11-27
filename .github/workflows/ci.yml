@@ -18,6 +18,31 @@ env:
   RUST_BACKTRACE: '1'
 
 jobs:
+  restore-drill:
+    name: Isolated backup/restore drill
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository-pinned minimal Rust toolchain
+        run: rustup show active-toolchain
+      - name: Offline drill-harness tests
+        run: python3 -m unittest scripts.test_restore_drill -v
+      - name: Build the server and the offline backup tool
+        run: cargo build --release --locked --offline --bins
+      - name: Quiescent copy, isolated restore, retention and measured RPO/RTO
+        run: python3 scripts/restore_drill.py --server target/release/rillcache --backup target/release/rillcache-backup --output target/restore-drill
+      - name: Preserve drill results and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: restore-drill-${{ github.sha }}
+          path: target/restore-drill/
+          retention-days: 30
+          if-no-files-found: warn
+
   storage-faults:
     name: Real storage-fault drill
     runs-on: ubuntu-24.04
@@ -43,7 +68,7 @@ jobs:
 
   verify:
     name: Tests and offline CI
-    needs: storage-faults
+    needs: [storage-faults, restore-drill]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
