@@ -74,12 +74,12 @@ pub fn resolve(
             "--memory-bound-headroom-bytes must be smaller than --memory-bound-bytes".into(),
         );
     }
-    if let Some(limit) = observations.cgroup_limit_bytes {
-        if bound_bytes > limit {
-            return Err(format!(
-                "--memory-bound-bytes {bound_bytes} exceeds the cgroup limit {limit}"
-            ));
-        }
+    if let Some(limit) = observations.cgroup_limit_bytes
+        && bound_bytes > limit
+    {
+        return Err(format!(
+            "--memory-bound-bytes {bound_bytes} exceeds the cgroup limit {limit}"
+        ));
     }
     let baseline_bytes = observations.resident_bytes.ok_or(
         "--memory-bound-bytes requires a readable process resident set; not supported here",
@@ -99,6 +99,22 @@ pub fn resolve(
         cgroup_limit_bytes: observations.cgroup_limit_bytes,
         payload_limit_bytes: request.payload_limit_bytes.min(derived),
     }))
+}
+
+/// Read the startup observations used by [`resolve`] from this process.
+///
+/// Resident set and cgroup limits are Linux-only observations; both map to
+/// `None` elsewhere so a declared bound fails closed instead of pretending to
+/// be enforceable.
+pub fn observe() -> MemoryObservations {
+    let resident_bytes =
+        crate::engine::process_memory::snapshot().map(|memory| memory.resident_bytes);
+    let cgroup_limit_bytes =
+        crate::engine::process_memory::cgroup_snapshot().and_then(|memory| memory.limit_bytes);
+    MemoryObservations {
+        resident_bytes,
+        cgroup_limit_bytes,
+    }
 }
 
 #[cfg(test)]
@@ -235,21 +251,5 @@ mod tests {
         .expect("valid bound")
         .expect("configured");
         assert_eq!(small.payload_limit_bytes, 4 * MIB);
-    }
-}
-
-/// Read the startup observations used by [`resolve`] from this process.
-///
-/// Resident set and cgroup limits are Linux-only observations; both map to
-/// `None` elsewhere so a declared bound fails closed instead of pretending to
-/// be enforceable.
-pub fn observe() -> MemoryObservations {
-    let resident_bytes =
-        crate::engine::process_memory::snapshot().map(|memory| memory.resident_bytes);
-    let cgroup_limit_bytes =
-        crate::engine::process_memory::cgroup_snapshot().and_then(|memory| memory.limit_bytes);
-    MemoryObservations {
-        resident_bytes,
-        cgroup_limit_bytes,
     }
 }
