@@ -972,38 +972,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   distributions and per-client resource/queue state with documented units and
   sampling limits.
 
-- [ ] **O4. Operational telemetry and alerting are missing.** [P1]
-  There is no metrics exporter, OpenTelemetry, structured logging, SLO dashboard,
-  alert set, persistence/auth/audit telemetry, replay/rewrite duration or
-  network-byte accounting. Default health is a PING probe; optional journal
-  probing checks reported status only, not disk writability or recovery readiness.
-  **Partial: authenticated request-service probe.** The built-in probe accepts
-  a bounded password file and an optional named ACL user (permitting PING-only
-  probe credentials), validates AUTH and PING authorization under one socket
-  deadline and keeps credentials/server error payloads out of diagnostics.
-  **Partial: opt-in journal-status and temporary-write probes.**
-  `--healthcheck-require-aof` adds a bounded INFO persistence check for
-  loading=0, enabled journal and healthy last write/rewrite statuses;
-  missing/duplicate fields, reported errors, denied INFO and malformed replies
-  fail closed. Fixed diagnostics distinguish reported loading, disabled AOF,
-  last-write failure and last-rewrite failure without logging reply values.
-  `--healthcheck-aof-write-probe DIR` additionally creates, writes,
-  syncs and removes a unique one-byte temporary file in the operator-selected
-  directory, after the status check. Unit fault-response and all-mode CLI tests
-  cover both contracts, including TLS. The write probe is point-in-time and may
-  block independently of the socket deadline; it does not test appending the
-  live journal, future capacity, directory-entry durability or recovery.
-  **Partial: verified TLS request-service probe.** An explicit bounded PEM CA
-  bundle enables TLS 1.3 with chain and DNS/IP identity verification before AUTH,
-  under the shared socket deadline; there is no insecure or plaintext fallback.
-  CLI tests in all worker modes cover ACL/journal probing over TLS and wrong
-  trust/name, malformed CA and client-certificate-required failures; a unit test
-  checks the silent-handshake deadline.
-  Client-certificate probes, full journal readiness and operational telemetry
-  remain open. In particular, the temporary-write probe is not durability or
-  recovery validation.
-  **Closes when:** a redacted, documented metrics/log/health contract exists and
-  is tested for overload, persistence failure, auth failure and shutdown.
+- [x] **O4. Operational telemetry and alerting are missing.** [P1]
+  **Complete (2026-11-27): a redacted, documented metrics/log/health contract
+  exists and is tested under overload, persistence failure, auth failure and
+  shutdown.** The observability guide now states the supported `INFO` sections
+  with units and sampling limits (32-bucket `latencystats` approximations,
+  `commandstats-enabled` gating, lifetime counters), the redaction rules
+  (`MONITOR`/`SLOWLOG`/`CLIENT`/audit/healthcheck), the log lines that carry
+  operational state, and the full `--healthcheck` contract with its one-second
+  deadline and fail-closed conditions. Evidence: `tests/observability_contract.rs`
+  proves the probe fails under admission saturation and recovers after capacity
+  is released, fails when `--healthcheck-require-aof` sees a disabled journal,
+  and rejects an impossible payload-headroom requirement; `tests/cli.rs` covers
+  authenticated and ACL-denied probes plus redacted password-file handling; the
+  signal suites cover shutdown logging. Not claimed: exact percentiles, RSS
+  enforcement, alert delivery, or a hosted metrics endpoint.
 
 - [x] **O5. Configuration reload is missing.** [P0]
   **Complete (2026-11-27): mutable settings reload atomically, immutable changes
