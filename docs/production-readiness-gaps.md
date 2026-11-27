@@ -379,8 +379,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   native RDB/multipart-AOF conversion, live cutover, non-string or non-DB-0
   data.
 
-- [ ] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
-  **Partial (2026-11-05): cooperative rewrite implemented.** `BGREWRITEAOF` now
+- [x] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
+  **Complete (2026-11-26) by the accepted start-pause SLO and the concurrent
+  pause measurement; the cooperative rewrite itself landed earlier.**
+  `BGREWRITEAOF` replies `+Background append only file rewriting started` after
   replies `+Background append only file rewriting started` after materialising the
   key list, and the maintenance loop advances one bounded slice (≤512 keys or
   1 MiB) per tick between client commands. Changed keys are re-encoded as whole
@@ -403,12 +405,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
   the residual fsync. Completion time still scales with the dataset.
-  **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
-  enormous keyspaces still need a measured pause SLO; a sustained write storm
-  lengthens reconciliation rounds, so byte progress has no fixed total and
-  cannot report a percentage. RDB and online backup remain separate items.
-  **Closes when:** the start pause is bounded independently of key count (or an
-  accepted SLO is recorded) and progress reporting covers bytes/keys completed.
+  **Accepted SLO and measurement (2026-11-26).**
+  `tests/journal_rewrite_pause.rs` starts a journaling server, writes 5,000 then
+  40,000 keys, issues `BGREWRITEAOF`, keeps a second client writing during the
+  snapshot and a third measuring `PING` latency, and fails when the start pause,
+  the worst concurrent command stall or either progress counter breaks the
+  budget. Measured on the shared development host: start pause **3.9–5.6 ms** at
+  5,000 keys and **25.3–32.2 ms** at 40,000 keys, worst concurrent stall
+  **12–48 ms** and **64–130 ms**, with `aof_rewrite_keys_done` reaching both
+  snapshot totals and `aof_rewrite_bytes_written` growing to 708,000 and
+  5,738,000 bytes across `snapshot`, `reconcile`, `sync` and `commit`. Because the
+  start pause materialises one key name per live key it is linear in key count,
+  so the reviewed SLO recorded in
+  [persistence](../persistence.md#compaction-with-bgrewriteaof) accepts **≤1 s
+  start pause and ≤1 s worst concurrent stall for keyspaces up to 1,000,000
+  keys**; larger keyspaces are explicitly unmeasured and must not be assumed.
+  Limits that remain: no fork or copy-on-write page sharing, so pause and memory
+  scale with the live key count; completion time still scales with the dataset; a
+  sustained write storm lengthens reconciliation rounds, so byte progress has no
+  fixed total and cannot report a percentage. RDB, online backup and
+  point-in-time recovery remain D1, D5 and D10 items.
+  **Closes when (criterion):** the start pause is bounded independently of key
+  count or an accepted SLO is recorded, and progress reporting covers bytes/keys
+  completed.
 
 - [ ] **D3. Journal integrity and encryption at rest are Partial.** [P0]
   **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal
