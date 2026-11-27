@@ -407,3 +407,43 @@ References: [scratch](https://docs.docker.com/build/building/base-images/),
 [`gh attestation verify`](https://cli.github.com/manual/gh_attestation_verify),
 [package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility),
 [Kubernetes probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/).
+
+## Single-node deployment path and runbook
+
+The declared profile is a **single process on a single host**. These are the
+reviewed artifacts for that path; none of them implies high availability:
+
+| Artifact | Purpose |
+| --- | --- |
+| [`deploy/systemd/rillcache.service`](../deploy/systemd/rillcache.service) | hardened systemd unit (single `ExecStart`, `Restart=on-failure`, `TimeoutStopSec` above the configured shutdown deadline, `ProtectSystem=strict` with only the data directory writable) |
+| [`compose.yaml`](../compose.yaml) | restricted container example, loopback-published, read-only root, dropped capabilities |
+| [`deploy/kubernetes.yaml`](../deploy/kubernetes.yaml) | single-replica example; it is not a production HA topology |
+
+There is **no standby, no replication and no automatic promotion** (the A1/A2/A3
+decisions); a second instance must never share `--dir`, and the journal's
+ownership lock is the only single-writer guard. **No persistence guarantee is
+implied by these examples**: the private journal is best-effort and the recovery
+path is a verified restore, not a live failover.
+
+Operator runbook (the same sequence the drills exercise):
+
+1. **Deploy** — install the unit and `/etc/rillcache/users.acl`, create
+   `/var/lib/rillcache` owned by `rillcache` with mode `0700`, then
+   `systemctl enable --now rillcache`.
+2. **Verify** — `rillcache --healthcheck 127.0.0.1:6379 --healthcheck-require-aof
+   --healthcheck-aof-write-probe /var/lib/rillcache` and confirm
+   `aof_last_write_status:ok` in `INFO persistence`.
+3. **Restart** — `systemctl restart rillcache`; SIGTERM lets workers join and the
+   journal flush, and the unit's `TimeoutStopSec` exceeds
+   `--shutdown-deadline-ms`. Confirm the same key count after restart.
+4. **Back up** — stop the service, run the offline archive procedure
+   (`rillcache-backup create`/`verify`) and keep the archive and its rollback
+   anchor outside the host's failure domain.
+5. **Recover** — restore the newest verified archive into an isolated directory,
+   validate data, absolute TTLs and accounting with
+   [`scripts/restore_drill.py`](../scripts/restore_drill.py) before pointing the
+   unit's `--dir` at it, then start and verify.
+6. **Roll back** — install the previous binary and the prepared journal (or the
+   preserved archive); never point an older binary at the only copy of a newer
+   journal. `scripts/upgrade_drill.py` records this pair's compatibility.
+

@@ -1,4 +1,5 @@
 services:
+  # Single process, single host: no replication, failover or shared journal.
   rillcache:
     image: ghcr.io/macel94/rillcache:latest
     # Loopback on the host; the image itself listens on its container interface.

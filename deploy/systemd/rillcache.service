@@ -1,0 +1,64 @@
+# Single-node Rillcache service unit for the declared production profile.
+#
+# This unit is intentionally a *single process*: the profile excludes
+# replication, failover and cluster topologies, so there is no standby, no
+# promotion and no shared journal. Recovery is a verified restore into an
+# isolated directory followed by a validated start (see docs/persistence.md and
+# docs/containers.md). Do not add a second instance for the same --dir; the
+# journal's ownership lock would reject it and split-brain protection comes
+# only from that single-writer rule.
+[Unit]
+Description=Rillcache single-node Redis-compatible server
+Documentation=https://github.com/macel94/rillcache/blob/main/docs/containers.md
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+User=rillcache
+Group=rillcache
+# The journal, ACL file and TLS material live outside this unit's writable root.
+StateDirectory=rillcache
+StateDirectoryMode=0700
+RuntimeDirectory=rillcache
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/bin/rillcache \
+  --bind 127.0.0.1:6379 \
+  --appendonly yes \
+  --appendfsync always \
+  --dir /var/lib/rillcache \
+  --appendfilename appendonly.aof \
+  --aclfile /etc/rillcache/users.acl \
+  --secure-secret-files=yes \
+  --max-data-bytes 67108864 \
+  --max-clients 128 \
+  --idle-timeout-ms 30000 \
+  --frame-assembly-timeout-ms 60000 \
+  --shutdown-deadline-ms 25000
+# SIGTERM joins workers and flushes the journal; give it the configured
+# shutdown deadline plus margin, then stop hard.
+KillSignal=SIGTERM
+TimeoutStopSec=35s
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rillcache
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
