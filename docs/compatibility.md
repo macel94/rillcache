@@ -108,6 +108,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **Slow clients are bounded, not fair-shared.** Pub/Sub subscribers have a
+  1,024-frame queue; a full queue drops the subscriber and increments
+  `pubsub_queue_full_drops`, and other clients keep working. `MGET` replies are
+  capped at 2 MiB with an explicit error. There are no configurable slow-client
+  thresholds, kill policy, fair-share guarantees or per-tenant quotas. See
+  [queue policy](production-profile.md#slow-client-and-queue-policy).
 - **Eviction is LRU-approximate; LFU and idle stats are excluded.** `maxmemory`
   applies to logical key/value bytes with `noeviction`, `allkeys/volatile-lru`,
   `allkeys/volatile-random` or `volatile-ttl`. "LRU" tracks mutation order, not
