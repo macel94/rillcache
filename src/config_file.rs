@@ -29,6 +29,8 @@ const SUPPORTED: &[&str] = &[
     "storage-owners",
     "socket-workers",
     "max-data-bytes",
+    "memory-bound-bytes",
+    "memory-bound-headroom-bytes",
     "max-bulk-bytes",
     "max-frame-bytes",
     "idle-timeout-ms",

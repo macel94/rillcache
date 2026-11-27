@@ -218,7 +218,15 @@ pub struct Config {
     /// shared-store connection-owning workers for PING-heavy fan-out.
     pub socket_workers: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
+    /// When a declared memory bound is configured this is capped by the derived
+    /// payload budget at bind time.
     pub max_data_bytes: usize,
+    /// Declared resident-memory bound. Requires `memory_bound_headroom_bytes`;
+    /// the derived payload limit caps `max_data_bytes` at bind time.
+    pub memory_bound_bytes: Option<u64>,
+    /// Headroom reserved for stacks, allocator metadata, socket buffers and
+    /// fragmentation between the declared bound and the payload budget.
+    pub memory_bound_headroom_bytes: Option<u64>,
     pub limits: Limits,
     pub idle_timeout: Duration,
     /// Supervisor grace period for a signal-driven shutdown to join workers
@@ -312,6 +320,11 @@ impl std::fmt::Debug for Config {
             .field("storage_owners", &self.storage_owners)
             .field("socket_workers", &self.socket_workers)
             .field("max_data_bytes", &self.max_data_bytes)
+            .field("memory_bound_bytes", &self.memory_bound_bytes)
+            .field(
+                "memory_bound_headroom_bytes",
+                &self.memory_bound_headroom_bytes,
+            )
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
             .field("frame_assembly_timeout", &self.frame_assembly_timeout)
@@ -374,6 +387,8 @@ impl Default for Config {
             storage_owners: None,
             socket_workers: None,
             max_data_bytes: 64 * 1024 * 1024,
+            memory_bound_bytes: None,
+            memory_bound_headroom_bytes: None,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
             shutdown_deadline: Duration::from_secs(25),
@@ -431,6 +446,7 @@ impl Config {
     /// Check startup option constraints and, when enabled, secret-file metadata.
     /// This does not bind sockets or check whether server resources can be opened.
     pub fn validate(&self) -> io::Result<()> {
+        self.resolve_memory_bound()?;
         if self
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
@@ -585,6 +601,22 @@ impl Config {
             self.validate_secret_file_modes()?;
         }
         Ok(())
+    }
+
+    /// Resolve the declared resident-memory bound into its derived payload
+    /// budget. Fail-closed: an unbounded or unsupported declaration is an error.
+    pub fn resolve_memory_bound(&self) -> io::Result<Option<crate::memory_bound::MemoryBound>> {
+        crate::memory_bound::resolve(
+            crate::memory_bound::MemoryBoundRequest {
+                bound_bytes: self.memory_bound_bytes,
+                headroom_bytes: self.memory_bound_headroom_bytes,
+                payload_limit_bytes: u64::try_from(self.max_data_bytes).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "payload budget too large")
+                })?,
+            },
+            crate::memory_bound::observe(),
+        )
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))
     }
 
     /// Optional Unix-only hardening: secret files must not be readable or
@@ -750,7 +782,17 @@ fn tokio_plain_transport_enabled(config: &Config) -> bool {
 
 impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
+        let mut config = config;
         config.validate()?;
+        let memory_bound = config.resolve_memory_bound()?;
+        if let Some(bound) = memory_bound {
+            config.max_data_bytes = usize::try_from(bound.payload_limit_bytes).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "derived payload budget too large",
+                )
+            })?;
+        }
         let auth = config.load_auth()?;
         let mut tls_client_cert_users = if let Some(path) = &config.tls_client_cert_users_file {
             Some(tls::read_client_cert_users_file(path)?)
@@ -795,6 +837,9 @@ impl Server {
             Store::with_auth(config.max_data_bytes, auth)
         }
         .with_error_dialect(config.error_dialect);
+        if let Some(bound) = memory_bound {
+            store.services_handle().set_memory_bound(bound);
+        }
         if let Some(path) = &config.audit_log {
             store.attach_audit_log(path, config.audit_log_max_bytes)?;
         }
