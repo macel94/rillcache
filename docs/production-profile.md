@@ -25,7 +25,7 @@ per-row evidence for that head; it is never release acceptance.
 | Status | `draft` — not a support commitment or compatibility approval |
 | Application version | `0.1.0` (unreleased) |
 | Pinned references | Redis `8.10.2` (sha256 `541a374b…273e8`), Valkey `9.1.2` (sha256 `19c23908…c983`), also pinned in [`ci/upstream/pins.json`](../ci/upstream/pins.json) and `benchmarks/targets.mk` |
-| Topology | One standalone process, one owner-local data path |
+| Topology | One standalone process, one owner-local data path; replication is excluded by the reviewed [A1 decision](replication.md#a1-profile-decision-replication-excluded) with its [single-node availability statement](replication.md#single-node-availability-and-data-loss-statement) |
 | Logical databases | Database `0` only |
 | Clients requiring several databases | Excluded; startup with `db` other than `0`, `SELECT` other than `0`, `MOVE`, `SWAPDB` and `COPY ... DB n` are rejected |
 | Persistence mode | Optional private append-only journal; RDB excluded |
