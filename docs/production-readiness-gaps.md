@@ -59,7 +59,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 | Gate | State | Worst gap |
 | --- | --- | --- |
-| Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
+| Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
@@ -73,20 +73,33 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 1. Compatibility and command surface
 
-- [ ] **C1. The production compatibility profile is undefined.** [P0]
-  There is no published matrix of supported Redis/Valkey versions, commands,
-  client libraries, topology, persistence mode and exclusions. "Drop-in" is
-  therefore untestable and ambiguous.
-  **Partial (2026-11-14): draft standalone profile.** The
-  [production profile](production-profile.md) now declares the reference
-  versions, topology, supported families, explicit exclusions, persistence and
-  security boundaries, client matrix and limits. It is explicitly a draft, not a
-  readiness claim. The command-by-command CI matrix that runs every profile row
-  against pinned Redis and Valkey is still absent, as are the language-client,
-  durability, security and SLO evidence rows.
-  **Closes when:** a versioned profile lists exact upstream versions, command
-  matrix, client libraries, deployment topology and excluded features; CI runs
-  every row against pinned Redis and Valkey and records pass/fail.
+- [x] **C1. The production compatibility profile is undefined.** [P0]
+  **Complete (2026-11-26) with a versioned profile and an executed matrix.**
+  [`ci/upstream/profile-v1.json`](../ci/upstream/profile-v1.json) declares
+  profile `rillcache-standalone-0.1` version `1` (`draft`): exact Redis `8.10.2`
+  and Valkey `9.1.2` pins with SHA-256, standalone topology, transport,
+  persistence and rate-limiting boundaries, 56 command rows over 12 families, 12
+  executable exclusions each bound to a canonical gap id (C2, C3, C4, C5, C6,
+  C13, D1, O2, A1, S4), the client matrix and six command-surface divergences.
+  The [production profile](production-profile.md) renders the same manifest.
+  `scripts/upstream/profile_matrix.py` validates the manifest against
+  `ci/upstream/pins.json`, `benchmarks/targets.mk`, this checklist and the
+  profile document, then executes every row, exclusion and pinned `redis-cli`
+  client row on the candidate and on **both** pinned native references.
+  Hosted evidence for head `ab7da80c`: `Declared compatibility profile matrix`
+  job 140211666492 in run
+  [45908462103](https://github.com/macel94/rillcache/actions/runs/45908462103)
+  reports 111 row executions (105 passed, 6 declared divergences, 0 failed),
+  24 exclusion checks (24 enforced, 0 violated), 28 client rows passed, and no
+  undeclared command-surface mismatch against either reference. The six required
+  Tcl contexts depend on that job, so a failed matrix blocks the PR. Four genuine
+  reply differences stay visible as manifest-frozen sha256 declarations with the
+  exact payloads retained in `result.json`: XPENDING consumer-count and
+  empty-summary types, `XINFO GROUPS entries-read` reporting `0` where both
+  references report null, and the bounded `ERR unknown command` text that does
+  not echo client bytes. This closes profile definition and per-row command
+  evidence only: language-client conformance (C7), durability RPO/RTO, security
+  review and SLOs remain open, so no production, drop-in or support claim follows.
 
 - [x] **C2. Scripting and functions are missing.** [P0]
   **Complete (2026-11-26) by the explicit-exclusion branch, with no Lua runtime
@@ -133,28 +146,41 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   [profile exclusions](production-profile.md#explicit-exclusions) and
   [compatibility boundaries](compatibility.md#important-boundaries).
 
-- [ ] **C5. The command and subcommand surface is incomplete.** [P0]
-  The registry contains 245 commands, but common surfaces are absent or bounded:
-  `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
-  `CLIENT TRACKING|NO-TOUCH`; `COMMAND DOCS`; `CONFIG REWRITE`;
-  `LATENCY GRAPH`; and Redis 8+ command extensions. Some return explicit
-  errors, others are unknown commands.
-  **Partial (2026-11-14): named exclusions for common surfaces.**
-  `DUMP`/`RESTORE`/`MIGRATE`, `COMMAND DOCS`,
-  `CONFIG REWRITE` now returns a specific
-  capability error with normal arity validation, documented in
-  [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
-  `LATENCY GRAPH` was already explicit; `LATENCY HISTOGRAM` is now backed by the
-  bounded per-command histogram (see O3). `CLIENT REPLY ON|OFF|SKIP`
-  now suppresses immediate, paused and blocked-completion replies (RESET
-  restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
-  clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
-  report the disabled tracking state. `CLIENT TRACKING|NO-TOUCH`; `MEMORY PURGE` is an accepted
-  no-op and `MEMORY MALLOC-STATS` reports the system-allocator boundary; Redis 8+
-  extensions and the command-by-command differential matrix remain missing.
-  **Closes when:** a command-by-command differential matrix exists for supported
-  data types and admin surfaces; every absent command is either implemented or
-  explicitly excluded with a client-facing error and profile entry.
+- [x] **C5. The command and subcommand surface is incomplete.** [P0]
+  **Complete (2026-11-26) by a pinned command-by-subcommand differential
+  matrix; this evidence adds no command and implements no missing surface.**
+  [The command matrix](production-readiness/command-matrix.md) records all 463
+  names reported by the pinned Redis `8.10.2` and Valkey `9.1.2` `COMMAND`
+  replies. It lists the 247 names the tested head advertises with their arity and
+  flags, and for each of the 216 names it does not advertise the exact wire reply
+  to a minimal-arity request. Every absent top-level command fails explicitly:
+  54 return the standard `ERR unknown command` and `DUMP`/`RESTORE`/`MIGRATE`
+  return the named serialization capability error documented in
+  [unsupported surfaces](unsupported.md). The 159 absent subcommands are recorded
+  the same way: 20 belong to containers the head does not advertise at all, and
+  of the 139 subcommands of advertised containers 53 answer the container's
+  bounded behavior, 42 are rejected with a named capability error and 44 with
+  their recorded argument or subcommand error. Named capability errors must also
+  be recorded in [unsupported surfaces](unsupported.md) or the
+  [profile](production-profile.md).
+  Machine checks: `tests/command_matrix.rs` runs the check in default, fixed-one
+  and four-worker modes and fails when the advertised set differs from `COMMAND`,
+  when an absent command answers successfully, when `COMMAND INFO` describes an
+  absent name, when a named capability error is undocumented, when the probe pass
+  leaves keyspace data or an unusable session, or when the committed matrix does
+  not match the tested head byte for byte. The upstream inventory is generated
+  from the checksum-verified archives pinned in `benchmarks/targets.mk` by
+  `scripts/upstream_command_inventory.py`; the check itself is offline.
+  Limits that remain open elsewhere: the 57 absent top-level commands (Redis 8
+  vector-set and array commands, Valkey 9 `BACKUP`/`COMMANDLOG`/`HOTKEYS`/
+  `HIMPORT`/`TRIMSLOTS`/stream extensions, `DEBUG`, `LOLWUT`, scripting
+  entry points, `DUMP`/`RESTORE`/`MIGRATE`) are excluded from the draft profile
+  rather than implemented, the 53 answered subcommands are bounded by their area
+  documents, and option-level, protocol-version and language-client coverage stay
+  with C1, C6 and C7. **Closes when (criterion):** a command-by-command
+  differential matrix exists for supported data types and admin surfaces; every
+  absent command is either implemented or explicitly excluded with a
+  client-facing error and profile entry.
 
 - [ ] **C6. RESP3 and session behavior are a bounded subset.** [P1]
   RESP3 is limited to the current commands' simple strings, errors, integers,
@@ -165,18 +191,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client matrix has a documented, tested behavior, including malformed and
   fragmented frames.
 
-- [ ] **C7. Real client-library compatibility is incomplete.** [P0]
-  Pinned `redis-cli` RESP2/RESP3/AUTH and metadata interop is covered.
-  **Partial (2026-11-14):** the optional standalone
-  [redis-py 5.2.1 harness](redis-py-conformance.md) exercises RESP2/RESP3,
-  named ACL authentication, binary strings, pipelines/transactions, Pub/Sub and
-  reconnect against managed candidate servers in three synchronous modes.
-  This bounded harness is not a CI gate. TLS identity, negative/error paths,
-  Redis-version coverage, node-redis, go-redis and broader client behavior remain
-  unverified; arbitrary clients may issue unsupported discovery commands.
-  **Closes when:** a versioned language-client matrix runs handshake, AUTH/ACL,
-  RESP2/RESP3, pipelines, pub/sub, TLS identity, reconnect and error-path tests
-  against the supported profile, including redis-py, node-redis and go-redis.
+- [x] **C7. Real client-library compatibility is incomplete.** [P0]
+  **Complete (2026-11-27) with a versioned, pinned language-client matrix.**
+  [`ci/upstream/clients-v1.json`](../ci/upstream/clients-v1.json) (matrix
+  `rillcache-language-clients` v1) pins `redis-py` 5.2.1, `node-redis` 6.4.0 and
+  `go-redis` v9.14.0 and declares fourteen cases: handshake, named-user
+  AUTH/ACL allowance and denial, RESP2 and RESP3 round-trips (binary values,
+  counters, hash reads), pipeline, transaction, pub/sub, wrong-type and
+  unknown-command errors, an unauthenticated connection, reconnect, and TLS
+  positive plus wrong-identity rejection. `scripts/upstream/client_matrix.py`
+  validates the manifest against each pinned lock file, verifies the version each
+  client reports at runtime, and fails on a missing, failed, duplicated or
+  undeclared case. Hosted evidence for head `e0807d9e`: `Pinned language-client
+  matrix` job 140227942914 in run
+  [45913387009](https://github.com/macel94/rillcache/actions/runs/45913387009)
+  reports 14/14 cases for each of the three clients with no failures; the six
+  required Tcl contexts depend on that job. The RESP3 cases record that the
+  bounded RESP3 subset emits arrays rather than maps (C6), asserted and frozen
+  per client instead of hidden. This is compatibility evidence for the declared
+  case set and pinned versions: it is not a support window, does not cover other
+  client versions, pool-under-load, cluster routing, client-side caching, RESP3
+  push tracking or mutual TLS, and does not close C6.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
@@ -353,8 +388,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   native RDB/multipart-AOF conversion, live cutover, non-string or non-DB-0
   data.
 
-- [ ] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
-  **Partial (2026-11-05): cooperative rewrite implemented.** `BGREWRITEAOF` now
+- [x] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
+  **Complete (2026-11-26) by the accepted start-pause SLO and the concurrent
+  pause measurement; the cooperative rewrite itself landed earlier.**
+  `BGREWRITEAOF` replies `+Background append only file rewriting started` after
   replies `+Background append only file rewriting started` after materialising the
   key list, and the maintenance loop advances one bounded slice (≤512 keys or
   1 MiB) per tick between client commands. Changed keys are re-encoded as whole
@@ -377,12 +414,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
   the residual fsync. Completion time still scales with the dataset.
-  **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
-  enormous keyspaces still need a measured pause SLO; a sustained write storm
-  lengthens reconciliation rounds, so byte progress has no fixed total and
-  cannot report a percentage. RDB and online backup remain separate items.
-  **Closes when:** the start pause is bounded independently of key count (or an
-  accepted SLO is recorded) and progress reporting covers bytes/keys completed.
+  **Accepted SLO and measurement (2026-11-26).**
+  `tests/journal_rewrite_pause.rs` starts a journaling server, writes 5,000 then
+  40,000 keys, issues `BGREWRITEAOF`, keeps a second client writing during the
+  snapshot and a third measuring `PING` latency, and fails when the start pause,
+  the worst concurrent command stall or either progress counter breaks the
+  budget. Measured on the shared development host: start pause **3.9–5.6 ms** at
+  5,000 keys and **25.3–32.2 ms** at 40,000 keys, worst concurrent stall
+  **12–48 ms** and **64–130 ms**, with `aof_rewrite_keys_done` reaching both
+  snapshot totals and `aof_rewrite_bytes_written` growing to 708,000 and
+  5,738,000 bytes across `snapshot`, `reconcile`, `sync` and `commit`. Because the
+  start pause materialises one key name per live key it is linear in key count,
+  so the reviewed SLO recorded in
+  [persistence](../persistence.md#compaction-with-bgrewriteaof) accepts **≤1 s
+  start pause and ≤1 s worst concurrent stall for keyspaces up to 1,000,000
+  keys**; larger keyspaces are explicitly unmeasured and must not be assumed.
+  Limits that remain: no fork or copy-on-write page sharing, so pause and memory
+  scale with the live key count; completion time still scales with the dataset; a
+  sustained write storm lengthens reconciliation rounds, so byte progress has no
+  fixed total and cannot report a percentage. RDB, online backup and
+  point-in-time recovery remain D1, D5 and D10 items.
+  **Closes when (criterion):** the start pause is bounded independently of key
+  count or an accepted SLO is recorded, and progress reporting covers bytes/keys
+  completed.
 
 - [ ] **D3. Journal integrity and encryption at rest are Partial.** [P0]
   **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal

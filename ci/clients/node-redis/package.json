@@ -1,0 +1,13 @@
+{
+  "name": "rillcache-node-redis-matrix",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned node-redis client matrix harness for Rillcache readiness C7",
+  "type": "module",
+  "scripts": {
+    "check": "node --check harness.mjs"
+  },
+  "dependencies": {
+    "redis": "6.4.0"
+  }
+}

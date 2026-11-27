@@ -70,7 +70,9 @@ uses future absolute timestamps for deterministic TTL checks rather than sleeps.
 It compares expected stable command semantics, not server identities, version
 text, implementation metadata, or all command behavior. It is not a full Redis
 compatibility suite, exhaustive transaction/isolation test, client-library
-integration suite, cluster test, or performance benchmark.
+integration suite, cluster test, or performance benchmark. The versioned
+command-surface [profile matrix](upstream-ci.md#declared-compatibility-profile-matrix)
+is the separate per-row evidence path against both pinned references.
 
 The optional test runs the same current-supported corpus against Rillcache in all
 three managed modes and the selected disposable native reference. Its key namespace

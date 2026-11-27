@@ -24,12 +24,12 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test-unit dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test-unit dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package command-matrix competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
 help:
-	@printf '%s\n' 'make dev-check  Editing feedback: formatting, Clippy and one library-test pass' 'make test-unit  One offline library-test pass (not delivery validation)' 'make test       All-mode unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
+	@printf '%s\n' 'make dev-check  Editing feedback: formatting, Clippy and one library-test pass' 'make test-unit  One offline library-test pass (not delivery validation)' 'make test       All-mode unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make command-matrix  Verify docs/production-readiness/command-matrix.md against a fresh binary' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
 
 fmt:
 	$(CARGO) fmt --all
@@ -123,6 +123,12 @@ bench: release metadata bench-core bench-threads
 	./target/release/rillcache-bench $(BENCH_ARGS) > target/benchmarks/local.json
 
 ci: check smoke bench-core
+
+# Verify the committed C5 command matrix against a disposable local binary.
+# Regenerate intentionally with scripts/command_matrix.py --write after review.
+command-matrix:
+	$(CARGO) build $(CARGO_FLAGS) --bins
+	python3 scripts/command_matrix.py --spawn ./target/debug/rillcache
 
 package: release
 	name="rillcache-$$(uname -s | tr '[:upper:]' '[:lower:]')-$$(uname -m)"
