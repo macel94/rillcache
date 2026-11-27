@@ -27,6 +27,7 @@ project's front page.
 - [Eviction](eviction.md): payload budgets and memory policies.
 - [Observability](observability.md) and [runtime introspection](introspection.md): counters, logs, latency and logical memory reporting.
 - [Client sessions](client-sessions.md) and [discovery](discovery.md): protocol negotiation, connection controls and supported metadata.
+- [Pinned language-client matrix](language-clients.md): the versioned redis-py, node-redis and go-redis case evidence for the standalone profile.
 - [Standalone topology](replication.md) and [unsupported capabilities](unsupported.md): honest replication, cluster and module boundaries.
 
 ## Command reference
