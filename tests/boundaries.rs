@@ -181,3 +181,59 @@ fn standalone_persistence_replica_and_database_boundaries_are_explicit() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn cluster_surface_is_disabled_and_hash_tags_are_literal() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        let disabled = b"-ERR This instance has cluster support disabled\r\n";
+        let probes: &[&[&[u8]]] = &[
+            &[b"CLUSTER", b"INFO"],
+            &[b"CLUSTER", b"MYID"],
+            &[b"CLUSTER", b"SLOTS"],
+            &[b"CLUSTER", b"SHARDS"],
+            &[b"CLUSTER", b"NODES"],
+            &[b"CLUSTER", b"KEYSLOT", b"{a}1"],
+            &[b"CLUSTER", b"COUNTKEYSINSLOT", b"0"],
+            &[b"CLUSTER", b"GETKEYSINSLOT", b"0", b"10"],
+            &[b"CLUSTER", b"ADDSLOTS", b"0"],
+            &[b"CLUSTER", b"DELSLOTS", b"0"],
+            &[b"CLUSTER", b"SETSLOT", b"0", b"NODE", b"id"],
+            &[b"CLUSTER", b"RESET"],
+            &[b"CLUSTER", b"FAILOVER"],
+            &[b"CLUSTER", b"REPLICATE", b"id"],
+        ];
+        for args in probes {
+            command(&mut stream, args, disabled);
+        }
+        command(
+            &mut stream,
+            &[b"CLUSTER"],
+            b"-ERR wrong number of arguments for 'cluster' command\r\n",
+        );
+        let help = {
+            let mut request = Vec::new();
+            encode_request(&[b"CLUSTER", b"HELP"], &mut request);
+            stream.write_all(&request).unwrap();
+            read_frame(&mut stream, 0)
+        };
+        assert!(help.starts_with(b"*1\r\n"), "{help:?}");
+
+        // Hash tags are ordinary key bytes. Multi-key commands over different
+        // tags therefore run locally: no CROSSSLOT refusal, no MOVED/ASK.
+        command(&mut stream, &[b"SET", b"{a}1", b"one"], b"+OK\r\n");
+        command(&mut stream, &[b"SET", b"{b}2", b"two"], b"+OK\r\n");
+        let values = {
+            let mut request = Vec::new();
+            encode_request(&[b"MGET", b"{a}1", b"{b}2"], &mut request);
+            stream.write_all(&request).unwrap();
+            read_frame(&mut stream, 0)
+        };
+        assert_eq!(values, b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n");
+        command(&mut stream, &[b"GET", b"{a}1"], b"$3\r\none\r\n");
+        assert!(!values.windows(5).any(|window| window == b"MOVED"));
+        assert!(!values.windows(3).any(|window| window == b"ASK"));
+        server.shutdown().unwrap();
+    }
+}
