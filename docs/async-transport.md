@@ -34,6 +34,31 @@ evidence above is reported as realized, including the losses; `cf76884` is not
 retried. A future promotion would need a source change that wins every condition,
 not a gate, workload or threshold change.
 
+### R2 review record: opt-in experimental transport, outside the production profile
+
+**Decision (2026-11-27):** the async Tokio transport is an explicitly
+**non-default, experimental** option and is excluded from the declared production
+profile. The default Mio and fixed-worker paths are the supported execution
+modes.
+
+Basis (unchanged from the study above): the async path finished **18/20** on the
+original protected gate and **10/10** on the later comparison; the candidate that
+lost the pipeline-1 conditions was reverted rather than promoted. No readiness,
+all-workload or latency claim is made for it, and no async result substitutes for
+the protected default-mode checks.
+
+Contract:
+
+- selection requires the explicit `--io-mode tokio` flag (or `io_mode` in a
+  startup file); omitting it keeps the supported default;
+- `tests/network_modes.rs` exercises the mode matrix (default Mio, opt-in Tokio,
+  fixed workers) for wire errors, blocking/Pub-Sub shutdown, dynamic ACL and
+  per-user connection caps, and `make test-async` runs the transport and one-CPU
+  constrained suites through the async engine;
+- the mode must not be selected for the declared profile, and this record is an
+  exclusion, not a promotion. A future promotion needs a source change that clears
+  every protected condition on the same head plus a reviewed profile update.
+
 ## Story and target sequencing
 
 As an operator, I can use default Unix async plaintext sockets without blocking
