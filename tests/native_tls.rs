@@ -347,14 +347,17 @@ fn ocsp_staples_follow_the_selected_default_or_sni_identity_and_absence_is_compa
             let responses = Arc::new(Mutex::new(Vec::new()));
             let mut stream = connect_capturing_ocsp(&server, name, Arc::clone(&responses));
             ping(&mut stream);
-            assert_eq!(responses.lock().unwrap().as_slice(), &[expected.clone()]);
+            assert_eq!(
+                responses.lock().unwrap().as_slice(),
+                std::slice::from_ref(&expected)
+            );
         }
         let responses = Arc::new(Mutex::new(Vec::new()));
         let mut no_sni = connect_without_sni_capturing_ocsp(&server, Arc::clone(&responses));
         ping(&mut no_sni);
         assert_eq!(
             responses.lock().unwrap().as_slice(),
-            &[default_response.clone()]
+            std::slice::from_ref(&default_response)
         );
         let mut wrong_sni = connect_named(&server, false, "wrong.test");
         let handshake = wrong_sni.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
@@ -539,7 +542,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     ping(&mut rotated);
     assert_eq!(
         rotated_responses.lock().unwrap().as_slice(),
-        &[response_two.clone()]
+        std::slice::from_ref(&response_two)
     );
     ping(&mut established);
 
@@ -551,7 +554,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     ping(&mut retained);
     assert_eq!(
         retained_responses.lock().unwrap().as_slice(),
-        &[response_two.clone()]
+        std::slice::from_ref(&response_two)
     );
     ping(&mut rotated);
     ping(&mut established);
@@ -1466,7 +1469,7 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
     assert_tls_acl_user(&mut established_writer, b"writer");
     assert_eq!(
         writer_responses.lock().unwrap().as_slice(),
-        &[response_two.clone()]
+        std::slice::from_ref(&response_two)
     );
     assert_tls_acl_user(&mut established_reader, b"reader");
     established_reader
@@ -1492,7 +1495,7 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
     assert_tls_acl_user(&mut after_rejected_generation, b"writer");
     assert_eq!(
         rejected_responses.lock().unwrap().as_slice(),
-        &[response_two.clone()]
+        std::slice::from_ref(&response_two)
     );
     assert_tls_acl_user(&mut established_writer, b"writer");
 
@@ -1644,12 +1647,10 @@ fn staple(status: u8, cert_serial: u8, next_update_offset: i64) -> Vec<u8> {
     fn seq(parts: &[Vec<u8>]) -> Vec<u8> {
         tlv(0x30, &parts.concat())
     }
-    let now = u64::from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    );
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let this_update = generalized_time(now.saturating_sub(60));
     let next_update =
         generalized_time((now as i64 + next_update_offset.max(-(now as i64) + 1)) as u64);
