@@ -109,3 +109,52 @@ fn invalid_syslog_destination_fails_startup() {
     };
     assert!(Server::bind(config).is_err());
 }
+
+#[test]
+fn best_effort_shipping_never_gates_commands_or_crashes_without_a_reader() {
+    let acl = temp_name("acl");
+    std::fs::write(
+        &acl,
+        b"user default on nopass ~* &* +@all\n\
+user reader on >reader-secret allkeys allchannels -@all +get\n",
+    )
+    .unwrap();
+    let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let server = start(Config {
+        aclfile: Some(acl.clone()),
+        audit_syslog: Some(receiver.local_addr().unwrap()),
+        ..Config::default()
+    });
+    let mut reader = connect(&server);
+    send(
+        &mut reader,
+        &[b"AUTH", b"reader", b"reader-secret"],
+        b"+OK\r\n",
+    );
+
+    // Denials are shipped fire-and-forget while nobody drains the socket.
+    for _ in 0..64 {
+        send(
+            &mut reader,
+            &[b"SET", b"secret-key", b"v"],
+            b"-NOPERM this user has no permissions to run the 'set' command\r\n",
+        );
+        send(&mut reader, &[b"GET", b"allowed"], b"$-1\r\n");
+    }
+
+    // Dropping the sink must not affect command service: the documented
+    // contract is best-effort UDP with no retry, backpressure or delivery
+    // guarantee, so the audit path cannot gate or crash the server.
+    drop(receiver);
+    for _ in 0..64 {
+        send(
+            &mut reader,
+            &[b"SET", b"secret-key", b"v"],
+            b"-NOPERM this user has no permissions to run the 'set' command\r\n",
+        );
+    }
+    send(&mut reader, &[b"GET", b"allowed"], b"$-1\r\n");
+    send(&mut reader, &[b"GET", b"still-allowed"], b"$-1\r\n");
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_file(acl);
+}
