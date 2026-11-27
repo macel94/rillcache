@@ -995,9 +995,9 @@ mod tests {
         assert!(client.output.is_empty());
         assert!(client.stall_since.is_none());
 
-        // A reply larger than the peer's window stops making progress and arms
-        // the stall clock.
-        client.output = vec![b'x'; 4 * 1024 * 1024];
+        // A reply larger than every kernel send/receive buffer stops making
+        // progress and arms the stall clock.
+        client.output = vec![b'x'; 32 * 1024 * 1024];
         let mut blocked = false;
         for _ in 0..10_000 {
             if !client.flush().unwrap() {
@@ -1005,7 +1005,7 @@ mod tests {
                 break;
             }
         }
-        assert!(blocked, "a 4 MiB backlog to a non-reading peer must block");
+        assert!(blocked, "a 32 MiB backlog to a non-reading peer must block");
         client
             .stall_since
             .expect("blocked writes arm the stall clock");
@@ -1039,7 +1039,7 @@ mod tests {
     #[test]
     fn poll_sheds_a_client_after_the_write_stall_deadline() {
         let (mut client, _peer) = test_client(Vec::new());
-        client.output = vec![b'x'; 4 * 1024 * 1024];
+        client.output = vec![b'x'; 32 * 1024 * 1024];
         for _ in 0..10_000 {
             if !client.flush().unwrap() {
                 break;

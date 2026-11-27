@@ -277,7 +277,7 @@ fn large_limits() -> Limits {
 
 const LARGE_VALUE: usize = 10 * 1024 * 1024;
 
-fn store_large_value(server: &ServerHandle) -> usize {
+fn store_large_value(server: &ServerHandle) -> (TcpStream, usize) {
     let mut admin = connect(server);
     let value = vec![b'x'; LARGE_VALUE];
     let mut set = Vec::new();
@@ -285,7 +285,13 @@ fn store_large_value(server: &ServerHandle) -> usize {
     admin.write_all(&set).unwrap();
     assert_eq!(read_reply(&mut admin), b"+OK\r\n");
     command(&mut admin, &[b"STRLEN", b"stall-value"]);
-    value.len()
+    (admin, value.len())
+}
+
+fn info_clients(admin: &mut TcpStream) -> usize {
+    let reply = command(admin, &[b"INFO", b"clients"]);
+    let text = std::str::from_utf8(&reply).unwrap();
+    field(text, "connected_clients").parse().unwrap()
 }
 
 #[test]
@@ -302,15 +308,31 @@ fn a_non_reading_client_is_shed_after_the_write_stall_deadline() {
                 ..Config::default()
             },
         );
-        let size = store_large_value(&server);
+        let (mut admin, size) = store_large_value(&server);
         let mut reader = connect(&server);
         reader
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         send(&mut reader, &[b"GET", b"stall-value"]);
         // Never drain the reply: the server must shed this connection even
-        // though the read-idle timeout is 30 seconds away.
-        std::thread::sleep(Duration::from_millis(1_200));
+        // though the read-idle timeout is 30 seconds away. Poll the server's
+        // registry so a descheduled test process cannot hide the deadline.
+        let registered = Instant::now() + Duration::from_secs(5);
+        while info_clients(&mut admin) != 2 {
+            assert!(
+                Instant::now() < registered,
+                "the reader was never registered in the client registry"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while info_clients(&mut admin) != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "the non-reading client was not shed"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let mut received = 0;
         let mut buffer = [0u8; 64 * 1024];
         let closed = loop {
@@ -341,6 +363,7 @@ fn a_non_reading_client_is_shed_after_the_write_stall_deadline() {
             "shedding drops the backlog instead of draining it ({received} of {size})"
         );
         // The freed admission slot must serve a new connection.
+        assert_eq!(command(&mut admin, &[b"PING"]), b"+PONG\r\n");
         let mut fresh = connect(&server);
         assert_eq!(command(&mut fresh, &[b"PING"]), b"+PONG\r\n");
         drop(reader);
@@ -362,7 +385,7 @@ fn a_slow_but_progressing_reader_survives_the_write_stall_deadline() {
                 ..Config::default()
             },
         );
-        let size = store_large_value(&server);
+        let (_admin, size) = store_large_value(&server);
         let mut reader = connect(&server);
         reader
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -405,7 +428,7 @@ fn a_disabled_write_stall_deadline_keeps_the_backlogged_connection() {
                 ..Config::default()
             },
         );
-        let size = store_large_value(&server);
+        let (_admin, size) = store_large_value(&server);
         let mut reader = connect(&server);
         reader
             .set_read_timeout(Some(Duration::from_secs(5)))

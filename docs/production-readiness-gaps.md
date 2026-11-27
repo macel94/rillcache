@@ -949,7 +949,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   non-reading client shed with slot reclaimed, progressing reader survives,
   disabled deadline retained), `src/engine/admission_tests.rs` (fixed-window
   accounting, per-user isolation, global/user precedence, `CONFIG RESETSTAT`),
-  `src/server/pool.rs` stall-clock unit tests, `tests/native_tls.rs` TLS
+  `src/server/pool.rs` stall-clock unit tests, `tests/tls_write_stall.rs` TLS
   shed/progress cases, and the retained `tests/protocol_fuzz.rs` corpus. These are functional enforcement tests, not
   capacity/SLO evidence, which P1–P7 still track.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/

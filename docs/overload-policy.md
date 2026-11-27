@@ -118,8 +118,8 @@ in-process accounting of it. This is the recorded S9 scope decision.
   per-user isolation, global/user precedence and `CONFIG RESETSTAT`.
 - `src/server/pool.rs` unit tests cover the stall clock (armed by a blocked
   write, cleared only by write progress) and `poll` shedding.
-- `tests/native_tls.rs` covers a non-reading TLS client shed after the deadline
-  and a slow but progressing TLS reader that survives.
+- `tests/tls_write_stall.rs` covers a non-reading TLS client shed after the
+  deadline and a slow but progressing TLS reader that survives.
 - `tests/protocol_fuzz.rs` retains the seeded framing/command property corpus.
 
 Failures are retained in the PR that lands a change; a green merge gate is not
