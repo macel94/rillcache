@@ -514,6 +514,10 @@ references, so an excluded capability cannot silently start succeeding.
   (`XACKDEL`, `XCFGSET`, `XDELEX`, `XIDMPRECORD`, `XNACK`) (C5). `DEBUG` and
   `LOLWUT` are also absent. All of them return `ERR unknown command`; none of the
   advertised commands depends on them.
+- The async Tokio transport (`--io-mode tokio`) is an opt-in experimental option
+  outside this profile (R2): the default Mio/fixed-worker paths are the supported
+  execution modes, and no async gate result substitutes for them. See the
+  [async transport review record](async-transport.md#r2-review-record-opt-in-experimental-transport-outside-the-production-profile).
 - A full `redis.conf` language, `CONFIG REWRITE`, includes and live reload (C13,
   O5).
 - Language-client conformance beyond the three pinned clients and the declared case set (C7).
