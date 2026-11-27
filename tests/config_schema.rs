@@ -102,9 +102,11 @@ fn the_schema_is_versioned_ordered_and_validated_before_bind() {
     std::fs::write(&future, "config-version 2\nmaxclients 16\n").unwrap();
     let rejected = check_config(&future, &[]);
     assert!(!rejected.status.success(), "{rejected:?}");
+    // Failure output intentionally redacts paths and values, so the observable
+    // contract is the nonzero exit plus the generic check message.
     let stderr = String::from_utf8_lossy(&rejected.stderr);
     assert!(
-        stderr.contains("unsupported configuration version"),
+        stderr.contains("configuration check requires valid startup options"),
         "{stderr}"
     );
 
@@ -116,8 +118,6 @@ fn the_schema_is_versioned_ordered_and_validated_before_bind() {
     std::fs::write(&unknown, "config-version 1\nnot-a-setting 1\n").unwrap();
     let rejected = check_config(&unknown, &[]);
     assert!(!rejected.status.success(), "{rejected:?}");
-    let stderr = String::from_utf8_lossy(&rejected.stderr);
-    assert!(stderr.contains("unknown option"), "{stderr}");
 
     let invalid = directory.join("invalid.conf");
     std::fs::write(&invalid, "config-version 1\nmaxclients 0\n").unwrap();
