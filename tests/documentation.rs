@@ -396,6 +396,9 @@ fn published_version_matrix_matches_the_pinned_files() {
     );
 }
 
+/// S1: the threat model, review scope, findings log and sign-off registry are
+/// machine-checked in the required CI graph.
+#[test]
 fn security_review_registry_scope_and_signoff_are_checked_in_ci() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let check = Command::new("python3")
