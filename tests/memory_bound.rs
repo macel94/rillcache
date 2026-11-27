@@ -312,7 +312,7 @@ fn a_bound_never_below_the_configured_payload_budget_caps_it() {
 #[cfg(target_os = "linux")]
 mod process {
     use super::*;
-    use std::io::{BufRead, BufReader, Read as _, Write as _};
+    use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::time::Instant;
@@ -335,7 +335,6 @@ mod process {
 
     struct ChildServer {
         child: Child,
-        addr: String,
     }
 
     fn spawn(
@@ -390,10 +389,7 @@ mod process {
         let mut line = String::new();
         startup.read_line(&mut line).unwrap();
         assert!(line.contains(" listening on "), "startup: {line}");
-        ChildServer {
-            child,
-            addr: addr.to_owned(),
-        }
+        ChildServer { child }
     }
 
     fn connect(addr: &str) -> Option<TcpStream> {
