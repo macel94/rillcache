@@ -249,7 +249,7 @@ class DailyTests(unittest.TestCase):
         self.assertIn("cron: '17 12 * * 2'", freshness)
         self.assertIn("check_openwiki_freshness.mjs", freshness)
         policy = json.loads((common.ROOT / ".github/pr-workflow-gates.json").read_text())
-        self.assertEqual(14, sum(len(names) for w in policy["workflows"].values() for names in w["jobs"].values()))
+        self.assertEqual(16, sum(len(names) for w in policy["workflows"].values() for names in w["jobs"].values()))
 
 
 if __name__ == "__main__":
