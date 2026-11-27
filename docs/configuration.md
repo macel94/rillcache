@@ -69,6 +69,37 @@ requirepass-file /run/secrets/rillcache-password
 rillcache --config /etc/rillcache/rillcache.conf --max-clients 2048
 ```
 
+## Defaults and mutability
+
+The enforced defaults below are the same values `Config::default()` uses; a test
+(`tests/config_schema.rs`) fails when this table and the code drift apart. The
+full directive list, including TLS, audit, journal-key and healthcheck options,
+is in `rillcache --help`.
+
+| Directive | Default | Runtime mutability |
+| --- | --- | --- |
+| `max-clients` | `128` | mutable (`CONFIG SET maxclients`) |
+| `max-data-bytes` | `67108864` (64 MiB) | mutable (`CONFIG SET maxmemory`) |
+| `appendfsync` | `everysec` | mutable (`CONFIG SET appendfsync`) |
+| `max-bulk-bytes` | `1048576` (1 MiB) | startup-only |
+| `max-frame-bytes` | `2097152` (2 MiB) | startup-only |
+| `idle-timeout-ms` | `30000` | startup-only |
+| `frame-assembly-timeout-ms` | `60000` | startup-only |
+| `shutdown-deadline-ms` | `25000` | startup-only |
+| `auth-failure-limit` | `10` | startup-only |
+| `auth-source-limit` | `0` (off) | startup-only |
+| `auth-global-limit` | `0` (off) | startup-only |
+| `auth-source-window-ms` | `60000` | startup-only |
+| `appendonly` | `no` | startup-only |
+| `storage-owners` | one owner | startup-only |
+
+Mutability here means "changeable at runtime through `CONFIG SET`". That
+command validates every pair before publishing and the documented mutable subset
+is listed in [the profile](production-profile.md#runtime-configuration-changes);
+all other directives are startup-only and rejected at runtime. The schema is
+versioned by `config-version 1`, validated before the listener binds, and
+precedence is last-wins in argument order (see below).
+
 ## Order and precedence
 
 Directives are processed at the position of the `--config` flag. Later CLI
