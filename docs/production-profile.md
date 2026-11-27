@@ -402,9 +402,22 @@ The private journal is **best-effort**, not an interoperable AOF. With
 with `everysec`, crash recovery yields a contiguous prefix and a bounded loss
 window; with `no`, the operating system decides. A torn final transaction is
 discarded to the last verified boundary. RDB, online backup, point-in-time
-recovery, encryption at rest and multi-process journal ownership are excluded.
-Operators must use local storage and the documented backup/restore tool; shared
-or network filesystems are unsupported.
+recovery and multi-process journal ownership are excluded. Operators must use
+local storage and the documented backup/restore tool; shared or network
+filesystems are unsupported.
+
+Integrity is layered: CRC32 catches accidental corruption, the optional
+HMAC-SHA256 chain authenticates transaction content and order, and the optional
+external rollback anchor (created with `rillcache-backup anchor`, verified from
+`--aof-anchor-file`) detects a whole-journal rollback or a removed durable
+suffix. The anchor must be pinned outside the data volume; an attacker who can
+replace both the journal and the anchor defeats it. Application-level encryption
+at rest is an **explicit exclusion**: confidentiality depends on platform
+disk/volume encryption and owner-only permissions, the HMAC key is an
+operator-managed file with no in-process keyring or live rotation, and rotation
+is an offline verified rewrite followed by a new anchor. The full contract,
+custody and threat model are in [persistence](persistence.md#rollback-and-truncation-anchor)
+and [key management](persistence.md#encryption-at-rest-and-key-management).
 
 ## Security contract
 

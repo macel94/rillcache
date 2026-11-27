@@ -60,7 +60,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Gate | State | Worst gap |
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC or storage-fault evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
@@ -438,39 +438,35 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   count or an accepted SLO is recorded, and progress reporting covers bytes/keys
   completed.
 
-- [ ] **D3. Journal integrity and encryption at rest are Partial.** [P0]
-  **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal
-  transaction is followed by a standard RESP ECHO marker containing the byte
-  length and CRC32. Legacy RESP-only journals remain readable and switch to a
-  checksummed segment on their next append; rewrite snapshots are checksummed as
-  one segment. Startup preflights all checksum groups before replay, fails closed
-  on valid-RESP corruption and truncates a torn final transaction to the previous
-  verified boundary. Tests cover a standard CRC32 vector, valid-RESP corruption,
-  legacy upgrade and a fully written transaction with a torn marker.
-  **Partial (2026-11-10): optional HMAC-SHA256 journal authentication.** With
-  `--aof-hmac-key-file`, a streaming keyed hash chain covers every appended
-  transaction, checksum record and rewrite slice; startup verifies the chain
-  before replay and fails closed on modified or reordered content, an insertion
-  before the final marker, a malformed marker or the wrong key. An empty journal starts with an anchor on its
-  first append. Existing journals require the explicit, one-time
-  `--aof-hmac-migrate` startup seal, which authenticates the already checksummed
-  prefix as-is; later starts without an anchor fail closed. A torn final
-  unauthenticated group is discarded to the last verified marker. The offline
-  backup tool accepts the key for create/verify/restore. Both key-file readers
-  enforce a byte limit during the read and reject oversized files. Tests cover restart,
-  wrong key, modified tags, migration refusal and completion, authenticated
-  rewrite plus post-rewrite appends, torn markers, partial next appends, and real
-  server/backup paths.
-  **Limit:** HMAC is not encryption. The key is a single operator-managed file with
-  no rotation/keyring, secure-store integration or file-permission enforcement;
-  a whole-journal replacement with an older valid file, and truncation of a
-  durable suffix, are not detectable without external anti-rollback state. If the
-  key is removed and new writes are appended, the next authenticated start
-  discards those unauthenticated writes. Legacy prefixes are only authenticated
-  after an explicit migration or rewrite.
-  **Closes when:** the profile has a reviewed encryption-at-rest and key-management
-  contract (or an explicit exclusion), and recovery authentication covers the
-  deployment's rollback/truncation threat model with documented external state.
+- [x] **D3. Journal integrity and encryption at rest are Partial.** [P0]
+  **Complete (2026-11-27) with an external rollback anchor and a reviewed
+  integrity/encryption contract.** Evidence for head `2963471c`:
+  `Tests and offline CI` job 140250092595 in run
+  [45920581977](https://github.com/macel94/rillcache/actions/runs/45920581977)
+  exercises `tests/aof_anchor.rs` and the `rollback_anchor_*` engine tests. CRC32 checksums and the optional HMAC-SHA256
+  chain are unchanged. `rillcache-backup anchor` now re-verifies an authenticated
+  journal through the offline replay path and publishes a bounded (512-byte)
+  key-authenticated anchor committing to the exact verified byte length and
+  chain tag; it refuses to overwrite an existing anchor and writes owner-only
+  permissions. `--aof-anchor-file` makes startup require that boundary and tag,
+  so a shorter journal (whole-file rollback, restored older copy, removed
+  durable suffix) or a replaced/rewritten chain fails closed with an explicit
+  error, while normal growth and a crash-torn tail after the boundary still
+  replay. The anchor is read-only server input and never rewritten by the
+  server. Evidence: `tests/aof_anchor.rs` (tool writes the anchor, anchored
+  restart, growth accepted, truncation/rollback rejected, foreign-key anchor
+  rejected, malformed/empty/unanchored configurations fail closed) and
+  `src/engine/journal_tests.rs` `rollback_anchor_*` (extension, rollback,
+  truncation, empty journal, tampered/oversized/trailing anchors, MAC under a
+  foreign key, and rewrite invalidation). The reviewed contract is documented in
+  [persistence](persistence.md#rollback-and-truncation-anchor) and
+  [encryption/key management](persistence.md#encryption-at-rest-and-key-management):
+  application-level encryption at rest is an explicit exclusion delegated to
+  platform disk/volume encryption, key custody is an operator-managed file with
+  owner-only permissions and no in-process keyring, and rotation is an offline
+  verified rewrite plus a new anchor. This does not add timestamps, replay
+  counters, KMS integration, revocation or protection against an attacker who can
+  also replace the pinned anchor; those remain documented limits, not claims.
 
 - [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
   There is no fault-injection corpus for short writes, ENOSPC, quota, permission

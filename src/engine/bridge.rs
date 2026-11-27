@@ -149,6 +149,19 @@ impl Store {
         })
     }
 
+    /// Verified authenticated journal boundary and chain tag, if any.
+    ///
+    /// Read-only evidence for the offline rollback-anchor tool; it never mutates
+    /// the journal and returns `None` when the journal is unauthenticated or the
+    /// lock cannot be taken.
+    pub fn journal_auth_commitment(&self) -> Option<(u64, [u8; 32])> {
+        self.services
+            .journal
+            .as_ref()
+            .and_then(|journal| journal.lock().ok())
+            .and_then(|journal| journal.auth_commitment())
+    }
+
     #[cfg(test)]
     pub(crate) fn test_services(&self) -> Arc<ServerServices> {
         Arc::clone(&self.services)
