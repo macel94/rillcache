@@ -1093,7 +1093,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   8×512 KiB `MGET` is refused at the documented bound with the value intact.
   Not claimed: configurable thresholds, kill policy, fair-share scheduling or
   per-tenant quotas.
-- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
+- [x] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.
@@ -1103,6 +1103,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   increments `evicted_keys` without completing a `BLPOP` waiter; a later push
   completes the wait and clears `blocked_clients`. Replica pause is not
   applicable until replication exists.
+  **Complete (2026-11-27): the supported interaction matrix is documented and tested.**
+  The profile now states the matrix explicitly, including the guarantees it does
+  not make: `CLIENT PAUSE ... WRITE` holds mutations but not reads, an expired
+  key read during the pause answers nil and is never replayed, a blocked `BLPOP`
+  keeps its queue position and receives pushed elements in push order while
+  expiry and eviction proceed on unrelated keys, and `allkeys-random` eviction
+  keeps accepting writes past the payload budget while a client is blocked,
+  counting the block in `INFO clients` and the evictions in `INFO stats`
+  (`evicted_keys`). Reply ordering is claimed per connection, including replies
+  released when a pause ends. Evidence: `tests/expiry_eviction_pause.rs` runs the
+  matrix in the default, fixed-one and four-worker modes and pins the exact
+  replies (`$-1`/`:0`/`:-2` for the expired key, `+OK` for the deferred write,
+  the pushed-element replies and the `*-1` blocked timeout). Background eviction
+  remains a separate open item under O7's successor work (see P-series): there is
+  still no periodic background eviction loop, so "background eviction" in the
+  original text is not claimed; the eviction that runs during blocked commands is
+  the on-write path.
   **Closes when:** background eviction and the supported interaction matrix are
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.
