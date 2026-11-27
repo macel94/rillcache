@@ -47,6 +47,7 @@ const SUPPORTED: &[&str] = &[
     "appendfsync",
     "aof-hmac-key-file",
     "aof-hmac-migrate",
+    "aof-anchor-file",
     "dir",
     "maxmemory-policy",
     "notify-keyspace-events",
@@ -436,6 +437,10 @@ aof-hmac-migrate no
             vec!["--aof-hmac-migrate"]
         );
         assert!(parse_text("aof-hmac-migrate true\n").is_err());
+        assert_eq!(
+            parse_text("aof-anchor-file /run/anchors/aof.anchor\n").unwrap(),
+            vec!["--aof-anchor-file", "/run/anchors/aof.anchor"]
+        );
         assert_eq!(
             parse_text("secure-secret-files yes\nsecure-secret-files=no\n").unwrap(),
             ["--secure-secret-files=yes", "--secure-secret-files=no"]

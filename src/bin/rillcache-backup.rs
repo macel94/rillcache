@@ -12,7 +12,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rillcache::engine::{Auth, FsyncPolicy, JournalAuth, Store, read_auth_key_file};
+use rillcache::engine::{Auth, FsyncPolicy, JournalAnchor, JournalAuth, Store, read_auth_key_file};
 use rillcache::protocol::Limits;
 
 const MAGIC: &[u8] = b"RILLCACHE-AOF-BACKUP-V1\n";
@@ -20,7 +20,8 @@ const CHUNK: usize = 1024 * 1024;
 const DEFAULT_MAX_DATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [--temp-dir DIR] [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
+const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [--temp-dir DIR] [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]
+  rillcache-backup anchor --dir DIR [--filename NAME] --output FILE --aof-hmac-key-file PATH\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -51,9 +52,9 @@ fn parse_args() -> Result<Option<Options>, String> {
     let action = action
         .into_string()
         .map_err(|_| "action is not UTF-8".to_owned())?;
-    if !matches!(action.as_str(), "create" | "verify" | "restore") {
+    if !matches!(action.as_str(), "create" | "verify" | "restore" | "anchor") {
         return Err(format!(
-            "unknown action {action:?}; use create, verify or restore"
+            "unknown action {action:?}; use create, verify, restore or anchor"
         ));
     }
     let mut options = Options {
@@ -136,6 +137,12 @@ fn parse_args() -> Result<Option<Options>, String> {
         "verify" if options.input.is_none() => return Err("verify requires --input".into()),
         "restore" if options.input.is_none() || options.dir.is_none() => {
             return Err("restore requires --input and --dir".into());
+        }
+        "anchor" if options.dir.is_none() || options.output.is_none() => {
+            return Err("anchor requires --dir and --output".into());
+        }
+        "anchor" if options.aof_hmac_key_file.is_none() => {
+            return Err("anchor requires --aof-hmac-key-file to authenticate the journal".into());
         }
         _ => {}
     }
@@ -526,6 +533,58 @@ fn verify_backup(options: &Options) -> io::Result<()> {
     Ok(())
 }
 
+/// Re-verify the authenticated journal and publish an external rollback anchor.
+///
+/// The anchor commits to the exact verified byte length and keyed chain tag at
+/// that boundary. Publishing is create-if-absent: replacing a pinned anchor is
+/// an explicit operator action, never a silent side effect of this tool.
+fn create_anchor(options: &Options) -> io::Result<()> {
+    let Some(key_file) = options.aof_hmac_key_file.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "anchor requires an authentication key file",
+        ));
+    };
+    let Some(directory) = options.dir.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "anchor requires --dir",
+        ));
+    };
+    let Some(destination) = options.output.as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "anchor requires --output",
+        ));
+    };
+    let key = read_auth_key_file(key_file)?;
+    let auth = JournalAuth::new(key.clone(), false)?;
+    let source = journal_path(directory, &options.filename);
+    let commitment = {
+        // Opening replays and verifies the journal under its ownership lock.
+        let store =
+            Store::open_backup_source(options.max_data_bytes, &source, options.limits, Some(auth))?;
+        let commitment = store.journal_auth_commitment();
+        drop(store);
+        commitment
+    };
+    let Some((verified_len, tag)) = commitment else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "journal has no authenticated boundary to anchor",
+        ));
+    };
+    let anchor = JournalAnchor::create(&key, verified_len, tag);
+    let (temporary, mut file) = create_temp(destination, "anchor")?;
+    file.write_all(&anchor.encode())?;
+    file.sync_all()?;
+    drop(file);
+    publish_noreplace(&temporary, destination)?;
+    let digest: String = tag.iter().map(|byte| format!("{byte:02x}")).collect();
+    println!("wrote journal rollback anchor: {verified_len} verified bytes, tag {digest}");
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let Some(options) = parse_args()? else {
         return Ok(());
@@ -534,6 +593,7 @@ fn run() -> Result<(), String> {
         "create" => create_backup(&options),
         "verify" => verify_backup(&options),
         "restore" => restore_backup(&options),
+        "anchor" => create_anchor(&options),
         _ => unreachable!("action validated"),
     };
     result.map_err(|error| format!("{}: {error}", options.action))

@@ -2843,3 +2843,171 @@ fn introspection_and_hash_ttl_misses_emit_keymiss() {
         "hits, absent fields and capability errors are not misses"
     );
 }
+
+fn open_with_anchor(
+    path: &std::path::Path,
+    key: &[u8],
+    anchor: &super::JournalAnchor,
+) -> std::io::Result<Store> {
+    Store::with_auth_and_journal(
+        16 * 1024 * 1024,
+        Auth::default(),
+        path,
+        FsyncPolicy::Always,
+        Limits::default(),
+        Some(JournalAuth::new(key.to_vec(), false)?.with_anchor(*anchor)),
+    )
+}
+
+fn commitment(path: &std::path::Path) -> (u64, [u8; 32]) {
+    let store = open_with_auth(path, AUTH_KEY, false).unwrap();
+    let commitment = store
+        .journal_auth_commitment()
+        .expect("authenticated journal commitment");
+    drop(store);
+    commitment
+}
+
+#[test]
+fn rollback_anchor_accepts_extension_and_rejects_truncation_or_rollback() {
+    let path = aof_path("anchor-rollback");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"one", b"1"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"two", b"2"]), b"+OK\r\n");
+    }
+    let older = std::fs::read(&path).unwrap();
+    let (early_len, early_tag) = commitment(&path);
+    assert!(early_len > 0);
+    let early_anchor = super::JournalAnchor::create(AUTH_KEY, early_len, early_tag);
+
+    // A journal that grows beyond the anchored boundary still verifies.
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"three", b"3"]), b"+OK\r\n");
+    }
+    let (verified_len, tag) = commitment(&path);
+    let anchor = super::JournalAnchor::create(AUTH_KEY, verified_len, tag);
+    {
+        let store = open_with_anchor(&path, AUTH_KEY, &anchor).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"three"]), b"$1\r\n3\r\n");
+    }
+    {
+        // The earlier bound still verifies against the longer journal.
+        let store = open_with_anchor(&path, AUTH_KEY, &early_anchor).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"three"]), b"$1\r\n3\r\n");
+    }
+    // Replacing the journal with an older authenticated file is a rollback.
+    std::fs::write(&path, &older).unwrap();
+    let error = match open_with_anchor(&path, AUTH_KEY, &anchor) {
+        Ok(_) => panic!("rolled-back journal must fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("shorter than the rollback anchor"),
+        "unexpected error: {error}"
+    );
+
+    // A truncated durable suffix is detected by the same boundary check, even
+    // when the retained prefix is itself valid and authenticated.
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
+    assert!(open_with_anchor(&path, AUTH_KEY, &anchor).is_err());
+
+    // An empty journal is a rollback to nothing.
+    std::fs::write(&path, b"").unwrap();
+    let error = match open_with_anchor(&path, AUTH_KEY, &anchor) {
+        Ok(_) => panic!("empty journal must fail an anchored start"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("refusing a rolled-back journal"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn rollback_anchor_authenticates_under_the_journal_key_and_stays_bounded() {
+    let path = aof_path("anchor-auth");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    }
+    let (verified_len, tag) = commitment(&path);
+    let anchor = super::JournalAnchor::create(AUTH_KEY, verified_len, tag);
+
+    // A different key cannot authenticate the anchor, so a forged anchor needs
+    // the journal key as well as write access to the journal.
+    let forged = super::JournalAnchor::decode(b"fedcba9876543210", &anchor.encode())
+        .expect_err("foreign key must not verify the anchor");
+    assert!(
+        forged.to_string().contains("does not authenticate"),
+        "unexpected error: {forged}"
+    );
+
+    // A modified tag or length fails the MAC instead of permitting a rollback.
+    let encoded = String::from_utf8(anchor.encode()).unwrap();
+    let tampered = encoded.replacen("tag ", "tag f", 1);
+    assert!(super::JournalAnchor::decode(AUTH_KEY, tampered.as_bytes()).is_err());
+    let truncated = encoded.replacen("length ", "length 9", 1);
+    assert!(super::JournalAnchor::decode(AUTH_KEY, truncated.as_bytes()).is_err());
+
+    // Oversized, malformed and trailing-data anchors fail closed.
+    let oversized = vec![b'x'; super::AOF_ANCHOR_MAX_BYTES + 1];
+    assert!(super::JournalAnchor::decode(AUTH_KEY, &oversized).is_err());
+    assert!(super::JournalAnchor::decode(AUTH_KEY, b"not an anchor").is_err());
+    let mut trailing = anchor.encode();
+    trailing.extend_from_slice(b"extra\n");
+    assert!(super::JournalAnchor::decode(AUTH_KEY, &trailing).is_err());
+
+    // A file larger than the bound is rejected during the bounded read.
+    let anchor_path = aof_path("anchor-bound").with_extension("anchor");
+    std::fs::write(&anchor_path, oversized).unwrap();
+    assert!(super::JournalAnchor::load(AUTH_KEY, &anchor_path).is_err());
+    let _ = std::fs::remove_file(&anchor_path);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn rollback_anchor_detects_a_rewritten_chain() {
+    let path = aof_path("anchor-rewrite");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"one", b"1"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"two", b"2"]), b"+OK\r\n");
+    }
+    let (verified_len, tag) = commitment(&path);
+    let anchor = super::JournalAnchor::create(AUTH_KEY, verified_len, tag);
+    {
+        // A completed rewrite replaces the file with a new anchor nonce, so the
+        // authenticated chain differs from the pinned commitment.
+        let mut journal = super::Journal::open(
+            &path,
+            FsyncPolicy::Always,
+            Limits::default(),
+            Some(JournalAuth::new(AUTH_KEY.to_vec(), false).unwrap()),
+        )
+        .unwrap();
+        journal.begin_rewrite().unwrap();
+        journal
+            .write_rewrite(b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n")
+            .unwrap();
+        journal.sync_rewrite().unwrap();
+        journal.commit_rewrite().unwrap();
+        drop(journal);
+    }
+    let error = match open_with_anchor(&path, AUTH_KEY, &anchor) {
+        Ok(_) => panic!("a rewritten chain must not satisfy the pinned anchor"),
+        Err(error) => error,
+    };
+    // A rewrite can be shorter or longer; either way the anchored boundary or
+    // its chain tag no longer matches, so the start must fail closed.
+    assert!(
+        error.to_string().contains("rollback anchor"),
+        "unexpected error: {error}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
