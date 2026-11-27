@@ -840,6 +840,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reads the value, a `+@pubsub`-only user observing the other tenant's channel
   through `PUBSUB CHANNELS`, and the process-wide `maxclients` limit. Not
   claimed: per-tenant quotas, databases, memory isolation or a multi-tenant
+  contract.
+
 - [x] **S8. Secret handling needs hardening.** [P1]
   **Complete (2026-11-27): the supported secret sources, permissions, rotation
   and process-argument risks are documented and tested, and long random secrets
