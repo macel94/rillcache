@@ -357,6 +357,34 @@ describes current behavior, not a second checklist.
   mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;
   later password rotation uses authenticated `CONFIG SET`, and user changes use
   `ACL SETUSER` plus `ACL SAVE`.
+## Security acceptance gate for new features
+
+Scripting/functions, replication, failover/Sentinel, cluster routing and loadable
+modules are absent. They must not be added as "just another command": each one
+changes the trust boundary, and the profile must gate it on all of the following
+before it can be reachable:
+
+1. **Threat model** — who supplies the code or peer input, what keys/commands it
+   can reach, what network identity it trusts, and what it can do on failure.
+2. **Authentication/authorization path** — the ACL category, key/channel patterns
+   and connection state that gate it, including for peers and replicas.
+3. **Resource bounds** — CPU/instruction, memory, frame size, fan-out and time
+   limits with explicit errors instead of unbounded work.
+4. **Negative tests** — unauthorized peer/script, hostile or malformed input,
+   oversized payloads, partial failure and revocation while running.
+5. **Audit and observability** — denial/acceptance events and counters that do
+   not leak secrets.
+6. **Independent review** where the profile requires it, plus the matching
+   profile/checklist update.
+
+`tests/security_gate.rs` is the tripwire for the current absence: in default,
+fixed-one and four-worker modes it requires every execution
+(`EVAL`/`EVALSHA`/`EVAL_RO`/`FCALL`/`FCALL_RO`, `SCRIPT LOAD`, `FUNCTION LOAD`),
+replication (`REPLICAOF`/`SLAVEOF`/`REPLCONF`/`PSYNC`/`SYNC`/`FAILOVER`), cluster
+(`SLOTS`/`NODES`) and module (`LOAD`) entry point to fail explicitly, with
+`ROLE` reporting a standalone master and no state change. If one of those starts
+succeeding, the test fails and the gate above must be satisfied first.
+
 ## Secret sources, permissions and rotation
 
 Every secret this server reads has one source flag, one permission rule under

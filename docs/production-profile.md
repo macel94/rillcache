@@ -183,6 +183,16 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Security acceptance gate for excluded features
+
+Scripting/functions, replication, failover/Sentinel, cluster routing and modules
+are excluded, and they are gated rather than merely documented: any future
+implementation must ship a threat model, its authentication/authorization path,
+resource bounds, negative tests, audit events and (where required) independent
+review before it becomes reachable. `tests/security_gate.rs` fails if any of the
+current entry points starts succeeding, so the gate cannot be bypassed silently.
+See [the security gate](security.md#security-acceptance-gate-for-new-features).
+
 ## Tenant isolation boundary
 
 Multi-tenant deployment is **explicitly excluded**. One process is one trust

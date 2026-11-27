@@ -892,16 +892,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
 
-- [ ] **S10. Script, replication and cluster security do not exist.** [P1]
-  These features are absent, so their sandbox, credential, authorization and
-  network trust boundaries are also absent. They must not be claimed as secure
-  once added.
-  **Closes when:** each added feature has an explicit threat model, authentication/
-  authorization path and negative tests.
-
----
-
-## 5. Observability and operations
+- [x] **S10. Script, replication and cluster security do not exist.** [P1]
+  **Complete (2026-11-27) as a security gate over the excluded features.** No
+  scripted, replicated or clustered execution path exists, and the profile now
+  states that adding one requires, before it can be reachable: a threat model
+  (code/peer input, key/command reach, trusted network identity, failure
+  behavior), the authentication/authorization path (ACL category, key/channel
+  patterns, peer state), resource bounds with explicit errors, negative tests
+  (unauthorized peer/script, hostile or malformed input, oversized payloads,
+  partial failure, revocation while running), audit/observability, independent
+  review where the profile requires it, and the profile/checklist update.
+  `tests/security_gate.rs`
+  `excluded_distributed_and_scripted_features_stay_behind_the_security_gate`
+  is the tripwire: in default, fixed-one and four-worker modes every
+  `EVAL*`/`FCALL*`/`SCRIPT LOAD`/`FUNCTION LOAD`, `REPLICAOF`/`SLAVEOF`/
+  `REPLCONF`/`PSYNC`/`SYNC`/`FAILOVER`, `CLUSTER SLOTS|NODES` and `MODULE LOAD`
+  entry point must fail explicitly with `ROLE` reporting a standalone master and
+  no state change; a future implementation therefore fails CI until the gate is
+  satisfied. Not claimed: any implemented script/replication/cluster security
+  model, or that the absence of a feature is a security proof for a future one.
 
 - [ ] **O1. True memory accounting and enforcement are missing.** [P0]
   `maxmemory` is a key/value payload budget, not RSS or allocator memory. Keys,
