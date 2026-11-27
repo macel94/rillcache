@@ -157,7 +157,7 @@ fn expiry_during_a_write_pause_is_never_observed_or_replayed() {
 
     command(
         &mut admin,
-        &[b"CLIENT", b"PAUSE", b"600", b"WRITE"],
+        &[b"CLIENT", b"PAUSE", b"400", b"WRITE"],
         b"+OK\r\n",
     );
     std::thread::sleep(Duration::from_millis(200));
@@ -169,9 +169,11 @@ fn expiry_during_a_write_pause_is_never_observed_or_replayed() {
     // A write issued during the pause is answered after it expires, and no
     // stale value is replayed before the new one.
     send(&mut worker, &[b"SET", b"k", b"fresh"]);
-    std::thread::sleep(Duration::from_millis(600));
+    std::thread::sleep(Duration::from_millis(450));
     assert_eq!(read_frame(&mut worker, 0), b"+OK\r\n");
     command(&mut worker, &[b"GET", b"k"], b"$5\r\nfresh\r\n");
+    drop(worker);
+    drop(admin);
     server.shutdown().unwrap();
 }
 
@@ -188,7 +190,7 @@ fn expired_keys_and_blocked_pops_keep_their_position_and_order() {
         b"+OK\r\n",
     );
     // The blocked command is issued before the key expires.
-    send(&mut blocked, &[b"BLPOP", b"q", b"5"]);
+    send(&mut blocked, &[b"BLPOP", b"q", b"3"]);
     std::thread::sleep(Duration::from_millis(150));
     command(&mut writer, &[b"GET", b"gone"], b"$-1\r\n");
     command(&mut writer, &[b"EXISTS", b"gone"], b":0\r\n");
@@ -215,6 +217,9 @@ fn expired_keys_and_blocked_pops_keep_their_position_and_order() {
     // With nothing left, the documented timeout reply is a null array.
     command(&mut blocked, &[b"BLPOP", b"q", b"1"], b"*-1\r\n");
     command(&mut blocked, &[b"PING"], b"+PONG\r\n");
+    drop(blocked);
+    drop(writer);
+    drop(admin);
     server.shutdown().unwrap();
 }
 
@@ -256,5 +261,7 @@ fn eviction_keeps_the_budget_while_a_client_is_blocked() {
     let started = Instant::now();
     command(&mut writer, &[b"PING"], b"+PONG\r\n");
     assert!(started.elapsed() < Duration::from_secs(2));
+    drop(blocked);
+    drop(writer);
     server.shutdown().unwrap();
 }
