@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rillcache::{Config, Server, ServerHandle};
 use rustls::client::WebPkiServerVerifier;
@@ -308,10 +308,10 @@ fn ocsp_staples_follow_the_selected_default_or_sni_identity_and_absence_is_compa
     std::fs::create_dir_all(&directory).unwrap();
     let default_ocsp = directory.join("default.ocsp.der");
     let alternate_ocsp = directory.join("alternate.ocsp.der");
-    let default_response = [0x30, 0x03, 0x0a, 0x01, 0x00];
-    let alternate_response = [0x30, 0x03, 0x0a, 0x01, 0x01];
-    std::fs::write(&default_ocsp, default_response).unwrap();
-    std::fs::write(&alternate_ocsp, alternate_response).unwrap();
+    let default_response = staple(0x80, 0x00, 3_600);
+    let alternate_response = staple(0x80, 0x01, 3_600);
+    std::fs::write(&default_ocsp, &default_response).unwrap();
+    std::fs::write(&alternate_ocsp, &alternate_response).unwrap();
 
     let mut config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -341,18 +341,21 @@ fn ocsp_staples_follow_the_selected_default_or_sni_identity_and_absence_is_compa
         mode_config.worker_threads = workers;
         let server = Server::bind(mode_config).unwrap().spawn().unwrap();
         for (name, expected) in [
-            ("localhost", default_response),
-            ("alt.test", alternate_response),
+            ("localhost", default_response.clone()),
+            ("alt.test", alternate_response.clone()),
         ] {
             let responses = Arc::new(Mutex::new(Vec::new()));
             let mut stream = connect_capturing_ocsp(&server, name, Arc::clone(&responses));
             ping(&mut stream);
-            assert_eq!(responses.lock().unwrap().as_slice(), &[expected]);
+            assert_eq!(responses.lock().unwrap().as_slice(), &[expected.clone()]);
         }
         let responses = Arc::new(Mutex::new(Vec::new()));
         let mut no_sni = connect_without_sni_capturing_ocsp(&server, Arc::clone(&responses));
         ping(&mut no_sni);
-        assert_eq!(responses.lock().unwrap().as_slice(), &[default_response]);
+        assert_eq!(
+            responses.lock().unwrap().as_slice(),
+            &[default_response.clone()]
+        );
         let mut wrong_sni = connect_named(&server, false, "wrong.test");
         let handshake = wrong_sni.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
             let mut reply = [0u8; 7];
@@ -491,11 +494,11 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     let key_file = directory.join("server.key");
     let trigger = directory.join("generation");
     let ocsp_file = directory.join("server.ocsp.der");
-    let response_one = [0x30, 0x03, 0x0a, 0x01, 0x00];
-    let response_two = [0x30, 0x03, 0x0a, 0x01, 0x01];
+    let response_one = staple(0x80, 0x00, 3_600);
+    let response_two = staple(0x80, 0x01, 3_600);
     std::fs::copy(fixture("server.crt"), &cert_file).unwrap();
     std::fs::copy(fixture("server.key"), &key_file).unwrap();
-    std::fs::write(&ocsp_file, response_one).unwrap();
+    std::fs::write(&ocsp_file, &response_one).unwrap();
     std::fs::write(&trigger, b"generation-1").unwrap();
 
     let server = Server::bind(Config {
@@ -526,7 +529,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     std::fs::copy(fixture("alternate.key"), &key_next).unwrap();
     std::fs::rename(cert_next, &cert_file).unwrap();
     std::fs::rename(key_next, &key_file).unwrap();
-    std::fs::write(&ocsp_file, response_two).unwrap();
+    std::fs::write(&ocsp_file, &response_two).unwrap();
     let trigger_next = directory.join("generation.next");
     std::fs::write(&trigger_next, b"generation-2").unwrap();
     std::fs::rename(trigger_next, &trigger).unwrap();
@@ -536,7 +539,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     ping(&mut rotated);
     assert_eq!(
         rotated_responses.lock().unwrap().as_slice(),
-        &[response_two]
+        &[response_two.clone()]
     );
     ping(&mut established);
 
@@ -548,7 +551,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     ping(&mut retained);
     assert_eq!(
         retained_responses.lock().unwrap().as_slice(),
-        &[response_two]
+        &[response_two.clone()]
     );
     ping(&mut rotated);
     ping(&mut established);
@@ -625,11 +628,11 @@ fn invalid_sni_key_does_not_partially_publish_tls_staples() {
     let default_ocsp = directory.join("default.der");
     let sni_ocsp = directory.join("sni.der");
     let sni_key = directory.join("sni.key");
-    // These are opaque test markers, not validated certificate status responses.
-    let first = [0x30, 0x03, 0x0a, 0x01, 0x00];
-    let second = [0x30, 0x03, 0x0a, 0x01, 0x01];
-    std::fs::write(&default_ocsp, first).unwrap();
-    std::fs::write(&sni_ocsp, second).unwrap();
+    // Distinct, freshly stapled identities so the OCSP policy accepts both.
+    let first = staple(0x80, 0x00, 3_600);
+    let second = staple(0x80, 0x01, 3_600);
+    std::fs::write(&default_ocsp, &first).unwrap();
+    std::fs::write(&sni_ocsp, &second).unwrap();
     std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
     std::fs::write(&trigger, b"initial").unwrap();
     let server = Server::bind(Config {
@@ -664,25 +667,25 @@ fn invalid_sni_key_does_not_partially_publish_tls_staples() {
         );
         stream
     };
-    let mut established = observe(None, first);
-    observe(Some("alt.test"), second);
+    let mut established = observe(None, first.clone());
+    observe(Some("alt.test"), second.clone());
 
     let publish = |token: &[u8]| {
         let next = directory.join("generation.next");
         std::fs::write(&next, token).unwrap();
         std::fs::rename(next, &trigger).unwrap();
     };
-    std::fs::write(&default_ocsp, second).unwrap();
-    std::fs::write(&sni_ocsp, first).unwrap();
+    std::fs::write(&default_ocsp, &second).unwrap();
+    std::fs::write(&sni_ocsp, &first).unwrap();
     std::fs::write(&sni_key, b"invalid SNI private key fixture").unwrap();
     publish(b"invalid");
-    observe(None, first);
-    observe(Some("alt.test"), second);
+    observe(None, first.clone());
+    observe(Some("alt.test"), second.clone());
 
     std::fs::copy(fixture("alternate.key"), &sni_key).unwrap();
     publish(b"repaired");
-    observe(None, second);
-    observe(Some("alt.test"), first);
+    observe(None, second.clone());
+    observe(Some("alt.test"), first.clone());
     ping(&mut established);
     server.shutdown().unwrap();
     std::fs::remove_dir_all(directory).unwrap();
@@ -1406,9 +1409,9 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
     let mapping = directory.join("client-users.map");
     let ocsp = directory.join("server.ocsp.der");
     let trigger = directory.join("generation");
-    let response_one = [0x30, 0x03, 0x0a, 0x01, 0x00];
-    let response_two = [0x30, 0x03, 0x0a, 0x01, 0x01];
-    let response_three = [0x30, 0x03, 0x0a, 0x01, 0x02];
+    let response_one = staple(0x80, 0x00, 3_600);
+    let response_two = staple(0x80, 0x01, 3_600);
+    let response_three = staple(0x80, 0x02, 3_600);
     let fingerprint = "c25150ac1267bf09e754f1c1ccbd783c6a49aaaab4c66fe1f0b2e2178bdd8e0c";
     std::fs::write(
         &acl,
@@ -1416,7 +1419,7 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
     )
     .unwrap();
     std::fs::write(&mapping, format!("{fingerprint}=reader\n")).unwrap();
-    std::fs::write(&ocsp, response_one).unwrap();
+    std::fs::write(&ocsp, &response_one).unwrap();
     std::fs::write(&trigger, b"generation-1").unwrap();
     let config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -1461,7 +1464,10 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
         true,
     );
     assert_tls_acl_user(&mut established_writer, b"writer");
-    assert_eq!(writer_responses.lock().unwrap().as_slice(), &[response_two]);
+    assert_eq!(
+        writer_responses.lock().unwrap().as_slice(),
+        &[response_two.clone()]
+    );
     assert_tls_acl_user(&mut established_reader, b"reader");
     established_reader
         .write_all(b"*1\r\n$5\r\nRESET\r\n")
@@ -1486,7 +1492,7 @@ fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_s
     assert_tls_acl_user(&mut after_rejected_generation, b"writer");
     assert_eq!(
         rejected_responses.lock().unwrap().as_slice(),
-        &[response_two]
+        &[response_two.clone()]
     );
     assert_tls_acl_user(&mut established_writer, b"writer");
 
@@ -1616,4 +1622,155 @@ fn invalid_tls_configuration_fails_before_listening() {
         },
     ];
     assert!(Server::bind(duplicate_name).is_err());
+}
+
+/// Build a valid, freshly stapled `id-pkix-ocsp-basic` response. `cert_serial`
+/// distinguishes identities; `next_update_offset` is relative to the current
+/// clock so the freshness policy can be exercised in both directions.
+fn staple(status: u8, cert_serial: u8, next_update_offset: i64) -> Vec<u8> {
+    fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        let len = content.len();
+        if len < 0x80 {
+            out.push(len as u8);
+        } else if len < 0x100 {
+            out.extend_from_slice(&[0x81, len as u8]);
+        } else {
+            out.extend_from_slice(&[0x82, (len >> 8) as u8, len as u8]);
+        }
+        out.extend_from_slice(content);
+        out
+    }
+    fn seq(parts: &[Vec<u8>]) -> Vec<u8> {
+        tlv(0x30, &parts.concat())
+    }
+    let now = u64::from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+    let this_update = generalized_time(now.saturating_sub(60));
+    let next_update =
+        generalized_time((now as i64 + next_update_offset.max(-(now as i64) + 1)) as u64);
+    let single = seq(&[
+        seq(&[
+            tlv(0x06, &[0x2b, 0x0e, 0x03, 0x02, 0x1a]),
+            tlv(0x04, &[1; 20]),
+            tlv(0x04, &[2; 20]),
+            tlv(0x02, &[cert_serial]),
+        ]),
+        tlv(status, &[]),
+        tlv(0x18, this_update.as_bytes()),
+        tlv(0xa0, &tlv(0x18, next_update.as_bytes())),
+    ]);
+    let tbs = seq(&[
+        seq(&[tlv(0x31, &tlv(0x02, &[0x01]))]),
+        tlv(0x18, this_update.as_bytes()),
+        seq(&[single]),
+    ]);
+    let basic = seq(&[
+        tbs,
+        seq(&[tlv(0x06, &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02])]),
+        tlv(0x03, &[0x00, 0xaa, 0xbb]),
+    ]);
+    seq(&[
+        tlv(0x0a, &[0x00]),
+        tlv(
+            0xa0,
+            &seq(&[
+                tlv(
+                    0x06,
+                    &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01],
+                ),
+                tlv(0x04, &basic),
+            ]),
+        ),
+    ])
+}
+
+fn generalized_time(unix: u64) -> String {
+    let days = unix / 86_400;
+    let seconds = unix % 86_400;
+    // 1970-01-01 was a Thursday; this is the civil-from-days inverse of the
+    // algorithm used by `src/server/ocsp.rs`.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:02}{:02}{:02}{:02}{:02}{:02}Z",
+        year % 100,
+        m,
+        d,
+        seconds / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60
+    )
+}
+
+/// S5: load-time OCSP policy. A stale, unsuccessful or revoked staple must fail
+/// the TLS generation instead of being served, and the error must name the
+/// reason; a fresh good staple is accepted.
+#[test]
+fn stale_unsuccessful_or_revoked_ocsp_staples_fail_closed() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-ocsp-policy-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+
+    for (label, bytes, expected) in [
+        ("stale", staple(0x80, 0x00, -7_200), "stale"),
+        ("revoked", staple(0x81, 0x00, 3_600), "revoked"),
+        ("unknown", staple(0x82, 0x00, 3_600), "unknown"),
+    ] {
+        let path = directory.join(format!("{label}.ocsp.der"));
+        std::fs::write(&path, &bytes).unwrap();
+        let config = Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_ocsp_file: Some(path),
+            ..Config::default()
+        };
+        let result = Server::bind(config).and_then(|server| server.spawn());
+        let error = match result {
+            Ok(server) => {
+                let shutdown = server.shutdown();
+                panic!("{label} staple was accepted (shutdown: {shutdown:?})");
+            }
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(expected),
+            "{label} staple error should mention {expected:?}: {error}"
+        );
+    }
+
+    let fresh = directory.join("fresh.ocsp.der");
+    std::fs::write(&fresh, staple(0x80, 0x00, 3_600)).unwrap();
+    let config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_ocsp_file: Some(fresh),
+        ..Config::default()
+    };
+    let server = Server::bind(config).unwrap().spawn().unwrap();
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let mut stream = connect_capturing_ocsp(&server, "localhost", Arc::clone(&responses));
+    ping(&mut stream);
+    assert_eq!(responses.lock().unwrap().len(), 1);
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
