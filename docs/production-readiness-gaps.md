@@ -119,14 +119,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   function execution are incompatible. This does not claim script execution,
   determinism, atomicity or a Lua decision beyond exclusion.
 
-- [ ] **C3. Module loading is missing.** [P1]
-  `MODULE LIST` is empty and `MODULE LOAD`/`LOADEX`/`UNLOAD` return explicit
-  unsupported errors. This is acceptable only if the production profile excludes
-  modules and dependent clients.
-  **Closes when:** module support is implemented and security-reviewed, or the
-  exclusion is explicit in the profile and compatibility matrix.
-
-- [x] **C4. Multiple logical databases are missing.** [P0]
+- [x] **C3. Module loading is missing.** [P1]
+  **Complete (2026-11-27) by the exclusion branch: the profile, compatibility
+  matrix and unsupported-surface reference all exclude loadable modules, and the
+  boundary is tested.** No module ABI, loader or in-process sandbox exists, and
+  loading native code would require an FFI/unsafe boundary the reviewed
+  dependency policy forbids, so module-dependent clients are incompatible.
+  `MODULE LIST` returns an empty array, `MODULE HELP` returns one bounded row,
+  `MODULE LOAD`/`LOADEX`/`UNLOAD` return `MODULE loading is not supported by this
+  server`, and other subcommands return `unknown MODULE subcommand`; a bare
+  `MODULE` returns the arity error. Evidence: `tests/unsupported_surface.rs`
+  exercises every one of those cases in default, fixed-one and four-worker
+  modes, and `docs/unsupported.md` documents the same contract. Not claimed:
+  module loading, an ABI, or isolation for native code.- [x] **C4. Multiple logical databases are missing.** [P0]
   **Complete (2026-11-26) as an explicit, tested exclusion.** Only database 0
   exists, and the profile now states the client-facing consequence rather than
   leaving it to a generic error. `SELECT` accepts `0`; nonzero or malformed
