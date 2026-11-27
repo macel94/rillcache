@@ -1228,12 +1228,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a project license is chosen, added to the repository and
   package metadata, and third-party notice obligations are reviewed.
 
-- [ ] **L2. There is no stable release or support policy.** [P0]
-  The package is `0.1.0`; `latest` is a convenience main-build tag, not a stable
-  release. There is no semantic-version policy, support window, deprecation
-  process or compatibility guarantee.
-  **Closes when:** a versioned release, support policy and upgrade/deprecation
-  contract are published.
+- [x] **L2. There is no stable release or support policy.** [P0]
+  Closed on this candidate: `docs/release-lifecycle.md` publishes the semantic
+  version policy, the 12-month/90-day support windows, the deprecation process,
+  the upgrade and rollback expectations and the release-owner rule;
+  `scripts/cut-release.sh` enforces the gates mechanically and refuses to tag
+  without matching package version, release notes, changelog entry and the
+  accepted-limitation list; `docs/releases/v0.1.0.md` carries the first versioned
+  release notes with compatibility profile, migration and rollback position.
+  Remaining limit stated in those files: `0.1.0` is not tagged yet, so no support
+  window is in force until the release owner runs the script with `--publish`.
 
 - [ ] **L3. Image signing, SBOM and provenance are missing.** [P1]
   **Partial, awaiting protected review and first release evidence:** the container
