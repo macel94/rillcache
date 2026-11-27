@@ -175,6 +175,46 @@ throughput cost; default-off mode is unchanged. Notifications are published afte
 the changed keys are captured and before the client reply is written; ordering
 relative to other connections is therefore not a global happens-before guarantee.
 
+## Pinned event matrix
+
+The supported mutation matrix is pinned against the CI references
+(`ci/upstream/pins.json`: Redis 8.10.2 and Valkey 9.1.2). Reply-level event
+names, payload direction and per-mutation counts are:
+
+| Mutation | Keyspace message (`__keyspace@0__:<key>`) | Keyevent message (`__keyevent@0__:<event>`) | Count |
+| --- | --- | --- | --- |
+| `SET` (no condition failure) | `set` | the key | one pair |
+| `DEL` on a live key | `del` | the key | one pair |
+| `EXPIRE`/`PEXPIRE*` assigning a deadline | `expire` | the key | one pair per key |
+| `LPUSH`/`RPUSH`/`LPOP`/`RPOP` | `lpush`/`rpush`/`lpop`/`rpop` | the key | one pair |
+| `HSET`/`HDEL` (real change) | `hset`/`hdel` (+ `del` when emptied) | the key | one pair each |
+| `SADD`/`SREM` | `sadd`/`srem` | the key | one pair |
+| `ZADD`/`ZREM` | `zadd`/`zrem` | the key | one pair |
+| `XADD` | `xadd` | the key | one pair |
+| Supported read that found no live key (`m` class) | `keymiss` | the key | one per missing occurrence |
+| First creation of a key (`n` class) | `new` | the key | one |
+| Lazy expiry | `expired` | the key | one per expired key |
+| Eviction under a `*` policy | `evicted` | the key | one per evicted key |
+
+Ordering rules: events for one connection follow command order, and compound
+commands follow their documented argument order (`MSETEX` publishes each
+`set` immediately followed by its `expire`). `MULTI` publishes in execution
+order. Delivery is per subscriber connection; cross-connection ordering is not a
+happens-before guarantee.
+
+Duplicate/loss and reconnect rules: one event per actual change per enabled
+class, no event for a no-op or rejected command, no queue for absent
+subscribers, no replay after reconnect (a reconnected subscriber sees only
+events published after it subscribed), and best-effort loss under queue pressure.
+`FLUSHDB`/`FLUSHALL` are deliberately silent: the command succeeds, publishes
+nothing, and does not desynchronise the connection.
+
+`tests/notifications_reconnect.rs` pins this contract in the default, fixed-one
+and four-worker modes: exact ordered pairs for `SET`/`SET`/`DEL`, no event for a
+no-op `DEL`, no delivery for events published while nobody was subscribed, a
+reconnected subscriber receiving only later events, and `FLUSHDB` staying silent
+while the next `SET` still delivers.
+
 ## Limits
 
 - No module events; no `FLUSH*` keyless event. Key-miss covers only

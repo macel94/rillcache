@@ -227,7 +227,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client versions, pool-under-load, cluster routing, client-side caching, RESP3
   push tracking or mutual TLS, and does not close C6.
 
-- [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
+- [x] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
   command set, but `FLUSH*` event classes remain unsupported; delivery is
   at-most-once and process-local.
@@ -282,6 +282,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   not emit. `A` excludes `n`, as in Redis. `FLUSH*`/module classes and key-miss
   coverage for other read commands remain open. Delivery is at-most-once and
   process-local.
+  **Complete (2026-11-27) for the documented matrix; `FLUSH*` events remain an explicit exclusion.**
+  `docs/notifications.md` now publishes the pinned event matrix (Redis 8.10.2 /
+  Valkey 9.1.2 from `ci/upstream/pins.json`) with the keyspace/keyevent payload
+  direction, per-mutation counts, command/argument ordering rules for compound
+  commands and `MULTI`, and the duplicate/loss/reconnect rules: one event per
+  actual change per enabled class, nothing for no-ops or rejected commands, no
+  queue for absent subscribers, no replay after reconnect, best-effort loss under
+  queue pressure, and `FLUSHDB`/`FLUSHALL` deliberately silent without
+  desynchronising the connection. Evidence: `tests/notifications_reconnect.rs`
+  pins ordered pairs for `SET`/`SET`/`DEL`, the no-op `DEL` silence, no delivery
+  for events published while nobody was subscribed, a reconnected subscriber
+  receiving only later events, and `FLUSHDB` silence followed by a delivered
+  `SET`, in the default, fixed-one and four-worker modes, alongside the existing
+  category, keymiss, new-key, compound-command and lifecycle tests.
+  Durable delivery, replay and cross-connection ordering stay explicitly out of
+  scope as the criterion allows; keyless `FLUSH*` events stay excluded.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
