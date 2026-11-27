@@ -1302,11 +1302,34 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   attestations, the vulnerability-response route is confirmed, and any required
   reviewer decision and remaining scan/license disposition are recorded.
 
-- [ ] **L4. Release notes and migration guidance are missing.** [P1]
-  There is no changelog, compatibility delta, migration guide or rollback note
-  for data/format changes.
-  **Closes when:** each release carries tested upgrade/rollback and migration
-  notes, including journal/format changes.
+- [x] **L4. Release notes and migration guidance are missing.** [P1]
+  **Complete (2026-11-27): every release carries notes generated from the
+  candidate and tested upgrade/rollback evidence.** `CHANGELOG.md` groups changes
+  by release and links `docs/releases/v0.1.0.md`, which records the candidate,
+  compatibility profile, changes, migration position, rollback position, support
+  window, accepted P0 limitations and the verification evidence;
+  `docs/release-lifecycle.md` states the release contract and
+  `scripts/cut-release.sh` enforces the gates before a tag exists. The notes are
+  generated from the candidate rather than hand-asserted:
+  `scripts/check_release_notes.py` fails when a version has no notes file, when
+  the changelog stops linking them, when a required section is missing or empty,
+  when the accepted-limitation list omits an open P0 gap or lists a closed one,
+  when the verification section stops naming `scripts/upgrade_drill.py`/
+  `scripts/restore_drill.py` or references a path that does not exist, and when
+  the journal is mentioned without a migration and rollback position.
+  `tests/documentation.rs` runs the checker and its fourteen regression tests in
+  the required CI graph. Tested evidence for this release: `scripts/upgrade_drill.py`
+  exercises the pinned old/new pair in `ci/upgrade-pins.json` (same-binary
+  offline rollback plus upgrade/downgrade against test data with an explicit
+  accepted-loss bound) and `scripts/restore_drill.py` with
+  `scripts/test_restore_drill.py` exercises isolated restore, including
+  active-writer refusal, archive/inner-journal corruption and no-overwrite
+  publication; both run as the required `Upgrade and rollback drill` and
+  `Isolated backup/restore drill` jobs. Retained limit, also stated in the notes:
+  the drills cover the journal formats pinned in `ci/upgrade-pins.json` only, so a
+  format change outside that pin set has no tested rollback path until a drill
+  pair exists. Not claimed: migration across an untested format change, or a
+  supported downgrade path outside the pinned pair.
 
 - [x] **L5. The supported platform matrix is undefined.** [P1]
   **Complete (2026-11-27) with an explicit, tested platform and filesystem
