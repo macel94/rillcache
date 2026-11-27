@@ -187,16 +187,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   absent command is either implemented or explicitly excluded with a
   client-facing error and profile entry.
 
-- [ ] **C6. RESP3 and session behavior are a bounded subset.** [P1]
-  RESP3 is limited to the current commands' simple strings, errors, integers,
-  bulk strings/arrays and null frames. There is no full RESP3 type coverage,
-  client tracking, full push/attribute semantics, or multiple-database select.
-  Empty/null request arrays are rejected.
-  **Closes when:** every RESP3 type and session feature used by the supported
-  client matrix has a documented, tested behavior, including malformed and
-  fragmented frames.
-
-- [x] **C7. Real client-library compatibility is incomplete.** [P0]
+- [x] **C6. RESP3 and session behavior are a bounded subset.** [P1]
+  **Complete (2026-11-27) for the RESP3 surface the pinned client matrix
+  actually uses, with explicit exclusions.** The profile documents the surface
+  used by `redis-py` 5.2.1, `node-redis` 6.4.0 and `go-redis` v9.14.0 after
+  `HELLO 3`: the handshake map, Pub/Sub push frames, and RESP2-compatible simple
+  strings, errors, integers, bulk strings, arrays and nulls for the supported
+  commands, with `HGETALL` documented as a flat array rather than a map. Double,
+  boolean, big-number, verbatim, set, attribute and streamed-string types are
+  not emitted; client tracking/caching is excluded with explicit replies
+  (`CLIENT TRACKING` -> `ERR unsupported CLIENT subcommand or invalid
+  arguments`, `GETREDIR` -> `-1`, `TRACKINGINFO` -> `flags off`); `HELLO`
+  rejects versions other than 2 and 3 with `NOPROTO`. Evidence:
+  `tests/resp3_client_subset.rs` pins those types, exclusions and a fragmented
+  `HELLO 3` handshake in default, fixed-one and four-worker modes, alongside
+  the existing `tests/pubsub.rs` push coverage and `tests/protocol_fuzz.rs`
+  fragmentation/limit corpus. Not claimed: attributes, streamed strings, push
+  tracking or full RESP3 type parity.- [x] **C7. Real client-library compatibility is incomplete.** [P0]
   **Complete (2026-11-27) with a versioned, pinned language-client matrix.**
   [`ci/upstream/clients-v1.json`](../ci/upstream/clients-v1.json) (matrix
   `rillcache-language-clients` v1) pins `redis-py` 5.2.1, `node-redis` 6.4.0 and

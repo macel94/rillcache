@@ -108,6 +108,13 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **RESP3 is a bounded, tested subset.** `HELLO 3` returns a map and Pub/Sub
+  uses push frames; supported data commands keep RESP2-compatible types (for
+  example `HGETALL` stays a flat array). Double/boolean/big-number/verbatim/set
+  types, attributes, streamed strings, client tracking and multiple databases
+  are not emitted or not supported, and `HELLO` rejects other protocol versions
+  with `NOPROTO`. See
+  [RESP3 subset](production-profile.md#resp3-type-and-session-subset-used-by-the-supported-clients).
 - **One data owner and a declared admission envelope.** The default data path is
   a single owner thread, so command execution is one CPU; `--storage-owners` is
   opt-in experimental and not a scaling claim. Declared capacity is the enforced

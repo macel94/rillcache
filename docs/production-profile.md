@@ -183,6 +183,30 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## RESP3 type and session subset used by the supported clients
+
+The pinned client matrix ([language clients](language-clients.md)) runs
+`HELLO 3` followed by PING, binary SET/GET, INCR, HSET/HGETALL, pipelines,
+MULTI/EXEC, Pub/Sub, reconnect and TLS. That traffic uses the following RESP3
+surface, and nothing beyond it is claimed:
+
+| RESP3 type or session feature | Behaviour in this profile | Evidence |
+| --- | --- | --- |
+| Map (`%`) | `HELLO` handshake map | `tests/resp3_client_subset.rs`, `tests/session*.rs` |
+| Push (`>`) | Pub/Sub subscribe/message frames after `HELLO 3` | `tests/pubsub.rs`, `tests/resp3_client_subset.rs` |
+| Simple string, error, integer, bulk string, array, null | Unchanged from RESP2 for the supported commands | same tests |
+| Array where Redis returns a map | `HGETALL` stays a flat array under RESP3; pinned clients accept it | `tests/resp3_client_subset.rs` |
+| Double (`,`), boolean (`#`), big number (`(`), verbatim (`=`), set (`~`), attributes (`|`), streamed strings (`;`) | **Not emitted.** No supported command produces them, and no attribute frame is attached to any reply | `tests/resp3_client_subset.rs` asserts the emitted types |
+| Client tracking / client-side caching | **Excluded.** `CLIENT TRACKING` returns `ERR unsupported CLIENT subcommand or invalid arguments`, `CLIENT GETREDIR` returns `-1`, `CLIENT TRACKINGINFO` reports `flags off` | `tests/resp3_client_subset.rs`, `tests/clients.rs` |
+| `HELLO` protocol negotiation | `HELLO 2` and `HELLO 3` are supported; any other version returns `NOPROTO unsupported protocol version` | `tests/resp3_client_subset.rs` |
+| Multiple databases | Excluded (see C4) | `tests/keyspace.rs` |
+
+Request parsing is framing-agnostic: clients send RESP2 arrays even after
+`HELLO 3`, and the parser accepts them at every fragmentation boundary with
+bounded limits and deterministic errors (`tests/protocol_fuzz.rs`, and the
+fragmented handshake case above). RESP3 attributes, streamed strings and push
+tracking are not implemented, so clients that require them are out of profile.
+
 ## Single-owner capacity envelope
 
 The supported data path is **one owner**: data commands are executed by a single
