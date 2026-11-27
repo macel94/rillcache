@@ -104,6 +104,13 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **Audit records are best-effort and need compensating controls.** Denials go to
+  an optional file and UDP syslog sink without sender authentication, encryption,
+  delivery guarantee, retry or aggregation; the audit path never gates commands
+  and a failed collector exits nonzero with a redacted count. Use an
+  independently administered collector with durable retention, HMAC key custody
+  and rotation, and alerting, and treat these records as secondary evidence. See
+  [audit custody](production-profile.md#audit-custody-boundary-and-compensating-controls).
 - **Security features are not a production certification.** Authentication and
   TLS must be configured; independent hardening and operational validation are
   still needed. See [security](security.md) and the

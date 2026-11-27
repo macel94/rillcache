@@ -52,6 +52,39 @@ The [original upstream Tcl hash diagnostic](upstream-ci.md#compatibility-contrac
 compares the pinned native Redis and Valkey controls with Rillcache. Its result
 is evidence for the selected files and revision, not approval of the hash row.
 
+## Audit custody boundary and compensating controls
+
+The audit path is **best-effort** and is not a custody chain: denial lines are
+emitted to an optional local file and optional UDP syslog sink, with no sender
+authentication, transport encryption, federation, delivery guarantee,
+backpressure, retry or aggregation. The collector never blocks command
+execution; a closed or unread sink is silently best-effort, and the standalone
+collector exits nonzero with a redacted count summary when its output fails.
+Per-line HMAC and a bounded keyring (first key signs, all verify) provide
+tamper evidence for file lines, not confidentiality or delivery.
+
+Because the server cannot provide custody, deployments that need audit evidence
+must supply the compensating controls below; without them the audit path is
+diagnostic only:
+
+- ship to a collector bound to loopback or a private interface, then forward
+  from the collector to independently administered, append-only storage with
+  its own retention and access control;
+- protect the HMAC keyring as a secret, keep at least the previous key during
+  rotation so old lines still verify, and restrict the audit file with
+  `--secure-secret-files` where the platform supports it;
+- alert on the collector's nonzero exit and redacted count summary, and on
+  missing expected traffic, since absence of lines is not evidence of absence;
+- treat rillcache audit records as secondary evidence and rely on durable
+  primary sources (the journal with its fsync policy and external access logs)
+  for incident custody.
+
+`tests/audit_syslog.rs` proves the boundary: with an unread sink and after the
+sink is dropped, 128 denied commands plus allowed commands still complete
+normally. Signing, keyring verification and collector failure reporting are
+covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
+`tests/audit_collector.rs`.
+
 ## Deployment-wide rate limiting
 
 The server enforces authentication budgets **inside one process only**:

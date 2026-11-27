@@ -626,18 +626,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   differentially tested, or full category/subcommand/key/channel semantics are
   implemented; restricted users cannot enumerate or mutate keys outside policy.
 
-- [ ] **S3. The audit path is not a complete custody chain.** [P0]
-  The UDP collector has no sender authentication, transport encryption,
-  federation, retry/backpressure, aggregation or delivery guarantee. Per-line
-  HMAC and manual keyring rotation exist, but full-chain signing/key-ID and hot
-  rotation do not. Collector output failures emit a redacted count summary and
-  exit nonzero. This does not retry or guarantee delivery.
-  **Closes when:** authenticated and encrypted transport, sender identity,
-  key-ID/hot rotation, durable delivery/backpressure and aggregation are
-  implemented and tested; or the audit path is explicitly best-effort with a
-  documented compensating control.
-
-- [x] **S4. Cross-process rate limiting is missing.** [P0]
+- [x] **S3. The audit path is not a complete custody chain.** [P0]
+  **Complete (2026-11-27) by the criterion's second branch: the audit path is
+  explicitly best-effort with documented compensating controls.** Denial records
+  are emitted to an optional local file and optional UDP syslog sink with no
+  sender authentication, transport encryption, federation, delivery guarantee,
+  retry, backpressure or aggregation; the collector never gates command
+  execution and exits nonzero with a redacted count summary when its output
+  fails. Per-line HMAC and a bounded keyring (first key signs, all verify) give
+  tamper evidence, not confidentiality or delivery. The profile now states the
+  boundary and the required compensating controls: an independently administered
+  append-only collector with its own retention, HMAC key custody and rotation,
+  restricted audit-file permissions, alerting on collector failure and on
+  missing expected traffic, and reliance on durable primary sources for custody.
+  Evidence: `tests/audit_syslog.rs`
+  `best_effort_shipping_never_gates_commands_or_crashes_without_a_reader` drives
+  128 denied commands with an unread sink and again after the sink is dropped,
+  with allowed commands succeeding throughout; `tests/audit_hmac.rs`,
+  `tests/audit_keyring.rs` and `tests/audit_collector.rs` cover signing, keyring
+  verification/rotation and bounded collector failure reporting. Not claimed:
+  authenticated/encrypted transport, durable delivery, aggregation or an
+  independent custody chain.- [x] **S4. Cross-process rate limiting is missing.** [P0]
   **Complete (2026-11-26) by the external-control-plane branch of the
   criterion; no distributed limiter is implemented or claimed.** Failed-auth
   budgets remain process-local: `--auth-failure-limit` is per connection, and the
