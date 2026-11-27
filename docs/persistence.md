@@ -155,6 +155,40 @@ writes fail. The in-memory mutation may already be applied; a restart replays on
 complete, checksum-verified transactions. Disk-full, quota and permission errors
 are visible rather than silently converted into success.
 
+## Storage faults and acknowledgment
+
+`tests/durability_faults.rs` runs the real binary with its journal directory on
+a kernel-enforced, size-bounded tmpfs. Every failure in this section is produced
+by the filesystem, not by a fault-injection hook: `write(2)` returns `ENOSPC`, a
+large write is truncated by the kernel mid-record, and a rewrite temporary file
+runs out of space. The required `Tests and offline CI` graph includes the
+`Real storage-fault drill` job (`make test-storage-faults`), so a regression
+fails the protected check rather than an optional one.
+
+| Boundary | Fault | Proven contract |
+| --- | --- | --- |
+| `appendfsync always` append | real `ENOSPC` on the record write | the command replies `-ERR append-only write failed: No space left on device`; `INFO persistence` reports `aof_last_write_status:err`; later mutations are refused with a failed-state error; every previously acknowledged write is recovered after a `SIGKILL` restart and the unacknowledged mutation is absent |
+| append, large record | real short write (kernel truncates mid-record) | the multi-key write replies with the `ENOSPC` error; restart truncates the partial record to the last verified boundary, keeps the acknowledged prefix, drops both keys of the torn write, and accepts new writes |
+| `BGREWRITEAOF` | real `ENOSPC` while creating/writing the rewrite snapshot | `aof_last_bgrewrite_status:err`, the live journal is byte-identical and keeps serving reads, restart recovers every acknowledged write; a retry after freeing space compacts successfully |
+| startup | unwritable data directory (`EACCES`) | startup fails closed with a permission error instead of serving without durability |
+
+Loss-window bounds: with `appendfsync always`, an acknowledged reply is present
+after a crash at every boundary above — the harness asserts the recovered
+keyspace equals the acknowledged prefix exactly. With `everysec`, the crash
+drills in `tests/durability_crash.rs` assert the recovered keys are a contiguous
+prefix with no holes; the bound is one fsync interval, and an `ENOSPC` write
+failure is never acknowledged. A failed append does leave the mutation in memory
+for the current process (the reply is an error and the value is lost on restart);
+that applied-but-unacknowledged state is documented, not hidden, and the failed
+journal latches so later mutations cannot be mistaken for durable ones.
+
+The fault matrix covers write, short-write, rewrite and startup boundaries. It
+does **not** cover device-level `EIO`, power loss, block-device rotation or
+filesystem corruption: those need hardware, `dm-error`, or a reviewed FUSE
+harness, and no simulated error is presented as device testing. `fsync` failure
+shares the latching path with the write failures above but is not separately
+injected. Those gaps stay open in the canonical checklist.
+
 ## Transaction checksums
 
 Each newly written transaction is followed by a standard RESP `ECHO` checksum
@@ -628,7 +662,10 @@ activity (for consumers that were deleted or renamed) is not retained.
   [container delivery](containers.md).
 - No shared-filesystem coordination: ownership is a local advisory lock
   (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
-  rewrite is covered by `tests/durability_crash.rs`.
+  rewrite is covered by `tests/durability_crash.rs`; real `ENOSPC`, short-write,
+  rewrite-fault and startup-permission boundaries are covered by
+  `tests/durability_faults.rs`. Device-level `EIO`, power loss, block rotation
+  and filesystem corruption are not covered.
 - `rillcache-backup` implements offline, quiescent AOF backup/verify/restore.
   There is no online backup, point-in-time recovery, retention policy or log
   rotation. Operators must size/rotate archives and test restores.

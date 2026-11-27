@@ -18,8 +18,32 @@ env:
   RUST_BACKTRACE: '1'
 
 jobs:
+  storage-faults:
+    name: Real storage-fault drill
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository-pinned minimal Rust toolchain
+        run: rustup show active-toolchain
+      - name: Bounded tmpfs ENOSPC, short-write and rewrite-fault drills
+        env:
+          RILLCACHE_MOUNT_FAULTS: '1'
+        run: make test-storage-faults
+      - name: Preserve fault evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: storage-faults-${{ github.sha }}
+          path: target/release/deps/durability_faults-*
+          retention-days: 14
+          if-no-files-found: warn
+
   verify:
     name: Tests and offline CI
+    needs: storage-faults
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

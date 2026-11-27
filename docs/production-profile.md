@@ -373,6 +373,14 @@ recovery and multi-process journal ownership are excluded. Operators must use
 local storage and the documented backup/restore tool; shared or network
 filesystems are unsupported.
 
+Storage-fault behavior is measured on a bounded tmpfs: a real `ENOSPC` append
+replies with an error, latches `aof_last_write_status:err`, keeps every
+acknowledged write across a `SIGKILL` restart and drops only the unacknowledged
+mutation; a kernel-truncated record is discarded on restart; a rewrite that runs
+out of space keeps the live journal; and an unwritable data directory fails
+startup. Device-level `EIO`, power loss and filesystem corruption remain
+unverified. See [storage faults](persistence.md#storage-faults-and-acknowledgment).
+
 Integrity is layered: CRC32 catches accidental corruption, the optional
 HMAC-SHA256 chain authenticates transaction content and order, and the optional
 external rollback anchor (created with `rillcache-backup anchor`, verified from
