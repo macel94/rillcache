@@ -56,6 +56,10 @@ pub(super) struct Client {
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
+    /// Set while pending reply bytes make no write progress, cleared by any
+    /// successful write (or an empty output buffer). A non-reading peer leaves
+    /// this set even though the socket itself never becomes writable again.
+    pub(super) stall_since: Option<Instant>,
     pub(super) frame_deadline: crate::frame_deadline::FrameDeadline,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
@@ -76,6 +80,7 @@ impl Client {
         if self.sent == self.output.len() {
             self.output.clear();
             self.sent = 0;
+            self.stall_since = None;
             return Ok(false);
         }
         let end = self.output.len().min(self.sent + OUTPUT_CHUNK);
@@ -84,6 +89,7 @@ impl Client {
             Ok(size) => {
                 self.sent += size;
                 self.activity = Instant::now();
+                self.stall_since = None;
                 if self.sent == self.output.len() {
                     self.output.clear();
                     self.sent = 0;
@@ -97,9 +103,23 @@ impl Client {
                 ) =>
             {
                 self.retry_io |= error.kind() == io::ErrorKind::Interrupted;
+                if self.stall_since.is_none() {
+                    self.stall_since = Some(Instant::now());
+                }
                 Ok(false)
             }
             Err(error) => Err(error),
+        }
+    }
+
+    /// Whether the connection has left reply bytes unwritten for longer than the
+    /// configured slow-reader deadline. The deadline is independent of read
+    /// idleness, so a peer that stops draining replies is shed even when
+    /// `idle_timeout` is long. The clock is read only while a stall is armed.
+    pub(super) fn write_stalled(&self, timeout: Option<Duration>) -> bool {
+        match (timeout, self.stall_since) {
+            (Some(timeout), Some(since)) => since.elapsed() >= timeout,
+            _ => false,
         }
     }
 
@@ -155,6 +175,9 @@ impl Client {
             return Ok(None);
         }
         let mut progress = self.flush()?;
+        if self.write_stalled(config.write_stall_timeout) {
+            return Ok(None);
+        }
         if self.eof && self.input.is_empty() && self.output.is_empty() {
             return Ok(None);
         }
@@ -342,6 +365,9 @@ impl Client {
             return Ok(LocalPoll::Closed);
         }
         let mut progress = self.flush()?;
+        if self.write_stalled(config.write_stall_timeout) {
+            return Ok(LocalPoll::Closed);
+        }
         if self.closing {
             return Ok(if self.output.is_empty() {
                 LocalPoll::Closed
@@ -585,6 +611,7 @@ pub(super) fn serve(
                 shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                stall_since: None,
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
@@ -803,6 +830,7 @@ mod tests {
                 shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                stall_since: None,
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
@@ -956,6 +984,81 @@ mod tests {
     }
 
     #[test]
+    fn write_stall_deadline_measures_time_since_last_write_progress() {
+        let (mut client, mut peer) = test_client(Vec::new());
+        client.output = vec![b'x'; 1024];
+        client.sent = 0;
+        client.stall_since = None;
+        assert!(!client.write_stalled(Some(Duration::from_millis(50))));
+        // A successful write clears the mark: progress is not a stall.
+        assert!(client.flush().unwrap());
+        assert!(client.output.is_empty());
+        assert!(client.stall_since.is_none());
+
+        // A reply larger than the peer's window stops making progress and arms
+        // the stall clock.
+        client.output = vec![b'x'; 4 * 1024 * 1024];
+        let mut blocked = false;
+        for _ in 0..10_000 {
+            if !client.flush().unwrap() {
+                blocked = true;
+                break;
+            }
+        }
+        assert!(blocked, "a 4 MiB backlog to a non-reading peer must block");
+        client
+            .stall_since
+            .expect("blocked writes arm the stall clock");
+        assert!(!client.write_stalled(Some(Duration::from_secs(60))));
+        assert!(!client.write_stalled(None));
+        client.stall_since = Some(Instant::now() - Duration::from_millis(5));
+        assert!(client.write_stalled(Some(Duration::from_millis(1))));
+
+        // Draining the peer restores progress and clears the stall clock.
+        let mut buffer = vec![0; 256 * 1024];
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.read_exact(&mut buffer).unwrap();
+        let mut resumed = false;
+        for _ in 0..500 {
+            if client.flush().unwrap() {
+                resumed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            resumed,
+            "draining the peer must allow the backlog to resume"
+        );
+        assert!(
+            client.stall_since.is_none(),
+            "resumed write progress must clear the stall clock"
+        );
+    }
+
+    #[test]
+    fn poll_sheds_a_client_after_the_write_stall_deadline() {
+        let (mut client, _peer) = test_client(Vec::new());
+        client.output = vec![b'x'; 4 * 1024 * 1024];
+        for _ in 0..10_000 {
+            if !client.flush().unwrap() {
+                break;
+            }
+        }
+        client.stall_since = Some(Instant::now() - Duration::from_secs(2));
+        let config = Config {
+            write_stall_timeout: Some(Duration::from_millis(100)),
+            ..Config::default()
+        };
+        assert_eq!(
+            client
+                .poll(&Store::new(100), &config, &mut [0; 128])
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn buffered_work_is_not_dropped_because_the_worker_was_descheduled() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -973,6 +1076,7 @@ mod tests {
             shutdown_drain: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
+            stall_since: None,
             frame_deadline: crate::frame_deadline::FrameDeadline::default(),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,

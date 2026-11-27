@@ -889,32 +889,54 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   secret-manager integration, owner-identity or entropy verification, automatic
   audit of every deployment's permissions, or protection against an exposed ACL
   file being brute-forced.
-- [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
-  There are client/payload/frame limits and bounded output backpressure, but no
-  slow-client thresholds, global connection/command budgets, per-user quotas or
-  adversarial protocol fuzzing. O(N) commands can occupy the owner.
-  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
-  `tests/protocol_fuzz.rs` now drives generated binary frames through every
-  fragmentation boundary, random byte streams under tight frame/bulk/argument
-  limits, random inline input, and multi-command pipelines. It asserts bounded
-  consumption, at-most-once execution, argument/limit bounds and no panic; every
-  case is reproducible from its seed. A configurable monotonic per-incomplete-
-  plaintext-frame assembly deadline (60-second default, zero disables) now
-  complements socket inactivity timeouts across synchronous workers, readiness,
-  Tokio and TLS plaintext parsing. **Partial (2026-11-18):** complete requests no
-  longer arm phantom assembly timers on their empty parser suffixes; direct
-  owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
-  reactors, fixed workers and Tokio. Partial suffixes retain their original
-  deadline. It does not bound TLS records that produce no plaintext.
-  The native TLS pipeline case in V4 checks reply progress with an incomplete
-  request, not steady-state slow-client limits or overload shedding. D7 also
-  covers abandonment of an unread native TLS reply during shutdown; that is
-  not evidence of overload shedding during normal service.
-  Slow-client length/rate thresholds, global/user budgets, CPU quotas
-  and a general overload shedding contract remain open.
+- [x] **S9. Bounded overload and slow-client shedding policy is enforced and tested.** [P0]
+  **Complete (2026-11-27).** The enforced policy is specified in the
+  [overload and slow-client contract](overload-policy.md), which lists every
+  threshold, what the client sees, and which limits are delegated to the OS.
+  - Deterministic RESP fuzz/property corpus (2026-11-14):
+    `tests/protocol_fuzz.rs` drives generated binary frames through every
+    fragmentation boundary, random byte streams under tight frame/bulk/argument
+    limits, random inline input and multi-command pipelines, asserting bounded
+    consumption, at-most-once execution, argument/limit bounds and no panic,
+    reproducible from each seed. A configurable monotonic incomplete-plaintext-
+    frame assembly deadline (60 s default, 0 disables) complements socket
+    inactivity timeouts across synchronous workers, readiness, Tokio and TLS
+    plaintext parsing; complete requests no longer arm phantom timers on their
+    empty parser suffixes (2026-11-18).
+  - Slow-client write-stall deadline (2026-11-27): `--write-stall-timeout-ms`
+    (30 s default, 0 disables) tracks time since the last **write progress** on
+    pending reply bytes, independent of read idleness. A non-reading client is
+    shed after the deadline with a bounded close, without waiting for a socket
+    event, and the freed `max-clients` slot serves new clients; a slow reader
+    that keeps draining the reply is not shed. The shorter of the idle and stall
+    deadlines is applied to the readiness reactor, shared reactors, fixed I/O
+    lanes, the managed blocking/TLS fallback and the opt-in Tokio transport
+    (per-write-progress deadline, not per-reply total).
+  - Command budgets (2026-11-27): `--global-command-budget` and
+    `--user-command-budget` (commands per fixed wall-clock second, off by
+    default, validated `0..=1000000`) refuse excess dispatches with
+    `-ERR overload: ...`, execute nothing for the refused command, keep the
+    connection open for a later window, exempt `AUTH`/`HELLO`/`QUIT`, honor
+    `CLIENT REPLY OFF/SKIP` suppression and count refusals in
+    `command_budget_rejections`. Unauthenticated commands are accounted to the
+    `default` identity.
+  - CPU scope decision: no in-process CPU quota is claimed. CPU is bounded by
+    the per-connection command quantum, the cooperative run budget and the
+    optional global command budget; hard ceilings are delegated to the
+    OS/container CPU controller (for example cgroup `cpu.max` or Kubernetes
+    `limits.cpu`) and recorded in the contract rather than presented as server
+    enforcement.
+  Evidence: `tests/overload_policy.rs` (readiness reactor, Tokio transport and
+  fixed lanes 1/4: budget shedding/recovery, rejected command not executed,
+  non-reading client shed with slot reclaimed, progressing reader survives,
+  disabled deadline retained), `src/engine/admission_tests.rs` (fixed-window
+  accounting, per-user isolation, global/user precedence, `CONFIG RESETSTAT`),
+  `src/server/pool.rs` stall-clock unit tests, `tests/native_tls.rs` TLS
+  shed/progress cases, and the retained `tests/protocol_fuzz.rs` corpus. These are functional enforcement tests, not
+  capacity/SLO evidence, which P1–P7 still track.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
-  shedding behavior exists.
+  shedding behavior exists. All three are met by the evidence above.
 
 - [x] **S10. Script, replication and cluster security do not exist.** [P1]
   **Complete (2026-11-27) as a security gate over the excluded features.** No

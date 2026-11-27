@@ -27,7 +27,7 @@ type SniFiles = (
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-global-limit N   Failed AUTH attempts process-wide before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source/global failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
   --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)
-  --shutdown-deadline-ms N  Grace period to join workers after SIGTERM/SIGINT before forcing exit (default 25000; max 600000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files[=yes|no]  Opt in to owner-only secret file permissions (Unix); bare flag means yes\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key
+  --shutdown-deadline-ms N  Grace period to join workers after SIGTERM/SIGINT before forcing exit (default 25000; max 600000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --write-stall-timeout-ms N  Pending-reply write-stall deadline (default 30000; 0 disables)\n  --global-command-budget N  Process-wide command budget per second (default 0: off)\n  --user-command-budget N   Per-authenticated-user command budget per second (default 0: off)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files[=yes|no]  Opt in to owner-only secret file permissions (Unix); bare flag means yes\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key
   --aof-anchor-file PATH  Read-only rollback/truncation anchor required for authenticated startup\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; selected MSETEX/HGETDEL errors)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-client-cert-users-file PATH  Bounded SHA256=ACL-user mapping file, atomically reloaded with TLS generation\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-min-payload-headroom BYTES  After --healthcheck: require logical payload headroom\n  --healthcheck-aof-write-probe DIR  With require-aof: test one-byte write/sync/remove in this directory\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --check-config           First argument only: validate startup options without binding\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
@@ -214,6 +214,9 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--idle-timeout-ms"
             | "--shutdown-deadline-ms"
             | "--frame-assembly-timeout-ms"
+            | "--write-stall-timeout-ms"
+            | "--global-command-budget"
+            | "--user-command-budget"
             | "--requirepass"
             | "--requirepass-file"
             | "--aclfile"
@@ -345,6 +348,29 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             .ok_or("--frame-assembly-timeout-ms requires 0 or 1..=600000")?;
                         config.frame_assembly_timeout =
                             (millis != 0).then(|| Duration::from_millis(millis));
+                    }
+                    "--write-stall-timeout-ms" => {
+                        let millis = value
+                            .parse::<u64>()
+                            .ok()
+                            .filter(|millis| *millis == 0 || (1..=600_000).contains(millis))
+                            .ok_or("--write-stall-timeout-ms requires 0 or 1..=600000")?;
+                        config.write_stall_timeout =
+                            (millis != 0).then(|| Duration::from_millis(millis));
+                    }
+                    "--global-command-budget" => {
+                        config.global_command_budget = value
+                            .parse::<u32>()
+                            .ok()
+                            .filter(|budget| *budget <= 1_000_000)
+                            .ok_or("--global-command-budget requires 0..=1000000")?;
+                    }
+                    "--user-command-budget" => {
+                        config.user_command_budget = value
+                            .parse::<u32>()
+                            .ok()
+                            .filter(|budget| *budget <= 1_000_000)
+                            .ok_or("--user-command-budget requires 0..=1000000")?;
                     }
                     "--requirepass" => {
                         config.requirepass = (!value.is_empty()).then(|| value.into_bytes());
@@ -1430,6 +1456,12 @@ mod tests {
                 "250",
                 "--frame-assembly-timeout-ms",
                 "0",
+                "--write-stall-timeout-ms",
+                "750",
+                "--global-command-budget",
+                "500",
+                "--user-command-budget",
+                "50",
                 "--socket-workers",
                 "3",
             ]
@@ -1452,10 +1484,45 @@ mod tests {
         assert_eq!(config.limits.max_frame_bytes, 16384);
         assert_eq!(config.idle_timeout, Duration::from_millis(250));
         assert_eq!(config.frame_assembly_timeout, None);
+        assert_eq!(config.write_stall_timeout, Some(Duration::from_millis(750)));
+        assert_eq!(config.global_command_budget, 500);
+        assert_eq!(config.user_command_budget, 50);
         assert_eq!(
             Config::default().frame_assembly_timeout,
             Some(Duration::from_secs(60))
         );
+        assert_eq!(
+            Config::default().write_stall_timeout,
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(Config::default().global_command_budget, 0);
+        assert_eq!(Config::default().user_command_budget, 0);
+    }
+
+    #[test]
+    fn overload_policy_options_reject_out_of_range_values() {
+        let Options::Run(disabled) =
+            options(["--write-stall-timeout-ms", "0"].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected configuration");
+        };
+        assert_eq!(disabled.write_stall_timeout, None);
+        for arguments in [
+            vec!["--write-stall-timeout-ms"],
+            vec!["--write-stall-timeout-ms", "-1"],
+            vec!["--write-stall-timeout-ms", "600001"],
+            vec!["--write-stall-timeout-ms", "nonsense"],
+            vec!["--global-command-budget"],
+            vec!["--global-command-budget", "1000001"],
+            vec!["--global-command-budget", "-1"],
+            vec!["--user-command-budget", "nonsense"],
+            vec!["--user-command-budget", "1000001"],
+        ] {
+            assert!(
+                options(arguments.clone().into_iter().map(str::to_owned)).is_err(),
+                "{arguments:?} must be rejected"
+            );
+        }
     }
 
     #[test]

@@ -268,6 +268,7 @@ impl Reactor {
                     shutdown_drain: false,
                     retry_io: false,
                     activity: Instant::now(),
+                    stall_since: None,
                     frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,

@@ -189,6 +189,36 @@ impl Session {
     ) -> Action {
         let start = output.len();
         let reply_mode_before = self.reply_mode;
+        // Overload admission precedes execution: a rejected command is not
+        // executed, recorded or observed, and the client may retry in the next
+        // window. Reply suppression still applies so CLIENT REPLY OFF/SKIP
+        // callers see an unchanged stream. The disabled configuration costs one
+        // relaxed load; the handshake exemption is only evaluated when enabled.
+        // AUTH/HELLO/QUIT are exempt so an exhausted budget can never lock a
+        // client out of its credential handshake.
+        if store.command_budget_enabled() {
+            let handshake = arguments.first().is_some_and(|name| {
+                name.eq_ignore_ascii_case(b"AUTH")
+                    || name.eq_ignore_ascii_case(b"HELLO")
+                    || name.eq_ignore_ascii_case(b"QUIT")
+            });
+            let admission = if handshake {
+                crate::engine::CommandAdmission::Allowed
+            } else {
+                store.admit_command(self.authenticated_user.as_deref())
+            };
+            if admission != crate::engine::CommandAdmission::Allowed {
+                store.record_command_budget_rejection();
+                output.extend_from_slice(match admission {
+                    crate::engine::CommandAdmission::UserExceeded => {
+                        b"-ERR overload: user command budget exhausted\r\n"
+                    }
+                    _ => b"-ERR overload: global command budget exhausted\r\n",
+                });
+                self.suppress_reply_at(output, start, reply_mode_before, arguments);
+                return Action::Continue;
+            }
+        }
         // Bare PING in a plain RESP session is the hottest command. Keep the
         // exact authorization, pause, monitor and observer behavior, but skip
         // the generic command dispatcher and its connection-control probes.

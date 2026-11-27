@@ -1200,7 +1200,7 @@ impl ShardExecutor {
                 let stats = self.stats_from_counters(lifecycle);
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\npubsub_queue_full_drops:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\npubsub_queue_full_drops:{}\r\ncommand_budget_rejections:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
@@ -1210,6 +1210,7 @@ impl ShardExecutor {
                     stats.pubsub_channels,
                     stats.pubsub_patterns,
                     stats.pubsub_queue_full_drops,
+                    stats.command_budget_rejections,
                     stats.audit_log_write_failures,
                     stats.audit_syslog_write_failures
                 );
