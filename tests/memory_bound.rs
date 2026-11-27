@@ -400,9 +400,12 @@ mod process {
 
     fn connect(addr: &str) -> Option<TcpStream> {
         let stream = TcpStream::connect(addr).ok()?;
-        stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+        // `--appendfsync always` can be slow on a shared runner.
         stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .ok()?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(30)))
             .ok()?;
         stream.set_nodelay(true).ok()?;
         Some(stream)
@@ -507,8 +510,10 @@ mod process {
     fn a_bounded_process_refuses_writes_and_survives_the_address_space_limit() {
         let dir = temp_dir("bounded");
         let addr = free_addr();
-        let bound = 512 * 1024 * 1024;
-        let headroom = 256 * 1024 * 1024;
+        // A small derived budget keeps the drill short while still proving
+        // that the refusal comes from the declared bound.
+        let bound = 128 * 1024 * 1024;
+        let headroom = 96 * 1024 * 1024;
         let mut server = spawn(&dir, &addr, Some(1024 * 1024), Some((bound, headroom)));
         let mut stream = connect(&addr).expect("connect");
         let value = vec![b'b'; 4 * 1024 * 1024];
