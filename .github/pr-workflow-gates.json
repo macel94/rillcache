@@ -81,9 +81,11 @@
         "suites": [
           "Tcl redis / string",
           "Tcl redis / incr",
+          "Tcl redis / list",
           "Tcl redis / keyspace",
           "Tcl valkey / string",
           "Tcl valkey / incr",
+          "Tcl valkey / list",
           "Tcl valkey / keyspace"
         ]
       },
