@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.99"
 description = "A safe Redis-compatible server with vendored Tokio and rustls"
 repository = "https://github.com/macel94/rillcache"
+license = "BSD-3-Clause"
 publish = false
 default-run = "rillcache"
 build = false

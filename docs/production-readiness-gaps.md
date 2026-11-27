@@ -1220,13 +1220,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 8. Distribution, release and legal
 
-- [ ] **L1. The project has no license.** [P0]
-  There is no root `LICENSE`, `Cargo.toml` has no `license`/`license-file`, and
-  `container/notices/README.txt` explicitly says the third-party notices do not
-  assign a license to Rillcache. This blocks lawful redistribution outside the
-  owner's control.
-  **Closes when:** a project license is chosen, added to the repository and
-  package metadata, and third-party notice obligations are reviewed.
+- [x] **L1. The project has no license.** [P0]
+  Closed on this candidate: the repository now carries the BSD 3-Clause `LICENSE`
+  (copyright 2026 Francesco Belacca), `Cargo.toml` declares
+  `license = "BSD-3-Clause"`, `container/notices/README.txt` points at that
+  license, and `docs/release-licensing.md` records the vendored-dependency and
+  runtime-component review: every component is permissive
+  (MIT/Apache-2.0/ISC/BSD) with attribution obligations satisfied by
+  `container/notices/`, so no copyleft obligation attaches to the binary.
+  Remaining limit stated in that document: it is a software record, not legal
+  advice, and it must be repeated when the dependency set changes.
 
 - [ ] **L2. There is no stable release or support policy.** [P0]
   The package is `0.1.0`; `latest` is a convenience main-build tag, not a stable
