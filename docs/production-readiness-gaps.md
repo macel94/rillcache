@@ -1455,12 +1455,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 
-- [ ] **V7. Quality gates are scoped to the merge policy, not production.** [P1]
-  The protected 20-case and 10-case Valkey gates are code-quality merge criteria
-  on shared CI. They are not a compatibility suite, SLO, durability proof,
-  security review or production benchmark.
-  **Closes when:** the release process adds the missing gates and states clearly
-  which gate proves which property.
+- [x] **V7. Quality gates are scoped to the merge policy, not production.** [P1]
+  **Complete (2026-11-27): every required merge gate is mapped to the property it
+  proves, and the production properties with no gate are named.** `docs/gate-scope.md`
+  maps all fourteen required contexts from `.github/pr-workflow-gates.json` — the
+  offline suite, both Valkey cohorts, the container build/verify jobs, the pinned
+  Tcl harness build and the six Tcl matrix rows, and the gate self-tests — each with
+  an explicit "does not prove" column (no compatibility claim beyond the selected
+  files, no latency or throughput figure, no durability proof, no security review,
+  no SLO, no non-default mode). It also states, in one place, that no combination
+  of merge gates proves production readiness, and lists the properties that have
+  no required gate and must come from the release process: `S1`, `V3`, `V6`, `P2`,
+  `P6`, `D10`, `D11`, `R6`. Enforcement: `scripts/check_gate_scope.py` fails the
+  required CI graph (through `tests/documentation.rs`) when a required context is
+  unmapped or mapped twice, when a row loses its "does not prove" cell, when the
+  missing-gate section advertises a checklist item that is closed, when either
+  required section disappears, or when the document claims a gate proves
+  production readiness; ten regression tests in `scripts/test_check_gate_scope.py`
+  cover those rejections. Not claimed: any new gate — this records the scope of
+  the existing merge policy and names the release-level evidence the readiness
+  checklist still requires.
 
 ---
 
