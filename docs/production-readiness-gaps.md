@@ -1265,14 +1265,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** supported platforms are listed and tested, and unsupported
   ones fail or are documented.
 
-- [ ] **L6. Production deployment artifacts are incomplete.** [P1]
-  There are restricted Docker/Compose/Kubernetes examples but no HA topology,
-  backup job, certificate rotation, systemd unit, Helm chart/operator, or
-  production configuration profiles. The optional Kubernetes password overlay
-  wires the same read-only Secret into the server and both health probes; it
-  does not add persistence, automatic rotation or live cluster evidence.
-  **Closes when:** the profile's deployment path has reviewed manifests and
-  runbooks; examples do not imply unsupported HA/persistence guarantees.
+- [x] **L6. Production deployment artifacts are incomplete.** [P1]
+  **Complete (2026-11-27) for the declared single-node deployment path.** The
+  reviewed artifacts are `deploy/systemd/rillcache.service` (hardened unit with a
+  single `ExecStart`, `Restart=on-failure`, `TimeoutStopSec` above the configured
+  shutdown deadline, `ProtectSystem=strict` and only the data directory writable),
+  the restricted `compose.yaml` and the single-replica `deploy/kubernetes.yaml`,
+  together with the
+  [single-node deployment path and runbook](containers.md#single-node-deployment-path-and-runbook)
+  covering deploy, verify, restart, back up, recover and roll back. The runbook
+  points at the exercised drills (`scripts/restore_drill.py`,
+  `scripts/upgrade_drill.py`) and states explicitly that the examples imply **no**
+  HA or persistence guarantee: no standby, no replication, no promotion, one
+  writer per journal. Evidence: `tests/deployment_artifacts.rs` runs in the
+  required CI graph and asserts the unit uses only flags the candidate's own
+  `--help` documents, keeps the hardened settings and a single `ExecStart`, that
+  the shipped examples encode a single instance and disclaim replication/backup,
+  and that the runbook references the unit, the restore drill and the restart
+  procedure. Not claimed: Helm chart/operator, HA topology, backup scheduler,
+  certificate-rotation automation or platform-specific packaging (those remain
+  tracked by L2/L3/L5 and the external reviews).
 
 - [ ] **L7. First-package visibility is a manual release step.** [P2]
   GHCR packages are private by default; the documented fix is a manual package
