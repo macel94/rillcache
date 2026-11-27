@@ -85,12 +85,6 @@ fn command(stream: &mut TcpStream, args: &[&[u8]], expected: &[u8]) {
     assert_eq!(reply(stream, args), expected, "{args:?}");
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
-}
-
 fn drops(control: &mut TcpStream) -> u64 {
     let stats = reply(control, &[b"INFO", b"stats"]);
     let text = String::from_utf8_lossy(&stats);
