@@ -840,7 +840,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   reads the value, a `+@pubsub`-only user observing the other tenant's channel
   through `PUBSUB CHANNELS`, and the process-wide `maxclients` limit. Not
   claimed: per-tenant quotas, databases, memory isolation or a multi-tenant
-  contract.- [x] **S8. Secret handling needs hardening.** [P1]
+- [x] **S8. Secret handling needs hardening.** [P1]
   **Complete (2026-11-27): the supported secret sources, permissions, rotation
   and process-argument risks are documented and tested, and long random secrets
   are required by guidance and enforced under the strict policy.** The security
@@ -862,7 +862,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   length rule; the existing unit tests cover the remaining fields. Not claimed:
   secret-manager integration, owner-identity or entropy verification, automatic
   audit of every deployment's permissions, or protection against an exposed ACL
-  file being brute-forced.- [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
+  file being brute-forced.
+- [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
   adversarial protocol fuzzing. O(N) commands can occupy the owner.
