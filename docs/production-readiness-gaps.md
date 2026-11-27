@@ -1355,7 +1355,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** named reviewers sign off the production profile, security
   review, benchmark evidence and recovery drills.
 
-- [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
+- [x] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
   **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
@@ -1377,6 +1377,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
+  **Complete (2026-11-27) with a seeded state-machine property suite in CI.**
+  `tests/model_suite.rs` applies random `SET`/`GET`/`DEL`/`APPEND`/`EXPIRE`/
+  `PERSIST`/`EXISTS` sequences to a live server **and** to an independent in-test
+  model, asserting per-key values, TTL sentinels/expiry flags and `DBSIZE`
+  equivalence at a bounded cadence and at the end, in the default, one-worker and
+  four-worker modes. Every run is deterministic from one seed; failures print it
+  and it can be replayed with `RILLCACHE_MODEL_SEED=<seed>`. Together with the
+  existing seeded RESP parser/framing corpus (`tests/protocol_fuzz.rs`) and the
+  TLS plaintext property test, all suites run in the required `Tests and offline
+  CI` graph, so failures are retained and reproducible rather than flaky. Not
+  claimed: instrumented coverage-guided fuzzing, sustained adversarial soak, or
+  model coverage of collections/streams/transactions (the model deliberately
+  covers the string keyspace and expiry semantics).
 - [x] **V5. Public documentation can still drift from executable behavior.** [P1]
   **Complete (2026-11-27): the canonical inventory/link check runs inside the
   required CI graph, and the entry-point links plus the explicit not-ready status
