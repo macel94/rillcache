@@ -153,8 +153,8 @@ user reader on >reader-secret allkeys allchannels -@all +get\n",
             b"-NOPERM this user has no permissions to run the 'set' command\r\n",
         );
     }
-    send(&mut reader, &[b"PING"], b"+PONG\r\n");
     send(&mut reader, &[b"GET", b"allowed"], b"$-1\r\n");
+    send(&mut reader, &[b"GET", b"still-allowed"], b"$-1\r\n");
     server.shutdown().unwrap();
     let _ = std::fs::remove_file(acl);
 }
