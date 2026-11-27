@@ -70,6 +70,17 @@ or data-integrity relevant and the fix is reproducible on that branch.
   in `docs/compatibility.md` for that release. Clients pinned to that profile can
   upgrade within a MAJOR without application changes.
 
+## Package visibility (manual, checked)
+
+GHCR packages are private by default, so a release can pass every automated gate
+and still be unpullable. The publish path therefore fails closed until a
+maintainer records an anonymous, digest-pinned pull for both tested platforms in
+`docs/acceptance/package-visibility.md`: `scripts/cut-release.sh --publish` runs
+`scripts/check_package_visibility.py --require-public`, and the required CI graph
+runs the same checker in record mode so the cross-links cannot drift. The
+procedure and the live-verification command
+(`--verify-remote --version <x.y.z>`) are in that record.
+
 ## Release gates
 
 `scripts/cut-release.sh` refuses to tag unless all of the following hold for the
