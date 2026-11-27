@@ -108,6 +108,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **HyperLogLog uses a private payload.** `PFADD`/`PFCOUNT`/`PFMERGE` work with an
+  exact set up to 4,096 members and then a 2^14-register sketch (~0.81 % standard
+  error). Redis/Valkey payloads are not interchangeable: `DUMP`/`RESTORE`/
+  `MIGRATE` and RDB are unsupported, and the offline import accepts only `SET`
+  records. `PFDEBUG`/`PFSELFTEST` are private diagnostics. See
+  [HyperLogLog](production-profile.md#hyperloglog-representation-and-interchange).
 - **RESP3 is a bounded, tested subset.** `HELLO 3` returns a map and Pub/Sub
   uses push frames; supported data commands keep RESP2-compatible types (for
   example `HGETALL` stays a flat array). Double/boolean/big-number/verbatim/set
