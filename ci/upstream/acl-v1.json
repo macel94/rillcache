@@ -1,0 +1,765 @@
+{
+  "schema": 1,
+  "matrix": {
+    "id": "rillcache-acl-v1",
+    "version": 1,
+    "profile": "rillcache-standalone-0.1",
+    "gap": "S2",
+    "document": "docs/security.md",
+    "claim": "Versioned allow/deny contract for the supported ACL subset on the exact tested head; not a full Redis ACL equivalence claim and not a security sign-off."
+  },
+  "admin": {
+    "user": "admin",
+    "password": "admin-matrix-secret"
+  },
+  "user": {
+    "user": "matrix",
+    "password": "matrix-matrix-secret"
+  },
+  "declared_divergences": [
+    {
+      "id": "keyspace-wide-needs-allkeys",
+      "scenarios": [
+        "keys-keyspace-wide-denied",
+        "scan-keyspace-wide-denied",
+        "flushdb-keyspace-wide-denied"
+      ],
+      "reason": "Rillcache requires an all-key grant for keyless keyspace-wide commands (KEYS, SCAN, RANDOMKEY, DBSIZE, FLUSHDB, FLUSHALL); pinned Redis and Valkey do not filter these by key patterns. The candidate denies with 'NOPERM keyspace-wide commands require an all-key ACL grant with the required access' so a scoped user cannot enumerate or flush outside its patterns. Documented in docs/security.md."
+    },
+    {
+      "id": "dryrun-denial-class",
+      "scenarios": [
+        "acl-dryrun-parity"
+      ],
+      "reason": "For a denied command ACL DRYRUN returns the NOPERM error on the candidate, while pinned Redis and Valkey return a non-error textual result. The candidate's error is the stricter, machine-checkable signal and is documented in docs/security.md; the reference replies are retained in result.json."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "category-read-write-split",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@read",
+        "-@write"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "GET",
+          "data:k"
+        ],
+        [
+          "SET",
+          "data:k",
+          "changed"
+        ],
+        [
+          "DEL",
+          "data:k"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "v"
+        ]
+      ],
+      "isolated": "a denied write leaves the permitted value unchanged"
+    },
+    {
+      "id": "explicit-command-grants",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+get",
+        "+set"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "one"
+        ]
+      ],
+      "commands": [
+        [
+          "GET",
+          "data:k"
+        ],
+        [
+          "SET",
+          "data:k",
+          "two"
+        ],
+        [
+          "DEL",
+          "data:k"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "allow",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "two"
+        ]
+      ]
+    },
+    {
+      "id": "later-command-denial-wins",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@write",
+        "-set"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "one"
+        ]
+      ],
+      "commands": [
+        [
+          "SET",
+          "data:k",
+          "two"
+        ],
+        [
+          "DEL",
+          "data:gone"
+        ],
+        [
+          "SET",
+          "data:three",
+          "x"
+        ]
+      ],
+      "expect": [
+        "deny",
+        "allow",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "one"
+        ]
+      ],
+      "isolated": "ordering keeps the earlier grant but the later denial wins for SET"
+    },
+    {
+      "id": "subcommand-selector",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~*",
+        "+@connection",
+        "+client",
+        "-client|list",
+        "-client|kill"
+      ],
+      "commands": [
+        [
+          "CLIENT",
+          "GETNAME"
+        ],
+        [
+          "CLIENT",
+          "LIST"
+        ],
+        [
+          "CLIENT",
+          "KILL",
+          "999999"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ]
+    },
+    {
+      "id": "key-pattern-denied-mutation",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~app:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "app:allowed",
+          "yes"
+        ]
+      ],
+      "commands": [
+        [
+          "SET",
+          "app:allowed",
+          "updated"
+        ],
+        [
+          "SET",
+          "other:denied",
+          "no"
+        ],
+        [
+          "GET",
+          "other:denied"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "app:allowed"
+        ],
+        [
+          "EXISTS",
+          "other:denied"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "updated"
+        ],
+        [
+          "int",
+          0
+        ]
+      ],
+      "isolated": "a key outside the pattern cannot be created even by a permitted command"
+    },
+    {
+      "id": "read-only-pattern",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "%R~ro:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "ro:k",
+          "readable"
+        ]
+      ],
+      "commands": [
+        [
+          "GET",
+          "ro:k"
+        ],
+        [
+          "SET",
+          "ro:k",
+          "blocked"
+        ],
+        [
+          "DEL",
+          "ro:k"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "ro:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "readable"
+        ]
+      ]
+    },
+    {
+      "id": "write-only-pattern",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "%W~wo:*",
+        "+@all"
+      ],
+      "commands": [
+        [
+          "SET",
+          "wo:k",
+          "writable"
+        ],
+        [
+          "GET",
+          "wo:k"
+        ],
+        [
+          "GET",
+          "missing:key"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ],
+      "post": [
+        [
+          "GET",
+          "wo:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "writable"
+        ]
+      ]
+    },
+    {
+      "id": "keys-keyspace-wide-denied",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "v"
+        ],
+        [
+          "SET",
+          "outside:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "KEYS",
+          "*"
+        ],
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "expect": [
+        "deny",
+        "allow"
+      ],
+      "post": [
+        [
+          "EXISTS",
+          "outside:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "int",
+          1
+        ]
+      ],
+      "differential": false
+    },
+    {
+      "id": "scan-keyspace-wide-denied",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "SCAN",
+          "0"
+        ],
+        [
+          "DBSIZE"
+        ],
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "expect": [
+        "deny",
+        "deny",
+        "allow"
+      ],
+      "differential": false
+    },
+    {
+      "id": "flushdb-keyspace-wide-denied",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "%R~data:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "outside:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "FLUSHDB"
+        ],
+        [
+          "FLUSHALL"
+        ],
+        [
+          "GET",
+          "outside:k"
+        ]
+      ],
+      "expect": [
+        "deny",
+        "deny",
+        "deny"
+      ],
+      "post": [
+        [
+          "EXISTS",
+          "outside:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "int",
+          1
+        ]
+      ],
+      "differential": false,
+      "isolated": "a read-scoped user cannot flush keys outside its patterns"
+    },
+    {
+      "id": "allkeys-and-allchannels",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "allkeys",
+        "allchannels",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "anything:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "KEYS",
+          "*"
+        ],
+        [
+          "SET",
+          "another:k",
+          "v"
+        ],
+        [
+          "PUBLISH",
+          "any-channel",
+          "payload"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "allow",
+        "allow"
+      ],
+      "post": [
+        [
+          "EXISTS",
+          "another:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "int",
+          1
+        ]
+      ]
+    },
+    {
+      "id": "channel-patterns",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "allkeys",
+        "&news:*",
+        "+@pubsub"
+      ],
+      "commands": [
+        [
+          "PUBLISH",
+          "news:one",
+          "payload"
+        ],
+        [
+          "PUBLISH",
+          "other:two",
+          "payload"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny"
+      ]
+    },
+    {
+      "id": "multi-queue-denial-leaves-state",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@read",
+        "+@transaction"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "one"
+        ]
+      ],
+      "commands": [
+        [
+          "MULTI"
+        ],
+        [
+          "SET",
+          "data:k",
+          "two"
+        ],
+        [
+          "GET",
+          "data:k"
+        ],
+        [
+          "EXEC"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "allow",
+        "error"
+      ],
+      "post": [
+        [
+          "GET",
+          "data:k"
+        ]
+      ],
+      "post_expect": [
+        [
+          "bulk",
+          "one"
+        ]
+      ],
+      "isolated": "a denied queued write does not execute at EXEC and the permitted value stays"
+    },
+    {
+      "id": "acl-dryrun-parity",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@read",
+        "-@write"
+      ],
+      "commands": [
+        [
+          "ACL",
+          "DRYRUN",
+          "matrix",
+          "GET",
+          "data:k"
+        ],
+        [
+          "ACL",
+          "DRYRUN",
+          "matrix",
+          "SET",
+          "data:k",
+          "v"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny"
+      ],
+      "admin_commands": true
+    },
+    {
+      "id": "acl-setuser-atomicity",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+get"
+      ],
+      "admin_commands": true,
+      "commands": [
+        [
+          "ACL",
+          "SETUSER",
+          "matrix",
+          "+@all",
+          "not-a-real-rule"
+        ],
+        [
+          "ACL",
+          "GETUSER",
+          "matrix"
+        ]
+      ],
+      "expect": [
+        "error",
+        "allow"
+      ],
+      "reference_only": [
+        "redis",
+        "valkey"
+      ],
+      "differential": false,
+      "isolated": "a rejected ACL SETUSER leaves the previous rules intact (GETUSER still reports +get)",
+      "post_expect": []
+    },
+    {
+      "id": "disabled-user-cannot-authenticate",
+      "acl": [
+        "off",
+        ">matrix-matrix-secret",
+        "~*",
+        "+@all"
+      ],
+      "auth_expected": "deny",
+      "commands": [],
+      "expect": [],
+      "post": [
+        [
+          "PING"
+        ]
+      ],
+      "post_expect": [
+        [
+          "status",
+          "PONG"
+        ]
+      ],
+      "admin_commands": false
+    },
+    {
+      "id": "reset-then-grant",
+      "acl": [
+        "on",
+        ">matrix-matrix-secret",
+        "~data:*",
+        "+@all"
+      ],
+      "seed": [
+        [
+          "SET",
+          "data:k",
+          "v"
+        ]
+      ],
+      "commands": [
+        [
+          "GET",
+          "data:k"
+        ],
+        [
+          "SET",
+          "data:k",
+          "x"
+        ],
+        [
+          "PING"
+        ]
+      ],
+      "expect": [
+        "allow",
+        "deny",
+        "deny"
+      ],
+      "admin_setup": [
+        [
+          "ACL",
+          "SETUSER",
+          "matrix",
+          "reset",
+          "on",
+          ">matrix-matrix-secret",
+          "+get",
+          "~data:*"
+        ]
+      ]
+    }
+  ]
+}

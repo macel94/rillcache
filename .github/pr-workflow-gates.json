@@ -94,7 +94,8 @@
       "aux_jobs": {
         "command-matrix": "dependency",
         "client-matrix": "dependency",
-        "replication-exclusion": "dependency"
+        "replication-exclusion": "dependency",
+        "acl-matrix": "dependency"
       }
     },
     "pr-branch-updater.yml": {
