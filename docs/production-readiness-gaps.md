@@ -1258,12 +1258,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** each release carries tested upgrade/rollback and migration
   notes, including journal/format changes.
 
-- [ ] **L5. The supported platform matrix is undefined.** [P1]
-  CI targets Linux; the README mentions a non-Unix portable fallback, but there is
-  no supported OS/architecture/libc matrix, arm64 performance evidence or
-  filesystem contract.
-  **Closes when:** supported platforms are listed and tested, and unsupported
-  ones fail or are documented.
+- [x] **L5. The supported platform matrix is undefined.** [P1]
+  **Complete (2026-11-27) with an explicit, tested platform and filesystem
+  matrix.** [docs/platforms.md](platforms.md) lists exactly one supported
+  runtime — Linux `x86_64` with glibc, tested by the full `make test` matrix, the
+  pinned Tcl/command/client compatibility jobs, the storage-fault and restore
+  drills and both protected performance gates — and separates the targets that
+  only *build* (the `aarch64` and musl container images, `behaviourally
+  untested`, explicitly excluded from the support claim) from everything that is
+  unsupported (macOS/Windows/BSD/Solaris, other Linux architectures, exotic
+  libcs). It also states the filesystem contract: local block-backed filesystems
+  only, with network/shared filesystems, snapshot-as-backup and tmpfs-as-durable
+  storage excluded, and encryption at rest delegated to the platform. The
+  production profile points at that matrix. Evidence: `tests/platform_matrix.rs`
+  runs in the required CI graph and fails when the matrix stops marking the tested
+  platform supported, stops excluding the built-but-untested targets, stops
+  stating the non-Linux and non-local-filesystem exclusions, drifts from the
+  architectures the container workflow actually builds, or is removed from the
+  documentation index; the profile link is asserted too. Not claimed: arm64
+  behaviour, macOS/Windows support, non-local filesystem support, or any
+  portability beyond the tested row — adding a row requires the full evidence on
+  that exact platform.
 
 - [x] **L6. Production deployment artifacts are incomplete.** [P1]
   **Complete (2026-11-27) for the declared single-node deployment path.** The
