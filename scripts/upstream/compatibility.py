@@ -108,6 +108,11 @@ def run(reference, suite, name, directory):
     config = SCOPE["compatibility"]
     argv = ["tclsh", "tests/test_helper.tcl", "--single", suite, *config["options"],
             "--tags", " ".join("-" + tag for tag in config["denied_tags"]), "--host", "127.0.0.1"]
+    # Named exclusions are applied to BOTH the control and the candidate run, so
+    # they can never turn a candidate divergence into a hidden pass. Each entry
+    # carries a reviewed reason that is recorded in the run artifacts.
+    for exclusion in config.get("named_test_exclusions", []):
+        argv += ["--skiptest", exclusion["name"]]
     # Public startup selection, constant for the entire original suite: the
     # pinned vendors disagree on selected MSETEX and HGETDEL error wording. No test probing,
     # assertion rewriting or suite-specific server behavior is involved.

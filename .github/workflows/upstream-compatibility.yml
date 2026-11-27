@@ -201,6 +201,7 @@ jobs:
         suite:
           - {id: string, path: unit/type/string}
           - {id: incr, path: unit/type/incr}
+          - {id: list, path: unit/type/list}
           - {id: keyspace, path: unit/keyspace}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

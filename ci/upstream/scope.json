@@ -2,22 +2,71 @@
   "schema": 1,
   "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
   "compatibility": {
-    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace", "unit/geo", "unit/type/set", "unit/bitfield", "unit/scan", "unit/quit"],
-    "embedded_suites": {"unit/type/set": "unit/keyspace", "unit/bitfield": "unit/keyspace", "unit/scan": "unit/keyspace", "unit/quit": "unit/keyspace", "unit/geo": "unit/keyspace"},
-    "diagnostic_suites": ["unit/type/hash"],
+    "suites": [
+      "unit/type/string",
+      "unit/type/incr",
+      "unit/type/list",
+      "unit/keyspace",
+      "unit/geo",
+      "unit/type/set",
+      "unit/bitfield",
+      "unit/scan",
+      "unit/quit"
+    ],
+    "embedded_suites": {
+      "unit/type/set": "unit/keyspace",
+      "unit/bitfield": "unit/keyspace",
+      "unit/scan": "unit/keyspace",
+      "unit/quit": "unit/keyspace",
+      "unit/geo": "unit/keyspace",
+      "unit/type/list": "unit/keyspace"
+    },
+    "diagnostic_suites": [
+      "unit/type/hash"
+    ],
     "diagnostic_suite_reasons": {
       "unit/type/hash": "Not mandatory: the original suite includes Hash ziplist of various encodings and Hash ziplist of various encodings - sanitize dump, which issue DUMP/RESTORE. Those commands are explicitly outside the standalone profile; preserving the full upstream suite means this native-first comparison currently reports the divergence rather than filtering either test."
     },
-    "options": ["--clients", "1", "--singledb", "--ignore-encoding", "--ignore-digest", "--durable", "--timeout", "120", "--dont-clean"],
+    "options": [
+      "--clients",
+      "1",
+      "--singledb",
+      "--ignore-encoding",
+      "--ignore-digest",
+      "--durable",
+      "--timeout",
+      "120",
+      "--dont-clean"
+    ],
     "denied_tags": {
       "needs:debug": "Implementation-specific DEBUG/refcount assertions are not a portable wire contract.",
       "needs:repl": "Replication is unimplemented; this job covers one standalone TCP endpoint.",
       "slow": "Bounded initial PR scope; large randomized/stress blocks need a separate capacity run."
     },
-    "named_test_exclusions": [],
+    "named_test_exclusions": [
+      {
+        "name": "List of various encodings",
+        "reason": "The unchanged upstream test issues DUMP/RESTORE (via CONFIG SET sanitize-dump-payload) to compare quicklist encodings; the standalone profile has no RDB format, so the case is excluded in both the control and the candidate run instead of filtering assertions or adding an unimplemented command."
+      },
+      {
+        "name": "List of various encodings - sanitize dump",
+        "reason": "Same DUMP/RESTORE dependency as 'List of various encodings'; excluded in both runs rather than patched."
+      }
+    ],
     "harness_prerequisites": {
-      "redis": ["PING", "FLUSHALL", "FUNCTION FLUSH", "SCRIPT FLUSH", "CONFIG RESETSTAT", "CONFIG GET *"],
-      "valkey": ["PING", "FLUSHALL", "FUNCTION FLUSH"]
+      "redis": [
+        "PING",
+        "FLUSHALL",
+        "FUNCTION FLUSH",
+        "SCRIPT FLUSH",
+        "CONFIG RESETSTAT",
+        "CONFIG GET *"
+      ],
+      "valkey": [
+        "PING",
+        "FLUSHALL",
+        "FUNCTION FLUSH"
+      ]
     },
     "known_candidate_blocker": "The single-keyspace administrative bootstrap is implemented, but unsupported commands or CONFIG settings can still stop a file after some tests. Run artifacts distinguish named test failures from file/setup errors and report actually executed tests. No prerequisite success implies full coverage, and no protocol proxy or test patch supplies missing behavior.",
     "option_limits": {
@@ -28,11 +77,26 @@
       "external mode": "Upstream automatically skips external:skip blocks (process restarts, persistence, multiple servers). Conditions can omit tests without emitting skip events."
     },
     "excluded_units": [
-      {"glob": "unit/protocol", "reason": "Excluded from the standalone profile, not a zero-test unit: external mode does not skip its protocol/network tags. The unchanged Valkey unit includes untagged HELLO/availability-zone CONFIG behavior and partial-command-after-BLPOP CLIENT LIST qbuf assertions outside this candidate profile; preserve the whole unit rather than filtering tests."},
-      {"glob": "unit/moduleapi/*", "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."},
-      {"glob": "unit/cluster/*", "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."},
-      {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
-      {"glob": "*", "reason": "Not selected in the initial strings/integer/keyspace cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."}
+      {
+        "glob": "unit/protocol",
+        "reason": "Excluded from the standalone profile, not a zero-test unit: external mode does not skip its protocol/network tags. The unchanged Valkey unit includes untagged HELLO/availability-zone CONFIG behavior and partial-command-after-BLPOP CLIENT LIST qbuf assertions outside this candidate profile; preserve the whole unit rather than filtering tests."
+      },
+      {
+        "glob": "unit/moduleapi/*",
+        "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."
+      },
+      {
+        "glob": "unit/cluster/*",
+        "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."
+      },
+      {
+        "glob": "integration/*",
+        "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."
+      },
+      {
+        "glob": "*",
+        "reason": "Not selected in the initial strings/integer/keyspace cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."
+      }
     ],
     "request_limits": {
       "candidate_max_bulk_bytes": 8388608,
@@ -49,11 +113,20 @@
     "requests": 300000,
     "warmup_requests": 30000,
     "clients": 16,
-    "pipelines": [1, 16],
+    "pipelines": [
+      1,
+      16
+    ],
     "keyspace": 1024,
     "value_bytes": 64,
     "seed": 20261026,
-    "workloads": ["ping", "set", "get-hit", "get-miss", "incr"],
+    "workloads": [
+      "ping",
+      "set",
+      "get-hit",
+      "get-miss",
+      "incr"
+    ],
     "process_timeout_seconds": 120,
     "advisory_difference_percent": 5,
     "server_workers": 1,

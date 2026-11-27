@@ -395,3 +395,23 @@ coverage as support. Workflow changes require configured code-owner review.
 - [Pinned Valkey test instructions](https://github.com/valkey-io/valkey/blob/7f1dffedff6de73058b2c2a389422b6ecd56c8fb/tests/README.md)
 - [Redis benchmark methodology and limitations](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/)
 - [GitHub hosted runner labels/images](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+## Supported family to pinned suite map
+
+| Supported family | Pinned suite(s) | Review note |
+| --- | --- | --- |
+| Strings, ranges, bitfield, bit ops | `unit/type/string`, `unit/bitfield` | embedded in the keyspace job |
+| Integer and float increments | `unit/type/incr` | own job |
+| Lists, including blocking pops and `LMPOP` | `unit/type/list` | own job; `List of various encodings` and `List of various encodings - sanitize dump` are excluded by name in both runs because they issue `DUMP`/`RESTORE` |
+| Keyspace, expiry, rename/copy, scan | `unit/keyspace`, `unit/scan` | `unit/scan` embedded in keyspace |
+| Sets | `unit/type/set` | embedded in keyspace |
+| Geospatial (sorted-set backed) | `unit/geo` | embedded in keyspace |
+| Connection quit/close | `unit/quit` | embedded in keyspace |
+
+Declared exclusions (unchanged upstream assertions, never filtered per role):
+`unit/protocol` (untagged HELLO/CONFIG/qbuf assertions outside the standalone
+profile), `unit/moduleapi/*`, `unit/cluster/*`, replication and failover suites,
+`needs:debug`/`needs:repl`/`slow` tags, and `unit/type/hash` as a diagnostic
+suite whose `DUMP`/`RESTORE` cases are reported rather than silently filtered.
+Named test exclusions are passed to both the control and the candidate run with
+`--skiptest`, so they cannot hide a candidate divergence.

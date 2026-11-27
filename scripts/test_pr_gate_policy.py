@@ -39,15 +39,15 @@ class GatePolicyTests(unittest.TestCase):
         for path in ("main-ruleset.json", "pr-workflow-gates.json"):
             shutil.copyfile(ROOT / ".github" / path, root / ".github" / path)
 
-    def test_all_twelve_workflows_six_pr_workflows_and_fourteen_contexts_are_accounted_for(self):
+    def test_all_twelve_workflows_six_pr_workflows_and_sixteen_contexts_are_accounted_for(self):
         inventory = gate.audit_local()
         self.assertEqual(12, len(inventory))
         self.assertEqual(6, len(gate.required_workflows()))
         checks = gate.required_checks()
-        self.assertEqual(14, len(checks))
+        self.assertEqual(16, len(checks))
         self.assertTrue(all(c["integration_id"] == 15368 for c in checks))
         self.assertIn({"context": "Valkey 4-CPU performance gate", "integration_id": 15368}, checks)
-        self.assertEqual(6, sum(c["context"].startswith("Tcl ") for c in checks))
+        self.assertEqual(8, sum(c["context"].startswith("Tcl ") for c in checks))
 
     def test_live_rules_effective_branch_and_workflow_activation_all_must_match(self):
         api = FakeAPI()
