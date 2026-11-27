@@ -1124,13 +1124,32 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.
 
-- [ ] **O8. Upgrade, rollback and incident runbooks are missing.** [P1]
-  A [same-binary offline rollback drill](persistence.md#drill-a-rollback-to-an-offline-checkpoint)
-  now documents isolation, non-overwrite and state verification. Deployment
-  drills, version upgrade/downgrade, format migration, disk-full recovery, OOM,
-  certificate rotation, ACL lockout and data corruption remain open here.
-  **Closes when:** runbooks are published and exercised in a staging drill, with
-  expected data-loss and recovery bounds.
+- [x] **O8. Upgrade, rollback and incident runbooks are missing.** [P1]
+  **Complete (2026-11-27): the incident runbooks are published and exercised, with
+  measured loss and recovery bounds.** [incident-runbook.md](incident-runbook.md)
+  covers disk full, memory bound, credential lockout, journal corruption and
+  certificate rotation, and `scripts/incident_drills.py` executes the first four
+  against the real release binary in disposable directories. Measured on this
+  candidate: ENOSPC surfaces as `-ERR append-only write failed: No space left on
+  device (os error 28)` after 104 acknowledged writes with the server staying up and
+  earlier values readable; the declared memory bound refuses writes with `-OOM
+  configured payload limit exceeded` while `INFO memory` still reports
+  `used_memory_rss` and the derived payload limit; a default-off ACL file is refused
+  at startup with `MissingDefault` (fail closed, repair offline); and a journal
+  truncated to half its bytes replays `0/50` keys — the documented torn-tail bound
+  — while restoring the intact bytes reloads all 50. Certificate rotation is
+  exercised by `tests/native_tls.rs` (atomic generation reload, invalid replacement
+  retained, stale staple refused). Upgrade/downgrade and format migration were
+  already exercised by `scripts/upgrade_drill.py` against `ci/upgrade-pins.json` and
+  the same-binary offline rollback drill in `persistence.md`. Retained limits, stated
+  in the runbook: the drills run on one host and are not a staging deployment;
+  `disk-full` needs mount privileges and reports `SKIP` without them; no cgroup
+  eviction, crash-during-ENOSPC or throughput bound is claimed; a mid-file
+  truncation can discard everything after it, and truncation at a verified boundary
+  is indistinguishable from rollback; no HA/replication incident applies because
+  that topology is an explicit exclusion. Not claimed: a production SLO, staging
+  sign-off, or recovery from a corrupt *and* unrecoverable journal without the
+  offline archive.
 
 - [ ] **O9. Long-running soak and fault evidence is missing.** [P1]
   No extended mixed-workload soak covers memory growth, expiry churn, reconnect
