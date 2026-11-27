@@ -842,13 +842,24 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `requirepass` or an ACL entry does not automatically deauthenticate existing
   connections, as in Redis.
 
-- [ ] **S7. Tenant isolation is absent.** [P1]
-  All ACL users share one process, keyspace, memory budget and CPU. ACL rules do
-  not create separate databases, quotas or network identities.
-  **Closes when:** multi-tenant deployment is explicitly excluded, or per-tenant
-  isolation is implemented and tested.
-
-- [ ] **S8. Secret handling needs hardening.** [P1]
+- [x] **S7. Tenant isolation is absent.** [P1]
+  **Complete (2026-11-27) by the criterion's exclusion branch: multi-tenant
+  deployment is explicitly excluded.** One process is one trust domain: ACL
+  users share the keyspace, logical payload budget, client limit, owner
+  CPU/threads, Pub/Sub and notification namespaces, authentication budgets and
+  process lifetime. The profile states what ACL does provide (key patterns deny
+  other users' data; keyspace-wide commands require an all-key grant) and what
+  it does not (no separate databases, quotas, memory budgets or network
+  identities; global eviction; shared failure domain; category-governed
+  `PUBSUB` introspection leaks channel names across users). The required
+  compensating control is one process per tenant with its own port,
+  credentials, network policy, resource limits and lifecycle, or an external
+  isolation layer. Evidence: `tests/tenant_boundary.rs` shows a scoped tenant
+  denied another tenant's key and keyspace-wide commands while the owner still
+  reads the value, a `+@pubsub`-only user observing the other tenant's channel
+  through `PUBSUB CHANNELS`, and the process-wide `maxclients` limit. Not
+  claimed: per-tenant quotas, databases, memory isolation or a multi-tenant
+  contract.- [ ] **S8. Secret handling needs hardening.** [P1]
   Passwords can be passed on the command line, ACL hashes are unsalted
   SHA-256 (Redis-compatible but fast to brute-force offline), and there is no
   secret-manager integration or complete file-permission/rotation audit.
