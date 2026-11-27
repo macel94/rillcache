@@ -15,7 +15,8 @@
       "non_pr_jobs": {},
       "aux_jobs": {
         "storage-faults": "dependency",
-        "restore-drill": "dependency"
+        "restore-drill": "dependency",
+        "upgrade-rollback-drill": "dependency"
       }
     },
     "pr-quality.yml": {

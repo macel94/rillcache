@@ -18,6 +18,43 @@ env:
   RUST_BACKTRACE: '1'
 
 jobs:
+  upgrade-rollback-drill:
+    name: Upgrade and rollback drill
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install the repository-pinned minimal Rust toolchain
+        run: rustup show active-toolchain
+      - name: Offline drill-harness tests
+        run: python3 -m unittest scripts.test_upgrade_drill -v
+      - name: Build the current head binaries
+        run: |
+          mkdir -p target/upgrade/new
+          cargo build --release --locked --offline --bin rillcache --bin rillcache-backup
+          cp target/release/rillcache target/release/rillcache-backup target/upgrade/new/
+      - name: Build the pinned baseline binaries from the recorded commit
+        run: |
+          OLD=$(python3 -c "import json;print(json.load(open('ci/upgrade-pins.json'))['pair']['old']['commit'])")
+          git rev-parse --verify "$OLD^{commit}"
+          git worktree add "$RUNNER_TEMP/baseline" "$OLD"
+          (cd "$RUNNER_TEMP/baseline" && cargo build --release --locked --offline --bin rillcache --bin rillcache-backup)
+          mkdir -p target/upgrade/old
+          cp "$RUNNER_TEMP/baseline/target/release/rillcache" "$RUNNER_TEMP/baseline/target/release/rillcache-backup" target/upgrade/old/
+      - name: Upgrade, downgrade, failed upgrade and rollback with exact binaries
+        run: python3 scripts/upgrade_drill.py --old target/upgrade/old --new target/upgrade/new --output target/upgrade-drill
+      - name: Preserve the pair, journal digests and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-rollback-drill-${{ github.sha }}
+          path: target/upgrade-drill/
+          retention-days: 30
+          if-no-files-found: warn
+
   restore-drill:
     name: Isolated backup/restore drill
     runs-on: ubuntu-24.04
@@ -68,7 +105,7 @@ jobs:
 
   verify:
     name: Tests and offline CI
-    needs: [storage-faults, restore-drill]
+    needs: [storage-faults, restore-drill, upgrade-rollback-drill]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

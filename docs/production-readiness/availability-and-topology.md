@@ -69,3 +69,47 @@ is not claimed by this control-plane decision.
 Scope: this decision covers the control plane and promotion only. Upgrades and
 rollback (A4), topology runbooks and failure exercises (A5) and the replication
 link (A1) remain separate items.
+
+## A4 upgrade, downgrade and rollback policy
+
+**Policy (2026-11-27):** upgrades are supported only for **recorded binary
+pairs** that the drill exercises, and the guaranteed rollback path is the
+pre-upgrade archive plus the preserved journal, never an assumed downgrade.
+
+- **Supported pairs.** `ci/upgrade-pins.json` records the first pair: baseline
+  commit `a98e2959` (`0.1.0-rc-baseline-a4`) → current head
+  (`0.1.0-rc-current`). Each future release must pin its predecessor there; a
+  pair is claimed only for the journal format and behavior the drill exercises on
+  that exact pair. Arbitrary version skew, rolling cluster upgrades and
+  cross-version replication are not supported.
+- **Format compatibility.** The journal carries checksum groups and optional
+  HMAC markers, and upgrade compatibility means the target binary opens the
+  source journal, serves identical data, absolute expirations and accounting, and
+  appends its own writes. The drill records the observed downgrade outcome per
+  pair; the current pair downgrades by **serving** the upgraded journal because
+  the markers are ordinary RESP commands the older binary replays harmlessly. A
+  future on-disk format change must be documented here with its migration and may
+  set the pin to `downgrade: refused`, in which case the archive is the only
+  rollback path.
+- **Rollback.** Before any upgrade attempt the procedure preserves the journal and
+  creates a verified archive with the source binary. Rollback restores that
+  archive into an isolated directory, validates it and starts the previous
+  binary. The drill proves this restores the exact pre-upgrade state and that the
+  preserved journal and archive are never modified by the attempt.
+- **Failed upgrade guarantee.** An upgrade that dies after the target binary
+  accepted writes still leaves the preserved journal and archive restorable by the
+  previous binary (the pre-upgrade state), while the target binary recovers its
+  own acknowledged prefix from the interrupted copy. No acknowledged write is
+  silently reinterpreted across the pair.
+- **Traffic cutover.** Announce a freeze, stop the writer cleanly, verify the
+  preserved archive, install the target binary, start it, validate data/TTLs/
+  accounting, then resume traffic; keep the previous binary and the prepared
+  journal until the new instance is accepted.
+
+Evidence: `scripts/upgrade_drill.py` (exact binaries from the pinned pair;
+upgrade, downgrade, interrupted upgrade and archive rollback; per-step timings in
+`result.json`/`summary.md`) and `scripts/test_upgrade_drill.py` (offline pin and
+evidence checks). The fail-closed `Upgrade and rollback drill` job builds both
+commits from source and runs the drill with only the ordinary test gates.
+Non-claims: no rolling multi-node upgrade, no automatic format migration, no
+downgrade guarantee outside the pinned pair, and no mixed-version replication.
