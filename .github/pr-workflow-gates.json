@@ -12,7 +12,11 @@
           "Tests and offline CI"
         ]
       },
-      "non_pr_jobs": {}
+      "non_pr_jobs": {},
+      "aux_jobs": {
+        "storage-faults": "dependency",
+        "restore-drill": "dependency"
+      }
     },
     "pr-quality.yml": {
       "events": [

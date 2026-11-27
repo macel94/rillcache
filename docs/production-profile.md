@@ -436,6 +436,21 @@ recovery and multi-process journal ownership are excluded. Operators must use
 local storage and the documented backup/restore tool; shared or network
 filesystems are unsupported.
 
+The supported recovery path is a quiescent copy only: an online copy is refused
+by `rillcache-backup create`, there is no point-in-time recovery, and the
+documented procedure restores into an isolated instance and validates exact
+data, absolute TTLs and accounting before traffic. The isolated drill records
+RPO/RTO components and the retention rule (keep the newest verified archives,
+pin copies externally); see [the drill](persistence.md#isolated-restore-drill-rporto-and-retention).
+
+Storage-fault behavior is measured on a bounded tmpfs: a real `ENOSPC` append
+replies with an error, latches `aof_last_write_status:err`, keeps every
+acknowledged write across a `SIGKILL` restart and drops only the unacknowledged
+mutation; a kernel-truncated record is discarded on restart; a rewrite that runs
+out of space keeps the live journal; and an unwritable data directory fails
+startup. Device-level `EIO`, power loss and filesystem corruption remain
+unverified. See [storage faults](persistence.md#storage-faults-and-acknowledgment).
+
 Integrity is layered: CRC32 catches accidental corruption, the optional
 HMAC-SHA256 chain authenticates transaction content and order, and the optional
 external rollback anchor (created with `rillcache-backup anchor`, verified from

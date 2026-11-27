@@ -155,6 +155,40 @@ writes fail. The in-memory mutation may already be applied; a restart replays on
 complete, checksum-verified transactions. Disk-full, quota and permission errors
 are visible rather than silently converted into success.
 
+## Storage faults and acknowledgment
+
+`tests/durability_faults.rs` runs the real binary with its journal directory on
+a kernel-enforced, size-bounded tmpfs. Every failure in this section is produced
+by the filesystem, not by a fault-injection hook: `write(2)` returns `ENOSPC`, a
+large write is truncated by the kernel mid-record, and a rewrite temporary file
+runs out of space. The required `Tests and offline CI` graph includes the
+`Real storage-fault drill` job (`make test-storage-faults`), so a regression
+fails the protected check rather than an optional one.
+
+| Boundary | Fault | Proven contract |
+| --- | --- | --- |
+| `appendfsync always` append | real `ENOSPC` on the record write | the command replies `-ERR append-only write failed: No space left on device`; `INFO persistence` reports `aof_last_write_status:err`; later mutations are refused with a failed-state error; every previously acknowledged write is recovered after a `SIGKILL` restart and the unacknowledged mutation is absent |
+| append, large record | real short write (kernel truncates mid-record) | the multi-key write replies with the `ENOSPC` error; restart truncates the partial record to the last verified boundary, keeps the acknowledged prefix, drops both keys of the torn write, and accepts new writes |
+| `BGREWRITEAOF` | real `ENOSPC` while creating/writing the rewrite snapshot | `aof_last_bgrewrite_status:err`, the live journal is byte-identical and keeps serving reads, restart recovers every acknowledged write; a retry after freeing space compacts successfully |
+| startup | unwritable data directory (`EACCES`) | startup fails closed with a permission error instead of serving without durability |
+
+Loss-window bounds: with `appendfsync always`, an acknowledged reply is present
+after a crash at every boundary above — the harness asserts the recovered
+keyspace equals the acknowledged prefix exactly. With `everysec`, the crash
+drills in `tests/durability_crash.rs` assert the recovered keys are a contiguous
+prefix with no holes; the bound is one fsync interval, and an `ENOSPC` write
+failure is never acknowledged. A failed append does leave the mutation in memory
+for the current process (the reply is an error and the value is lost on restart);
+that applied-but-unacknowledged state is documented, not hidden, and the failed
+journal latches so later mutations cannot be mistaken for durable ones.
+
+The fault matrix covers write, short-write, rewrite and startup boundaries. It
+does **not** cover device-level `EIO`, power loss, block-device rotation or
+filesystem corruption: those need hardware, `dm-error`, or a reviewed FUSE
+harness, and no simulated error is presented as device testing. `fsync` failure
+shares the latching path with the write failures above but is not separately
+injected. Those gaps stay open in the canonical checklist.
+
 ## Transaction checksums
 
 Each newly written transaction is followed by a standard RESP `ECHO` checksum
@@ -336,6 +370,80 @@ The lock does not coordinate writers on a shared/network filesystem; such a volu
 is unsupported and is explicitly excluded by the
 [standalone production profile](production-profile.md). Keep journals on local
 storage or guarantee single-process access externally.
+
+## Isolated restore drill, RPO/RTO and retention
+
+`scripts/restore_drill.py` is the repeatable D5 drill. `make restore-drill`
+builds the server and the offline tool, then runs it; the required `Tests and
+offline CI` graph depends on the `Isolated backup/restore drill` job, so a
+regression in the procedure fails a protected check. Artifacts retain
+`result.json` and `summary.md` for the exact tested head.
+
+The drill performs this sequence with the real binaries:
+
+1. start an isolated source instance (`appendonly yes`, `appendfsync always`) and
+   load a deterministic mixed dataset — binary strings, lists, hashes, sets,
+   sorted sets, streams with a consumer group, counters and absolute
+   `PEXPIREAT` deadlines;
+2. snapshot the source exactly: key set, per-key `TYPE`/value bytes,
+   `PEXPIRETIME`, `DBSIZE`-equivalent keyspace line and `MEMORY STATS`
+   (`keys.count`, `dataset.bytes`);
+3. attempt an **online** copy while the source serves and assert that `create`
+   is refused and publishes no archive (the exclusion below is enforced, not
+   only documented);
+4. stop the source cleanly, `create` a quiescent archive, `verify` it, then
+   `restore` it into a separate directory and confirm that only the restored
+   journal exists (no staging residue) and that the source journal is unchanged;
+5. start a second instance **from the restored journal** and compare the exact
+   state captured in step 2 — per-key absolute expirations must be identical,
+   so TTLs cannot silently reset or drift; `db0:keys`/`expires`/`subexpiry` and
+   the payload accounting must match exactly, while the clock-derived `avg_ttl`
+   aggregate is accepted only inside a bounded elapsed-time window;
+6. repeat for a second and third recovery point (mutations after the previous
+   archive) so archives represent distinct points in time;
+7. apply the retention rule (keep the newest `--retain` verified archives, delete
+   the rest), verify every retained archive, and restore each retained archive
+   into its own isolated instance and re-compare the state for that point.
+
+Measured bounds are recorded per run. On the drill job's host and the default
+2000-key dataset the components are tens to low hundreds of milliseconds
+(`create`, `verify`, `restore`, isolated startup, restore-to-serving); the
+artifact contains the exact numbers for the tested head and is the evidence — no
+fixed latency promise is implied. Capacity, disk speed and archive size scale
+them.
+
+**Recovery point objective (RPO).** The supported procedure is quiescent: stop
+the writer, then copy. An acknowledged write is in the journal before its reply
+(`appendfsync always`), so a quiescent copy loses **zero acknowledged writes**;
+the drill asserts exact equality of the restored state. There is no supported
+online copy and no point-in-time recovery: `create` refuses a live writer, the
+archive contains only the journal, and there is no history replay from which to
+choose an earlier instant. A deployment that needs a smaller window must
+schedule a freeze or accept the last archive it took.
+
+**Recovery time objective (RTO).** The measured restore path is
+`restore` + isolated startup + validation; validation is mandatory before
+traffic because it is what proves the data, TTLs and accounting survived. Treat
+the drill's measured restore-to-serving time for the archive size in use as the
+planning input, and re-run the drill on the deployment's own hardware and dataset
+size before setting an SLO.
+
+**Retention.** Default rule: keep the newest two verified archives per dataset
+and delete older ones; the drill proves that the pruned archive is gone, that
+every retained archive verifies, and that each retained archive still restores
+its own recovery point. Operators must copy retained archives (and the matching
+rollback anchors) to storage outside the data volume and its backup domain;
+`verify` before every restore, and never treat an unverified archive as a
+backup. There is no automatic scheduler, no online rotation and no archive
+integrity beyond CRC32 plus the authenticated-journal checks described above.
+
+**Explicit exclusion for online backup and PITR.** The production profile does
+not support online copies, incremental backups, replication-based snapshots or
+point-in-time recovery. The operational contract is: schedule a bounded freeze,
+stop the process cleanly, verify the archive, restore and validate in isolation
+before switching traffic, and retain verified archives per the rule above. The
+drill asserts the refusal of an online copy so the exclusion cannot silently
+regress into an unsafe partial feature.
 
 ## Import a bounded offline string journal
 
@@ -628,7 +736,10 @@ activity (for consumers that were deleted or renamed) is not retained.
   [container delivery](containers.md).
 - No shared-filesystem coordination: ownership is a local advisory lock
   (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
-  rewrite is covered by `tests/durability_crash.rs`.
+  rewrite is covered by `tests/durability_crash.rs`; real `ENOSPC`, short-write,
+  rewrite-fault and startup-permission boundaries are covered by
+  `tests/durability_faults.rs`. Device-level `EIO`, power loss, block rotation
+  and filesystem corruption are not covered.
 - `rillcache-backup` implements offline, quiescent AOF backup/verify/restore.
   There is no online backup, point-in-time recovery, retention policy or log
   rotation. Operators must size/rotate archives and test restores.
