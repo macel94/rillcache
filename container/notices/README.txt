@@ -14,5 +14,9 @@ xxHash-BSD-2-Clause.txt: BSD-2-Clause notice for the safe scalar XXH3-64
 implementation used by DIGEST/IFDEQ/IFDNE, derived from the XXHash specification
 and reference implementation: https://github.com/Cyan4973/xxHash
 
-These third-party notices do not assign a license to the Rillcache project.
-The container is an experimental in-memory server, not a security certification.
+The Rillcache project itself is licensed under the BSD 3-Clause License; see
+LICENSE at the repository root and docs/release-licensing.md for the
+third-party obligation review. These notices are retained to satisfy the
+attribution obligations of the runtime components listed above; they do not
+replace the project license. The container is an experimental in-memory
+server, not a security certification.
