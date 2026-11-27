@@ -60,7 +60,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Gate | State | Worst gap |
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no device-level fault or power-loss evidence |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
@@ -494,35 +494,40 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   checklist record for #458: the evidence merge landed but an authoring script
   bug dropped the checkbox change from the squash.
 
-- [ ] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
-  `rillcache-backup` now creates, verifies and restores versioned, bounded-memory
-  CRC32 archives from a quiescent AOF. Creation holds the normal exclusive journal
-  lock and syncs before copying; restore verifies the outer archive and replays an
-  isolated temporary AOF before no-overwrite publication. End-to-end tests cover
-  active-writer refusal, archive corruption, inner AOF corruption, strings, TTLs,
-  stream PEL state and a restart from the restored journal. The format contains
-  only the AOF; CRC32 is not authentication. Online copy, PITR, retention,
-  configuration/ACL capture and deployment-specific RPO/RTO remain open. Pass
-  `--aof-hmac-key-file` to create/verify/restore for authenticated journals.
-  Offline verification can stage the temporary journal on a chosen local volume
-  with `verify --temp-dir DIR`; it still requires scratch space for the payload.
-  Verification and restore reject a torn journal that startup replay would
-  otherwise shorten to a valid prefix, even if the outer CRC and length match.
-  Creation also rejects a torn source before publishing and preserves its bytes;
-  legacy, checksum and HMAC fixtures distinguish this from startup tail recovery.
-  The isolated offline rollback test checks exact binary data, absolute expiry,
-  key count and logical payload bytes while preserving the newer journal.
-  The same-binary authenticated restore test rejects a wrong key without
-  publishing or leaving staging files, then restores into the same directory
-  with the matching key and verifies the archive is unchanged. An insufficient
-  logical payload budget also rejects verify and restore without publication or
-  residue; retry at a sufficient budget restores both original binary values.
-  A two-process restore case checks that only one archive is published into a
-  shared offline destination, with both originals and the winning bytes intact.
-  **Closes when:** a documented backup/restore procedure has tested quiescent and
-  supported online copies, restores exact data/TTL/accounting into an isolated
-  instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
-  excluded from the production profile with a reviewed operational contract.
+- [x] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
+  **Complete (2026-11-27) with a measured quiescent-copy drill and an explicit
+  online-backup/PITR exclusion, merged on `main` as `7ffc294c`.**
+  `scripts/restore_drill.py` runs the real server and `rillcache-backup`:
+  it loads a deterministic mixed dataset (binary strings, collections, streams
+  with a consumer group, counters, absolute `PEXPIREAT` deadlines), snapshots the
+  exact state, asserts that an **online** `create` is refused and publishes no
+  archive, takes and verifies a quiescent archive, restores it into a separate
+  directory (asserting only the restored journal exists and the source journal is
+  byte-identical), starts a second instance from the restored journal and
+  compares the key set, per-key type/value bytes, absolute expirations, db0
+  `keys`/`expires`/`subexpiry` and `MEMORY STATS` `keys.count`/`dataset.bytes`
+  exactly (the clock-derived `avg_ttl` only inside a bounded elapsed window),
+  then repeats for three recovery points, applies the keep-newest-verified
+  retention rule and restores **each** retained archive into its own isolated
+  instance to reproduce its point. Measured on the hosted job for head
+  `568e81e2`: 2000-key dataset, `create` 27.839 ms, `verify` 26.068 ms,
+  `restore` 25.814 ms, isolated startup 17.213 ms, restore-to-serving 43.027 ms,
+  zero acknowledged writes lost for the quiescent copy, retention kept
+  `snapshot-2`/`snapshot-3` and pruned `snapshot-1`, and both retained archives
+  restored their points (2001 and 2002 keys). Evidence: `Isolated backup/restore
+  drill` job 140296768886 in run
+  [45935223577](https://github.com/macel94/rillcache/actions/runs/45935223577);
+  the protected `Tests and offline CI` check needs that job, so a regression
+  fails closed. The procedure, RPO/RTO definitions, retention rule and the
+  explicit online-backup/PITR exclusion contract with its freeze-and-verify
+  operations are documented in
+  [the restore drill](persistence.md#isolated-restore-drill-rporto-and-retention).
+  Not claimed: online/incremental backup, point-in-time recovery, a backup
+  scheduler, integrity beyond CRC32 plus the authenticated-journal checks, or a
+  deployment-specific SLO — those numbers must be re-measured on the operator's
+  hardware and archive size. This entry corrects the checklist record for #459:
+  the evidence merge landed before the checkbox commit, so the record is added
+  here rather than silently lost.
 
 - [x] **D6. Stream pending and consumer state survives restart.** [P0]
   **Complete (2026-11-11).** The journal rebuild emits `XGROUP CREATECONSUMER` for
