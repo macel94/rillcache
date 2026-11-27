@@ -219,6 +219,59 @@ unsupported error rather than partial data. Event samples and command
 histograms are process-local, in-memory and reset on restart or
 benchmark/manual reset.
 
+## Metrics, logs and health contract
+
+This is the supported operational surface. Anything not listed is not a contract.
+
+### Metrics
+
+`INFO` sections and their units: `server` (versions, uptime seconds), `clients`
+(connection counts, `maxclients`, auth budgets), `memory` (logical key/value
+bytes and limits, process RSS and cgroup current/limit with an explicit scope,
+`maxmemory_policy`), `persistence` (journal enabled state, rewrite phase,
+`aof_last_write_status`/`aof_last_bgrewrite_status`), `stats` (command/expiry/
+eviction/key-miss counters), `replication` (`role:master`, zero offsets),
+`keyspace` (`db0` keys/expires/avg_ttl), `commandstats` (per-command calls,
+usec, usec_per_call), `latencystats` (`p50`/`p99`/`p99.9` **32-bucket
+logarithmic approximations**, not exact percentiles) and `errorstats`
+(per-error counters). Sampling limits: histograms update only while
+`commandstats-enabled` is on; counters are process-lifetime unless
+`CONFIG RESETSTAT`; rates are not computed.
+
+### Redaction
+
+Metrics and logs never carry credentials or values: `MONITOR` redacts `AUTH`
+arguments, `SLOWLOG` truncates arguments, `CLIENT LIST/INFO` omit passwords,
+audit lines hex-encode user and command without keys/values, and healthcheck
+diagnostics omit paths and values so they can be retained. `INFO` reports
+logical payload accounting, not allocator internals.
+
+### Logs
+
+Startup reports the bound listener and TLS listener; shutdown reports received
+signal, completion, or `forced termination: <reason>` (nonzero exit); the audit
+path reports denials and a redacted collector-failure count; all failure
+messages are bounded and avoid echoing secrets.
+
+### Health probe
+
+`--healthcheck ADDR [--healthcheck-user U --healthcheck-password-file P]
+[--healthcheck-tls-ca-file CA --healthcheck-server-name NAME]
+[--healthcheck-require-aof] [--healthcheck-min-payload-headroom BYTES]
+[--healthcheck-aof-write-probe DIR]` returns exit 0 on success and nonzero on
+any failure within a one-second deadline. It fails closed when the server cannot
+admit the probe (overload), when authentication or ACL denies it, when
+`--healthcheck-require-aof` sees `aof_enabled:0` or a non-`ok` write/rewrite
+status, when the payload headroom is below the requested minimum, and when the
+optional temporary write probe cannot publish and fsync. It does **not** prove
+durability, recovery from a torn journal, or full storage capacity.
+
+Evidence: `tests/observability_contract.rs` proves the probe fails under
+admission saturation and recovers after capacity is released, fails when a
+journal is required but disabled, and rejects an impossible headroom
+requirement; `tests/cli.rs` covers authenticated/ACL-denied probes and redacted
+password-file handling; the signal suites cover shutdown logging.
+
 ## Scope and reset
 
 `total_commands_processed` covers connection-level dispatch, so embedding
