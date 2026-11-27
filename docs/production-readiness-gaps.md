@@ -62,7 +62,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
 | Availability and topology | Excluded / open | Replication, cluster and failover excluded; recorded-pair upgrades/rollback complete (A4); topology runbooks and failure exercises (A5) still open |
-| Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
+| Security and transport | Partial | No independent review (S1), cross-process rate limiting, TLS hardening/termination evidence or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
@@ -745,15 +745,34 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   test are completed, findings are tracked to closure, and the review scope and
   date are published.
 
-- [ ] **S2. ACL support is not full Redis ACL.** [P0]
-  Remaining subcommand-specific categories beyond the bounded overrides,
-  dynamic key sandbox rules beyond the explicitly implemented command specs,
-  complete channel filtering for `PUBSUB` introspection and commands outside the
-  published table are absent. `KEYS`,
-  `RANDOMKEY`, `DBSIZE`, `FLUSH*` and similar commands are not a per-key sandbox.
-  **Closes when:** the supported ACL subset is explicitly versioned and
-  differentially tested, or full category/subcommand/key/channel semantics are
-  implemented; restricted users cannot enumerate or mutate keys outside policy.
+- [x] **S2. ACL support is not full Redis ACL.** [P0]
+  **Complete (2026-11-27) for an explicitly versioned, differentially tested
+  supported subset.** [`ci/upstream/acl-v1.json`](../ci/upstream/acl-v1.json)
+  declares matrix `rillcache-acl-v1` (gap S2) with 17 scenarios covering category
+  selectors and ordering, explicit command grants and variants, subcommand
+  selectors (`+client`, `-client|list`), key patterns with read-only/write-only
+  modes (`~`, `%R~`, `%W~`), `allkeys`/`allchannels`, channel patterns, atomic
+  `ACL SETUSER` rejection, `ACL DRYRUN`, disabled-user authentication,
+  `reset`-then-grant and transaction-queue denial.
+  `scripts/upstream/acl_matrix.py` writes a bounded ACL file per scenario, seeds
+  state as the administrator, replays the commands as the restricted user,
+  classifies `NOPERM` versus other errors, and re-reads state as the
+  administrator so a denied operation must leave permitted and outside-pattern
+  state untouched (denied writes/creates, read-only mutation, `FLUSHDB` outside
+  the pattern and a denied queued write at `EXEC` are all asserted). Hosted
+  evidence for head `dab07861`: `ACL allow/deny matrix` job 140377906840 in run
+  [45960477816](https://github.com/macel94/rillcache/actions/runs/45960477816)
+  reports 15/17 scenarios matching both pinned Redis 8.10.2 and Valkey 9.1.2
+  exactly, 2 reviewed divergences with reference replies retained
+  (keyspace-wide commands require an all-key grant so a scoped user cannot
+  enumerate or flush outside policy; `ACL DRYRUN` returns `NOPERM` instead of a
+  textual result), and zero failures. The fail-closed `ACL allow/deny matrix`
+  job is a declared dependency of the required Tcl contexts, and the reviewed
+  contract plus the ACL-file requirement to keep the `default` user enabled is
+  documented in [security](security.md#versioned-acl-allowdeny-matrix-s2).
+  Not claimed: byte-for-byte Redis ACL equivalence, key-spec extraction for
+  arbitrary third-party commands, ACL file concurrency, or any security review
+  conclusion (S1 remains open).
 
 - [x] **S3. The audit path is not a complete custody chain.** [P0]
   **Complete (2026-11-27) by the criterion's second branch: the audit path is
