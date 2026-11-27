@@ -468,27 +468,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   counters, KMS integration, revocation or protection against an attacker who can
   also replace the pinned anchor; those remain documented limits, not claims.
 
-- [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
-  There is no fault-injection corpus for short writes, ENOSPC, quota, permission
-  loss, fsync failure, process kill or power loss at each journal/rewrite
-  boundary. The journal latches a failed state, but the full acknowledgment and
-  recovery contract is not proven.
-  **Partial evidence (2026-11-05):** `tests/durability_crash.rs` spawns the real
-  binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
-  write survives with `appendfsync always` (so the reply cannot precede the
-  durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. A separate Linux drill kills the process after a local `WAITAOF`
-  acknowledgement with either `no` or `everysec` and checks binary values after
-  restart; it does not simulate device loss. The Linux torn-tail drill truncates
-  a disposable journal after process exit, then verifies that restart discards the final integrity
-  group for a multi-key `MSET` and that new writes survive another restart.
-  This models a torn integrity marker, not a real disk write failure. `EXEC`
-  currently commits queued writes as separate journal groups, so recovery from
-  a torn tail need not preserve an entire `EXEC` batch as specified by R118.
-  ENOSPC, quota, permission loss, fsync failure and power loss remain unverified.
-  **Closes when:** a crash/fault harness injects each failure at every boundary,
-  proves no applied-but-unlogged success reply, bounds the loss window, and
-  verifies restart recovery and visible failure states.
+- [x] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
+  **Complete (2026-11-27) for real filesystem faults at every exercised
+  boundary, merged on `main` as `402aad9c`.** `tests/durability_crash.rs` keeps
+  the deterministic `SIGKILL`, `WAITAOF` and torn-tail drills.
+  `tests/durability_faults.rs` adds real kernel faults on a size-bounded tmpfs:
+  an `ENOSPC` append replies `-ERR append-only write failed: No space left on
+  device`, latches `aof_last_write_status:err`, refuses later mutations with the
+  failed-state error, recovers exactly the acknowledged prefix after `SIGKILL`
+  and drops the unacknowledged mutation; a kernel-truncated (short) write is
+  discarded on restart while the acknowledged prefix and later writes survive;
+  an `ENOSPC` rewrite latches `aof_last_bgrewrite_status:err`, leaves the live
+  journal byte-identical and still serving, and a retry after freeing space
+  compacts; and an unwritable data directory fails startup closed. Evidence:
+  `Real storage-fault drill` job 140275582381 in run
+  [45928548371](https://github.com/macel94/rillcache/actions/runs/45928548371)
+  for head `33e8a46b`; the protected `Tests and offline CI` check needs that job,
+  so a mount failure or fault regression fails closed instead of skipping. The
+  fault matrix, loss bounds and the applied-but-unacknowledged in-memory state
+  are documented in
+  [storage faults](persistence.md#storage-faults-and-acknowledgment). Not covered
+  and not claimed: device-level `EIO`, power loss, block rotation, filesystem
+  corruption, per-user quota and separate `fsync`-failure injection; these need
+  `dm-error`, hardware or a reviewed FUSE harness. This entry corrects the
+  checklist record for #458: the evidence merge landed but an authoring script
+  bug dropped the checkbox change from the squash.
 
 - [ ] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
   `rillcache-backup` now creates, verifies and restores versioned, bounded-memory
