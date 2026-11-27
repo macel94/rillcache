@@ -151,11 +151,16 @@ fn production_acceptance_registry_is_machine_checked() {
     );
     for scope in ["profile", "security", "performance", "recovery", "release"] {
         assert!(
-            registry.lines().any(|line| line.split('\t').nth(1) == Some(scope)),
+            registry
+                .lines()
+                .any(|line| line.split('\t').nth(1) == Some(scope)),
             "registry has no row for scope {scope}"
         );
     }
     let doc = std::fs::read_to_string(manifest.join("docs/release-acceptance.md"))
         .expect("acceptance process documentation");
-    assert!(doc.contains("independent reviewer only"), "security scope must stay independent");
+    assert!(
+        doc.contains("independent reviewer only"),
+        "security scope must stay independent"
+    );
 }
