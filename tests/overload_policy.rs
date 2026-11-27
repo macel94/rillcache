@@ -22,6 +22,15 @@ const MODES: [(Option<usize>, bool); 4] = [
     (Some(4), false),
 ];
 
+/// Budget admission is dispatcher-level, not I/O-path-level: two wire modes
+/// plus the engine unit tests cover it. The slow-reader policy is I/O-path
+/// specific and keeps the full matrix below.
+const BUDGET_MODES: [(Option<usize>, bool); 2] = [(None, false), (Some(4), false)];
+
+/// The progressing and disabled-deadline cases exercise the two distinct write
+/// paths (readiness reactor and Tokio); the non-reading case keeps all four.
+const WRITE_PATH_MODES: [(Option<usize>, bool); 2] = [(None, false), (None, true)];
+
 fn start(workers: Option<usize>, tokio: bool, config: Config) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -125,7 +134,7 @@ fn field<'a>(text: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn global_command_budget_sheds_the_excess_and_recovers_in_the_next_window() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in BUDGET_MODES {
         let server = start(
             workers,
             tokio,
@@ -137,8 +146,10 @@ fn global_command_budget_sheds_the_excess_and_recovers_in_the_next_window() {
         );
         let mut client = connect(&server);
         let mut rejected = false;
-        for _ in 0..5 {
-            wait_fresh_second();
+        for attempt in 0..5 {
+            if attempt > 0 {
+                wait_fresh_second();
+            }
             if command(&mut client, &[b"PING"]) != b"+PONG\r\n"
                 || command(&mut client, &[b"PING"]) != b"+PONG\r\n"
             {
@@ -166,7 +177,7 @@ fn global_command_budget_sheds_the_excess_and_recovers_in_the_next_window() {
 
 #[test]
 fn a_rejected_command_is_not_executed() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in BUDGET_MODES {
         let server = start(
             workers,
             tokio,
@@ -178,8 +189,10 @@ fn a_rejected_command_is_not_executed() {
         );
         let mut client = connect(&server);
         let mut completed = false;
-        for _ in 0..5 {
-            wait_fresh_second();
+        for attempt in 0..5 {
+            if attempt > 0 {
+                wait_fresh_second();
+            }
             if command(&mut client, &[b"INCR", b"budget-counter"]) != b":1\r\n" {
                 continue; // A boundary between the two commands changed the value.
             }
@@ -222,7 +235,7 @@ user bob on >bob-password ~* &* +@all\n",
 
 #[test]
 fn per_user_command_budget_isolates_authenticated_identities() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in BUDGET_MODES {
         let path = acl_file("users");
         let server = start(
             workers,
@@ -235,8 +248,10 @@ fn per_user_command_budget_isolates_authenticated_identities() {
             },
         );
         let mut observed = false;
-        for _ in 0..5 {
-            wait_fresh_second();
+        for attempt in 0..5 {
+            if attempt > 0 {
+                wait_fresh_second();
+            }
             let mut alice = connect(&server);
             if command(&mut alice, &[b"AUTH", b"alice", b"alice-password"]) != b"+OK\r\n" {
                 continue;
@@ -374,7 +389,7 @@ fn a_non_reading_client_is_shed_after_the_write_stall_deadline() {
 
 #[test]
 fn a_slow_but_progressing_reader_survives_the_write_stall_deadline() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in WRITE_PATH_MODES {
         let server = start(
             workers,
             tokio,
@@ -417,7 +432,7 @@ fn a_slow_but_progressing_reader_survives_the_write_stall_deadline() {
 
 #[test]
 fn a_disabled_write_stall_deadline_keeps_the_backlogged_connection() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in WRITE_PATH_MODES {
         let server = start(
             workers,
             tokio,
