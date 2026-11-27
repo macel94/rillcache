@@ -302,16 +302,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 
-- [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
-  The private payload uses an exact hash set then a 2^14-register sketch, not
-  Redis's sparse/dense encoding. `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` now
-  report this private representation; Redis payload conversion and
-  sparse-threshold configuration remain absent.
-  **Closes when:** the profile either implements Redis/Valkey-compatible HLL
-  payloads and diagnostics, or explicitly excludes HLL persistence/interchange
-  and documents the accuracy/representation differences.
-
-- [ ] **C11. Geospatial search is linear.** [P2]
+- [x] **C10. HyperLogLog is not Redis-interoperable.** [P1]
+  **Complete (2026-11-27) by the criterion's exclusion branch: HLL
+  persistence/interchange is explicitly excluded and the representation and
+  accuracy differences are documented.** `PFADD`/`PFCOUNT`/`PFMERGE` use a
+  private representation — an exact set up to 4,096 distinct members, then a
+  2^14-register sketch with a cache header and a documented ~0.81 % standard
+  error; Redis/Valkey sparse encoding, register layout and sparse thresholds are
+  absent. The profile states that the payload is not interchangeable: `DUMP`,
+  `RESTORE` and `MIGRATE` return the bounded capability error, `SAVE`/`BGSAVE`
+  return the RDB-unsupported error, and the supported offline migration imports
+  only DB 0 `SET` records, so HLL values cannot be moved in or out;
+  `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` are private diagnostics. Evidence:
+  `tests/hll_interchange.rs` runs in default, fixed-one and four-worker modes and
+  pins exact encoding/count below the limit, the `*16384` register array, the
+  switch to `dense`, `PFSELFTEST`, an estimate within 2 % of 6,000 distinct
+  members, and the explicit refusals. Not claimed: Redis-compatible payloads,
+  sparse encoding/thresholds or payload conversion.- [ ] **C11. Geospatial search is linear.** [P2]
   `GEOSEARCH` and the legacy radius aliases scan the source sorted set linearly;
   there is no native geohash neighbour index. This is correct for small sets but
   is not evidence for large production keyspaces.

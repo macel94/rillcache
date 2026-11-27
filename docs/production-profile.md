@@ -183,6 +183,31 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## HyperLogLog representation and interchange
+
+`PFADD`/`PFCOUNT`/`PFMERGE` are supported over a **private** representation: an
+exact hash set up to 4,096 distinct elements, then a 2^14-register sketch with a
+cache header. The standard error of that sketch is about 0.81 %
+(`1.04 / sqrt(16384)`); cardinalities below the exact limit are returned exactly.
+Redis/Valkey sparse encoding, register layout and the sparse-threshold
+configuration are not implemented.
+
+Interchange is explicitly excluded: the HLL payload is not a Redis/Valkey
+payload, and there is no conversion path. `DUMP`, `RESTORE` and `MIGRATE` return
+the bounded capability error, `SAVE`/`BGSAVE` return the RDB-unsupported error,
+and the offline migration path accepts only DB 0 `SET` records, so an HLL value
+cannot be imported or exported. `PFDEBUG ENCODING|GETREG` and `PFSELFTEST` expose
+the private representation and its self-test; they are diagnostics, not an
+interoperability contract. Clients that only call `PFADD`/`PFCOUNT`/`PFMERGE`
+work; clients that need to move HLL payloads between Redis/Valkey and this
+profile are incompatible, and the 0.81 % error must be acceptable to the caller.
+
+`tests/hll_interchange.rs` pins the boundary in default, fixed-one and
+four-worker modes: exact encoding and count below the limit,
+`*16384` registers, the switch to `dense`, `PFSELFTEST` success, an estimate
+within 2 % of 6,000 distinct members, and the explicit `DUMP`/`RESTORE`/`SAVE`
+refusals.
+
 ## RESP3 type and session subset used by the supported clients
 
 The pinned client matrix ([language clients](language-clients.md)) runs
