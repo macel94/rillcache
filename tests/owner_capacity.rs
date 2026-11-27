@@ -89,22 +89,20 @@ fn the_declared_single_owner_envelope_is_the_default_and_enforced() {
         // Closing a client frees capacity within the declared bound; retry
         // rather than assuming the owner has noticed the close immediately.
         drop(first);
-        let mut admission = None;
         let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let mut replacement = connect(&server);
-            if admitted(&mut replacement) {
-                admission = Some(replacement);
-                break;
+        let mut replacement = loop {
+            let mut candidate = connect(&server);
+            if admitted(&mut candidate) {
+                break candidate;
             }
             assert!(
                 Instant::now() < deadline,
                 "capacity was not released after an admitted client closed"
             );
             std::thread::sleep(Duration::from_millis(10));
-        }
+        };
+        ping(&mut replacement).unwrap();
         ping(&mut second).unwrap();
-        assert!(admission.is_some(), "no replacement client was admitted");
         server.shutdown().unwrap();
     }
 }
