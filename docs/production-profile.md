@@ -311,6 +311,23 @@ modes: both `OBJECT` exclusions, the `noeviction` default, a runtime switch to
 `allkeys-lru` reflected in `CONFIG GET` and `INFO memory`, and the rejection of
 `allkeys-lfu` with the previous policy retained.
 
+## Expiry, eviction and pause interaction matrix
+
+The supported interactions are a contract, not an accident of scheduling:
+
+| Interaction | Documented behaviour | Not claimed |
+| --- | --- | --- |
+| `CLIENT PAUSE ... WRITE` with an expiring key | Reads continue during a WRITE pause; a key that expires during the pause answers `$-1` (and `EXISTS` `:0`, `TTL` `:-2`) on the next read and is never replayed afterwards. A write issued during the pause is answered only after it ends. | Deferred writes are not acknowledged before unpause; there is no cross-client ordering. |
+| Blocked `BLPOP` with expiry and eviction elsewhere | Expiry and on-write eviction of unrelated keys do not disturb a blocked client. The waiter keeps its queue position and receives pushed elements in push order; an expired key read by another client answers nil independently. | No blocking priority between clients and no fairness guarantee. |
+| Eviction while a client is blocked | With a small `--max-data-bytes` and `allkeys-random`, writes past the budget evict instead of failing while a client is blocked; the block is reported in `INFO clients` (`blocked_clients`) and evictions in `INFO stats` (`evicted_keys`); the blocked command still returns its documented `*-1` timeout. | There is no periodic background eviction loop: eviction happens on the write path only, so an idle server does not reclaim payload on a timer. |
+| Expiry during a pause with a deferred conditional write | Expiry maintenance and the `expired` keyspace event run during the pause: the deferred `SET ... NX` observes the newly absent key and succeeds, and the event is emitted once before unpause (injected-clock coverage in `tests/inactive_pause.rs`). | No durable notification delivery; the event is at-most-once. |
+| Reply order | Replies are ordered per connection, including replies released when a finite pause expires and pipelined commands around a pause. | No global ordering across connections and no durable notification delivery. |
+
+`tests/expiry_eviction_pause.rs` runs this matrix in the default, fixed-one and
+four-worker modes and asserts the exact replies, including the expired-key
+answers, the deferred write acknowledgement, push-order delivery to a blocked
+client and the `*-1` timeout.
+
 ## Security acceptance gate for excluded features
 
 Scripting/functions, replication, failover/Sentinel, cluster routing and modules
