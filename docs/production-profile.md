@@ -183,6 +183,31 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Eviction and access-statistics policy
+
+The selected eviction policies are `noeviction` (default), `allkeys-lru`,
+`allkeys-random`, `volatile-lru`, `volatile-random` and `volatile-ttl`, selectable
+at startup and at runtime through `CONFIG SET maxmemory-policy`. In this profile
+"LRU" is a **mutation-order approximation**: the server does not record per-key
+read time, so recency reflects writes rather than accesses. The selected policy
+is observable through `CONFIG GET maxmemory-policy` and
+`INFO memory` (`maxmemory_policy:`), and eviction counts through
+`INFO stats` (`evicted_keys`). `maxmemory` bounds logical key/value bytes, not
+RSS (see O1).
+
+LFU and read-idle statistics are **excluded**: `OBJECT FREQ` returns
+`ERR An LFU maxmemory policy is not selected, access frequency not tracked. ...`
+and `OBJECT IDLETIME` returns `ERR OBJECT IDLETIME is not supported by this
+bounded server: read-idle time is not tracked`; `allkeys-lfu`/`volatile-lfu` are
+rejected as `ERR invalid maxmemory-policy` and no frequency or idle value is
+invented. Clients that need true LRU/LFU semantics, `OBJECT FREQ`/`IDLETIME`, or
+frequency-based eviction are incompatible with this profile.
+
+`tests/access_policy.rs` pins the boundary in default, fixed-one and four-worker
+modes: both `OBJECT` exclusions, the `noeviction` default, a runtime switch to
+`allkeys-lru` reflected in `CONFIG GET` and `INFO memory`, and the rejection of
+`allkeys-lfu` with the previous policy retained.
+
 ## Security acceptance gate for excluded features
 
 Scripting/functions, replication, failover/Sentinel, cluster routing and modules

@@ -934,15 +934,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 
-- [ ] **O2. LFU and read-idle statistics are missing.** [P1]
-  `OBJECT IDLETIME` returns an explicit unsupported error, `OBJECT FREQ` reports
-  that LFU is not selected, and no LFU eviction policy exists. The current LRU is
-  a mutation-order approximation.
-  **Closes when:** the selected eviction/access policy is implemented and
-  observable, or `OBJECT FREQ`/`IDLETIME` remain explicit exclusions in the
-  profile.
-
-- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
+- [x] **O2. LFU and read-idle statistics are missing.** [P1]
+  **Complete (2026-11-27) by the criterion's exclusion branch: `OBJECT FREQ` and
+  `OBJECT IDLETIME` remain explicit exclusions in the profile, and the selected
+  eviction policy is implemented and observable.** The profile documents
+  `noeviction`, `allkeys-lru`, `allkeys-random`, `volatile-lru`,
+  `volatile-random` and `volatile-ttl`, states that the LRU is a mutation-order
+  approximation rather than read-order, exposes the active policy through
+  `CONFIG GET maxmemory-policy` and `INFO memory`, and excludes LFU/idle
+  statistics with the exact errors (`OBJECT FREQ` -> `An LFU maxmemory policy is
+  not selected...`, `OBJECT IDLETIME` -> `... read-idle time is not tracked`,
+  `allkeys-lfu`/`volatile-lfu` -> `invalid maxmemory-policy`). Evidence:
+  `tests/access_policy.rs` pins both `OBJECT` exclusions, the `noeviction`
+  default, a runtime switch to `allkeys-lru` visible in `CONFIG GET` and
+  `INFO memory`, and the rejection of `allkeys-lfu` with the previous policy
+  retained, in default, fixed-one and four-worker modes. Not claimed: LFU,
+  read-idle tracking, exact LRU or frequency-based eviction.- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
