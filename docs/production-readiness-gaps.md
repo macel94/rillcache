@@ -131,7 +131,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `MODULE` returns the arity error. Evidence: `tests/unsupported_surface.rs`
   exercises every one of those cases in default, fixed-one and four-worker
   modes, and `docs/unsupported.md` documents the same contract. Not claimed:
-  module loading, an ABI, or isolation for native code.- [x] **C4. Multiple logical databases are missing.** [P0]
+  module loading, an ABI, or isolation for native code.
+- [x] **C4. Multiple logical databases are missing.** [P0]
   **Complete (2026-11-26) as an explicit, tested exclusion.** Only database 0
   exists, and the profile now states the client-facing consequence rather than
   leaving it to a generic error. `SELECT` accepts `0`; nonzero or malformed
@@ -203,7 +204,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HELLO 3` handshake in default, fixed-one and four-worker modes, alongside
   the existing `tests/pubsub.rs` push coverage and `tests/protocol_fuzz.rs`
   fragmentation/limit corpus. Not claimed: attributes, streamed strings, push
-  tracking or full RESP3 type parity.- [x] **C7. Real client-library compatibility is incomplete.** [P0]
+  tracking or full RESP3 type parity.
+- [x] **C7. Real client-library compatibility is incomplete.** [P0]
   **Complete (2026-11-27) with a versioned, pinned language-client matrix.**
   [`ci/upstream/clients-v1.json`](../ci/upstream/clients-v1.json) (matrix
   `rillcache-language-clients` v1) pins `redis-py` 5.2.1, `node-redis` 6.4.0 and
@@ -318,7 +320,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   pins exact encoding/count below the limit, the `*16384` register array, the
   switch to `dense`, `PFSELFTEST`, an estimate within 2 % of 6,000 distinct
   members, and the explicit refusals. Not claimed: Redis-compatible payloads,
-  sparse encoding/thresholds or payload conversion.- [ ] **C11. Geospatial search is linear.** [P2]
+  sparse encoding/thresholds or payload conversion.
+- [ ] **C11. Geospatial search is linear.** [P2]
   `GEOSEARCH` and the legacy radius aliases scan the source sorted set linearly;
   there is no native geohash neighbour index. This is correct for small sets but
   is not evidence for large production keyspaces.
@@ -369,7 +372,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and an invalid value; `tests/config_file.rs` unit tests cover the parser, and
   `tests/runtime_config.rs` covers the atomic runtime subset. Not claimed:
   `redis.conf` compatibility, `CONFIG REWRITE`, file-triggered reload or a
-  runtime-mutable surface beyond the documented subset.- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+  runtime-mutable surface beyond the documented subset.
+- [x] **C14. Transaction semantics diverge from Redis.** [P1]
   **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
@@ -790,7 +794,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/audit_keyring.rs` and `tests/audit_collector.rs` cover signing, keyring
   verification/rotation and bounded collector failure reporting. Not claimed:
   authenticated/encrypted transport, durable delivery, aggregation or an
-  independent custody chain.- [x] **S4. Cross-process rate limiting is missing.** [P0]
+  independent custody chain.
+- [x] **S4. Cross-process rate limiting is missing.** [P0]
   **Complete (2026-11-26) by the external-control-plane branch of the
   criterion; no distributed limiter is implemented or claimed.** Failed-auth
   budgets remain process-local: `--auth-failure-limit` is per connection, and the
@@ -970,7 +975,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   default, a runtime switch to `allkeys-lru` visible in `CONFIG GET` and
   `INFO memory`, and the rejection of `allkeys-lfu` with the previous policy
   retained, in default, fixed-one and four-worker modes. Not claimed: LFU,
-  read-idle tracking, exact LRU or frequency-based eviction.- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
+  read-idle tracking, exact LRU or frequency-based eviction.
+- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
@@ -1029,7 +1035,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   with both prior values intact; `CONFIG REWRITE` fails explicitly; the server
   keeps serving. TLS retains its separately documented atomic generation reload.
   Not claimed: file-triggered reload, `CONFIG REWRITE`, or mutability beyond the
-  documented subset.- [x] **O6. Slow-client and queue policy is incomplete.** [P1]
+  documented subset.
+- [x] **O6. Slow-client and queue policy is incomplete.** [P1]
   **Complete (2026-11-27): the queue/admission policy is documented, observable
   and tested under slow readers, Pub/Sub fan-out and large multi-key replies.**
   The profile documents the per-subscriber 1,024-frame queue with non-blocking
@@ -1042,7 +1049,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   queue fills while the publisher and a healthy subscriber continue, and an
   8×512 KiB `MGET` is refused at the documented bound with the value intact.
   Not claimed: configurable thresholds, kill policy, fair-share scheduling or
-  per-tenant quotas.- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
+  per-tenant quotas.
+- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.

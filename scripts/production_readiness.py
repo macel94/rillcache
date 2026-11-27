@@ -16,6 +16,9 @@ ENTRY_POINTS = (Path("README.md"), Path("docs/README.md"))
 AREAS = "CDASORPLV"
 HEADING = re.compile(r"## ([1-9])\. .+")
 ITEM = re.compile(r"- \[([ x])\] \*\*([A-Z][1-9][0-9]*)\. (.+?)\*\* \[(P[012])\]")
+# A merge can glue the next item onto a paragraph ("text.- [ ] **O7. ..."), which
+# parses as prose and silently removes the gap from the inventory.
+GLUED = re.compile(r"(?<!\n)\S- \[[ x]\] \*\*([A-Z][1-9][0-9]*)\.")
 STATUS = re.compile(r"\*\*Status: (NOT PRODUCTION READY|PRODUCTION READY)\.\*\*")
 
 
@@ -39,6 +42,11 @@ def inventory(source: str) -> tuple[str, list[Gap]]:
     populated: set[str] = set()
     area = None
     for line_no, line in enumerate(source.splitlines(), 1):
+        glued = GLUED.search(line)
+        if glued is not None:
+            raise ValueError(
+                f"line {line_no}: checklist item {glued[1]} is glued onto the previous "
+                "text (missing newline); split it onto its own line")
         if line.startswith("## "):
             heading = HEADING.fullmatch(line)
             area = AREAS[int(heading[1]) - 1] if heading else None
@@ -57,6 +65,15 @@ def inventory(source: str) -> tuple[str, list[Gap]]:
         gaps.append(Gap(ident, title, priority, line_no, checked == " "))
     if sections != list(AREAS) or populated != set(AREAS):
         raise ValueError("expected all nine populated readiness sections in canonical order")
+    # A merge can glue the next item onto a paragraph, which parses as prose and
+    # silently drops that gap from the inventory. Require contiguous ids per area.
+    for area in AREAS:
+        numbers = sorted(int(gap.id[len(area):]) for gap in gaps if gap.id.startswith(area))
+        if numbers != list(range(1, len(numbers) + 1)):
+            expected = ", ".join(f"{area}{index}" for index in range(1, max(numbers, default=0) + 1))
+            raise ValueError(
+                f"gap ids for area {area} are not contiguous (expected {expected}); "
+                "check for a checklist item glued onto the previous paragraph")
     if status[1] == "PRODUCTION READY" and any(is_blocker(gap) for gap in gaps):
         raise ValueError("production-ready status contradicts open P0/P1 items")
     return status[1], gaps
