@@ -117,12 +117,18 @@ fn message(stream: &mut TcpStream) -> (String, String) {
     let frame = read_frame(stream, 0);
     let text = String::from_utf8_lossy(&frame).into_owned();
     let parts: Vec<&str> = text.split("\r\n").collect();
-    assert_eq!(parts[0], "*3", "not a pub/sub message: {text}");
-    assert_eq!(parts[1], "$7");
-    assert_eq!(parts[2], "message");
-    let channel = parts[4].to_owned();
-    let payload = parts[6].to_owned();
-    (channel, payload)
+    match parts.first().copied() {
+        // Pattern subscriptions deliver `pmessage` with pattern, channel, payload.
+        Some("*3") => {
+            assert_eq!(parts[2], "message", "unexpected frame: {text}");
+            (parts[4].to_owned(), parts[6].to_owned())
+        }
+        Some("*4") => {
+            assert_eq!(parts[2], "pmessage", "unexpected frame: {text}");
+            (parts[6].to_owned(), parts[8].to_owned())
+        }
+        other => panic!("not a pub/sub message ({other:?}): {text}"),
+    }
 }
 
 fn subscribe(stream: &mut TcpStream) {
