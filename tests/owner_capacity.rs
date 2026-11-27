@@ -45,6 +45,21 @@ fn ping(stream: &mut TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Non-panicking probe used while waiting for capacity to be released: an
+/// over-limit connection receives the explicit refusal instead of `+PONG`.
+fn admitted(stream: &mut TcpStream) -> bool {
+    let mut request = Vec::new();
+    encode_request(&[b"PING"], &mut request);
+    if stream.write_all(&request).is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 7];
+    match stream.read_exact(&mut reply) {
+        Ok(()) => reply == *b"+PONG\r\n",
+        Err(_) => false,
+    }
+}
+
 #[test]
 fn the_declared_single_owner_envelope_is_the_default_and_enforced() {
     let declared = Config::default();
@@ -74,10 +89,12 @@ fn the_declared_single_owner_envelope_is_the_default_and_enforced() {
         // Closing a client frees capacity within the declared bound; retry
         // rather than assuming the owner has noticed the close immediately.
         drop(first);
+        let mut admission = None;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut replacement = connect(&server);
-            if ping(&mut replacement).is_ok() {
+            if admitted(&mut replacement) {
+                admission = Some(replacement);
                 break;
             }
             assert!(
@@ -87,6 +104,7 @@ fn the_declared_single_owner_envelope_is_the_default_and_enforced() {
             std::thread::sleep(Duration::from_millis(10));
         }
         ping(&mut second).unwrap();
+        assert!(admission.is_some(), "no replacement client was admitted");
         server.shutdown().unwrap();
     }
 }
