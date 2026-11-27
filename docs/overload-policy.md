@@ -75,6 +75,9 @@ bound dispatch, not queueing or payload size:
 - The fixed window may admit up to two windows' worth of commands around a
   boundary. That bounded burst is intentional; the budgets are overload
   shedding thresholds, not billing meters.
+- A disabled budget adds no separate load to the command hot path: its presence
+  is encoded in the security/observer words the dispatcher already reads, and
+  the per-user map is allocated only while a budget is configured.
 
 ## CPU
 

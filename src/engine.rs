@@ -295,6 +295,7 @@ pub(crate) struct Observers {
     pub commandstats: bool,
     pub paused: bool,
     pub monitor: bool,
+    pub budget: bool,
 }
 
 /// Result of one fixed-window command-budget admission check.
@@ -532,6 +533,18 @@ impl ServerServices {
     /// The atomic fast path keeps the common benchmark path lock-free.
     const SECURITY_AUTH_REQUIRED: u32 = 1;
     const SECURITY_ACL_RESTRICTED: u32 = 2;
+    const SECURITY_COMMAND_BUDGET: u32 = 4;
+
+    /// Authorization state plus command-budget presence in one load, for the
+    /// hot path that would otherwise need a second configuration load.
+    pub(crate) fn security_and_budget(&self) -> (bool, bool, bool) {
+        let word = self.security_word.load(Ordering::Acquire);
+        (
+            word & Self::SECURITY_AUTH_REQUIRED != 0,
+            word & Self::SECURITY_ACL_RESTRICTED != 0,
+            word & Self::SECURITY_COMMAND_BUDGET != 0,
+        )
+    }
 
     /// Authorization state in one load: required authentication and whether any
     /// user/rule restriction exists.
@@ -743,16 +756,19 @@ impl ServerServices {
         if let Ok(mut window) = self.command_budget_window.lock() {
             *window = CommandBudgetWindow::default();
         }
+        if global != 0 || per_user != 0 {
+            self.security_word
+                .fetch_or(Self::SECURITY_COMMAND_BUDGET, Ordering::Release);
+        } else {
+            self.security_word
+                .fetch_and(!Self::SECURITY_COMMAND_BUDGET, Ordering::Release);
+        }
+        self.refresh_observers();
     }
 
     pub fn record_command_budget_rejection(&self) {
         self.command_budget_rejections
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// One relaxed load for the common disabled fast path.
-    pub(crate) fn command_budget_enabled(&self) -> bool {
-        self.command_budget.load(Ordering::Relaxed) != 0
     }
 
     /// Fixed one-second window admission. The disabled path is one relaxed load
@@ -850,6 +866,7 @@ impl ServerServices {
     const OBSERVER_COMMANDSTATS: u32 = 4;
     const OBSERVER_PAUSED: u32 = 8;
     const OBSERVER_MONITOR: u32 = 16;
+    const OBSERVER_BUDGET: u32 = 32;
 
     /// All observation collectors in one load.
     pub(crate) fn observers(&self) -> Observers {
@@ -860,6 +877,7 @@ impl ServerServices {
             commandstats: word & Self::OBSERVER_COMMANDSTATS != 0,
             paused: word & Self::OBSERVER_PAUSED != 0,
             monitor: word & Self::OBSERVER_MONITOR != 0,
+            budget: word & Self::OBSERVER_BUDGET != 0,
         }
     }
 
@@ -885,6 +903,9 @@ impl ServerServices {
         }
         if self.monitor_count.load(Ordering::Relaxed) != 0 {
             word |= Self::OBSERVER_MONITOR;
+        }
+        if self.command_budget.load(Ordering::Relaxed) != 0 {
+            word |= Self::OBSERVER_BUDGET;
         }
         self.observer_word.store(word, Ordering::Relaxed);
     }
