@@ -61,7 +61,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
-| Availability and topology | Excluded / open | Failover and cluster excluded by reviewed decisions; replication decision (A1) and topology runbooks (A5) still open |
+| Availability and topology | Excluded / open | Replication, cluster and failover excluded by reviewed decisions; supported upgrades/rollback (A4) and topology runbooks (A5) still open |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
@@ -633,15 +633,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 3. Availability and topology
 
-- [ ] **A1. Replication is missing.** [P0]
-  `PSYNC`, `SYNC`, `REPLCONF`, `REPLICAOF host port` and `SLAVEOF host port`
-  return explicit replication-unsupported errors. `ROLE`/`INFO replication`
-  truthfully report a standalone master; `WAIT` returns 0 and `WAITAOF` only
-  acknowledges the local journal. A native TCP test pins the standalone role
-  and zero replication offset after a local write and rejected reconfiguration.
-  **Closes when:** full and partial synchronization, a consistent snapshot,
-  bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
-  interop pass; acknowledged-write loss is documented.
+- [x] **A1. Replication is missing.** [P0]
+  **Excluded by reviewed profile decision (2026-11-27), not implemented.**
+  Replication is removed from the declared profile: there is no full or partial
+  synchronization, consistent snapshot transfer, backlog, offsets, replica apply,
+  promotion or mixed-version interoperability, and the profile does not claim
+  any. The decision, rationale, alternatives and revisit triggers are recorded in
+  [the replication decision](replication.md#a1-profile-decision-replication-excluded),
+  together with the required honest single-node
+  [availability and data-loss statement](replication.md#single-node-availability-and-data-loss-statement)
+  (node loss = outage until a verified restore; the off-host archive is the
+  recovery point; two independent instances behind one address are prohibited).
+  The exclusion is enforced, not merely documented: `REPLICAOF`/`SLAVEOF`/
+  `PSYNC`/`SYNC`/`REPLCONF`/`FAILOVER` fail with the explicit unsupported error,
+  `SLAVEOF NO ONE` is the declared no-op, `ROLE`/`INFO replication` stay
+  `master`/`0`/`0` before and after local writes, `WAIT` acknowledges no replica,
+  `WAITAOF` describes only local journal state, and a second instance refuses to
+  attach and keeps its own keyspace. Evidence: `tests/replication_boundary.rs`
+  (all worker modes plus the two-instance isolation case) and the pinned-native
+  `Replication exclusion vs pinned replicas` job, which starts Redis 8.10.2 and
+  Valkey 9.1.2 with `--replicaof` against the candidate and requires
+  `master_link_status:down`, replica `DBSIZE 0`, no `+FULLRESYNC`/`+CONTINUE` and
+  an unchanged `master`/`0`/`0` candidate; the job is a declared dependency of
+  the required Tcl contexts. Failover/Sentinel (A2) remains open and is not
+  covered by this decision; cluster routing is excluded by the separate A3
+  decision.
 
 - [x] **A2. Sentinel/failover is missing.** [P0]
   **Excluded by reviewed profile decision (2026-11-27); HA is outside the first
