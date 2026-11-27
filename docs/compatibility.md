@@ -108,6 +108,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **One data owner and a declared admission envelope.** The default data path is
+  a single owner thread, so command execution is one CPU; `--storage-owners` is
+  opt-in experimental and not a scaling claim. Declared capacity is the enforced
+  envelope (`max_clients` 128, 64 MiB logical payload, 1 MiB/2 MiB request
+  bounds), not a throughput SLO. See
+  [single-owner capacity](production-profile.md#single-owner-capacity-envelope).
 - **Runtime changes are atomic and limited to a declared subset.** `CONFIG SET`
   validates every pair before publishing, rejects startup-only names such as
   `appendonly`/`appendfilename` and unknown names with an explicit error, and
