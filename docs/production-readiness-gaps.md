@@ -831,10 +831,28 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   when missing/stale, and prevents backend bypass for server-certificate revocation.
   Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
   independent TLS interoperability/security review remains open. No production-
-  readiness claim is made. **Closes when:** server-certificate OCSP response
-  validation and tested stale/missing failure policy are implemented or supplied
-  by the reviewed external terminator boundary, and the configured human security
-  review is complete.
+  readiness claim is made.
+  **Partial (2026-11-27): native staple status and freshness validation on the
+  chosen native path.** `src/server/ocsp.rs` parses the bounded RFC 6960 DER
+  subset and rejects, at load and at every atomic reload, a staple whose
+  `responseStatus` is not `successful(0)`, whose type is not
+  `id-pkix-ocsp-basic`, whose `producedAt`/`thisUpdate` is in the future beyond a
+  300-second skew, whose `SingleResponse` reports `revoked` or `unknown`, that
+  omits `nextUpdate`, whose `nextUpdate` has passed, or whose structure is
+  truncated, indefinite-length or has trailing bytes. Rejection fails the TLS
+  generation, so a stale or unusable staple is never served and the previous good
+  generation keeps running (same fail-closed shape as an invalid SNI key).
+  Sixteen unit tests in that module cover every accepted and rejected case.
+  Documented limit, stated in `docs/tls.md`: OCSP signature/responder
+  verification and `certID` binding (issuer name/key hash and serial) require an
+  X.509 subject/public-key parser outside the reviewed dependency set, and RFC
+  6960 assigns that check to the client, so the enforced server contract is
+  "never serve status that is not successfully structured, good and fresh", not
+  "the staple is authoritative". Automatic fetching remains unsupported.
+  **Closes when:** server-certificate OCSP response validation and tested
+  stale/missing failure policy are implemented or supplied by the reviewed
+  external terminator boundary, and the configured human security review is
+  complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**
