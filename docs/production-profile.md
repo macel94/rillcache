@@ -355,6 +355,12 @@ references, so an excluded capability cannot silently start succeeding.
   require script or function execution are incompatible and must not be deployed
   against this profile.
 - Loadable modules (C3); `MODULE LIST` is empty and loading is unsupported.
+  This is not a temporary gap: loading native code would require an FFI/unsafe
+  boundary and an in-process sandbox that the reviewable dependency policy
+  forbids, so module-dependent clients are incompatible with this profile.
+  `MODULE LIST` returns an empty array, `MODULE HELP` returns one bounded row,
+  `MODULE LOAD`/`LOADEX`/`UNLOAD` return `MODULE loading is not supported by
+  this server`, and any other subcommand returns `unknown MODULE subcommand`.
 - Multiple logical databases, `SELECT` other than `0`, `MOVE`, `SWAPDB` (C4).
   Clients that configure a nonzero database cannot use this profile: a pinned
   redis-py client started with `db=1` fails during connection setup with

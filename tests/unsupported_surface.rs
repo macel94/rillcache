@@ -206,8 +206,18 @@ fn cluster_module_and_wait_surface_is_explicit_in_all_modes() {
         );
         command(
             &mut stream,
+            &[b"MODULE", b"LOADEX", b"missing.so"],
+            b"-ERR MODULE loading is not supported by this server\r\n",
+        );
+        command(
+            &mut stream,
             &[b"MODULE", b"UNLOAD", b"name"],
             b"-ERR MODULE loading is not supported by this server\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"MODULE", b"LIST", b"extra"],
+            b"-ERR unknown MODULE subcommand\r\n",
         );
         command(
             &mut stream,
