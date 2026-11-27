@@ -1,0 +1,6 @@
+candidate	scope	reviewer	reviewer_kind	evidence	signed_at	state
+d19c37cc9b0bb5398b8356d05576f78a73fdbc3c	profile	Francesco Belacca	maintainer	docs/compatibility.md	2026-11-27	signed
+d19c37cc9b0bb5398b8356d05576f78a73fdbc3c	performance	-	maintainer	docs/benchmark-reports.md	-	withheld
+d19c37cc9b0bb5398b8356d05576f78a73fdbc3c	recovery	-	maintainer	docs/persistence.md	-	withheld
+d19c37cc9b0bb5398b8356d05576f78a73fdbc3c	release	Francesco Belacca	maintainer	docs/production-readiness-gaps.md	2026-11-27	signed
+d19c37cc9b0bb5398b8356d05576f78a73fdbc3c	security	-	independent	docs/release-acceptance.md	-	unassigned
