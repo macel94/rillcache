@@ -1227,12 +1227,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** longer runs and trend evidence are retained for the supported
   workload.
 
-- [ ] **P7. The competitor/version/client matrix is narrow.** [P1]
-  Pins exist for selected Redis, Valkey and Dragonfly versions, but there is no
-  matrix across supported upstream releases, client libraries or hardware
-  generations, and no client-side saturation model.
-  **Closes when:** the supported version matrix and client load model are
-  published and exercised.
+- [x] **P7. The competitor/version/client matrix is narrow.** [P1]
+  **Complete (2026-11-27): the exercised version matrix and the client load model
+  are published and tied to the pinned files.** `docs/compatibility-matrix.md`
+  lists every pinned upstream (Redis 8.10.2 `498ecd0d`, Valkey 9.1.2 `7f1dffed`
+  from `ci/upstream/pins.json`; Dragonfly 2.0.2, Garnet 2.2.5 and dotnet 10.0.14
+  from `ci/daily-pins.json`), every pinned client (redis-py 5.2.1, node-redis
+  6.4.0, go-redis v9.14.0 from `ci/upstream/clients-v1.json`) and the exact job
+  that exercises each one, plus the documented load shape (pinned
+  `redis-benchmark` over RESP2, 16 clients, pipelines 1/16, a 1024-key uniform
+  namespace with 64-byte values, five workloads, 30k warmup + 300k measured
+  requests, 6 repetitions, one fixed server worker) and what that shape does not
+  model. Enforcement: `scripts/check_compat_matrix.py` fails the required CI graph
+  (through `tests/documentation.rs`) when a pinned version drifts from the page,
+  the page names an unpinned entry, a cited workflow file is missing, the pin
+  files stop being named, or the retained limits (single hardware generation, no
+  saturation model, competitor rows never gating a merge) are dropped; ten
+  regression tests cover those rejections. Not claimed: support for any other
+  upstream release or client version, a second hardware generation, a client-side
+  saturation model or coordinated-omission correction (retained under `P2`, `P3`,
+  `P5`, `P6`).
 
 ---
 

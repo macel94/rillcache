@@ -17,6 +17,7 @@ project's front page.
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
+| See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
 | See who accepted which production claim | [Production acceptance sign-offs](release-acceptance.md) |
