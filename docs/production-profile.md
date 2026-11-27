@@ -32,7 +32,7 @@ per-row evidence for that head; it is never release acceptance.
 | Transport | Plain TCP, optional native TLS 1.3 |
 | Deployment-wide rate limiting | Not implemented in the server; process-local budgets only. Multi-process or replicated deployments require an authoritative external control plane |
 | Reliable delivery | Not available in Pub/Sub; stream consumer groups provide acknowledged redelivery across client disconnects, and an external durable transport is required beyond the process |
-| Platforms | Linux x86_64 (development/CI); other platforms unverified |
+| Platforms | Linux `x86_64` glibc only, tested in CI; everything else excluded — see the [platform matrix](platforms.md) |
 
 ## Supported surface
 
