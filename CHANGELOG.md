@@ -9,7 +9,11 @@ compatibility claim.
 
 _No unreleased changes recorded yet._
 
-## 0.1.0 — release candidate, not tagged
+## 0.1.0 — 2026-11-27
+
+Release notes: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md). The tag
+`v0.1.0` exists; the readiness checklist is unchanged by tagging and still
+reports the project as not production ready.
 
 First versioned release candidate. The release action remains with the release
 owner and is gated by `scripts/cut-release.sh`.

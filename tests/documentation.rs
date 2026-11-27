@@ -270,3 +270,42 @@ fn merge_gates_are_mapped_to_the_properties_they_prove() {
         String::from_utf8_lossy(&unit.stderr)
     );
 }
+
+/// L4: release notes are checked against the candidate's real state, so they
+/// cannot drift from the open P0 inventory, stop naming the exercised drills, or
+/// reference evidence paths that do not exist. The checker's own regression suite
+/// runs here too, otherwise a broken checker could pass itself.
+#[test]
+fn release_notes_track_the_candidate_and_its_exercised_drills() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_release_notes.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline release-notes check");
+    assert!(
+        check.status.success(),
+        "release notes check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Release notes valid"),
+        "unexpected release notes output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_release_notes"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the release-notes regression tests");
+    assert!(
+        unit.status.success(),
+        "release notes regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
