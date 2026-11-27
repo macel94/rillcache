@@ -49,6 +49,66 @@ full-chain audit signing, key IDs or hot-rotation custody, or credential encrypt
 
 ## Multi-user ACLs
 
+## Versioned ACL allow/deny matrix (S2)
+
+The supported ACL subset is versioned in
+[`ci/upstream/acl-v1.json`](../ci/upstream/acl-v1.json) (matrix
+`rillcache-acl-v1`, gap S2) and executed differentially by
+`scripts/upstream/acl_matrix.py` against the candidate and the pinned Redis and
+Valkey references. The matrix is the contract for this subset — an approximation
+over the published command table, not byte-for-byte Redis ACL equivalence — and
+it is not a security sign-off.
+
+Each scenario writes a bounded ACL file with an administrator and one restricted
+user, seeds data as the administrator, replays the scenario commands as the
+restricted user, records allow/deny for each, and finally re-reads state as the
+administrator. The candidate must match the declared decision and post-state
+exactly. Scenarios flagged differential must also reach the same decision on both
+pinned references; any other difference fails the run unless it is recorded as a
+reviewed divergence with a reason.
+
+Covered by the matrix: category selectors and ordering (`+@read`, `-@write`,
+`+@write -set`), explicit command grants and command variants, subcommand
+selectors (`+client`, `-client|list`, `-client|kill`), key patterns including
+read-only and write-only modes (`~`, `%R~`, `%W~`), `allkeys`/`allchannels`,
+channel patterns (`&news:*`), atomic `ACL SETUSER` rejection, `ACL DRYRUN`
+parity, disabled-user authentication, `reset` followed by a narrow grant, and
+transaction-queue denial. Isolation is asserted after every denial: a denied
+write leaves the permitted value unchanged, a key outside the pattern stays
+absent, a read-only user cannot mutate, a scoped user cannot `FLUSHDB` outside
+its keys, and a denied queued write never executes at `EXEC`.
+
+Two reviewed divergences from the pinned references are deliberate and recorded
+in the matrix:
+
+- keyless keyspace-wide commands (`KEYS`, `SCAN`, `RANDOMKEY`, `DBSIZE`,
+  `FLUSHDB`, `FLUSHALL`) require an all-key grant with the matching access,
+  because otherwise a scoped user could enumerate or flush keys outside its
+  patterns. The candidate returns `NOPERM keyspace-wide commands require an
+  all-key ACL grant with the required access`; Redis and Valkey do not filter
+  these commands by key patterns;
+- `ACL DRYRUN` for a denied command returns the `NOPERM` error on the candidate,
+  while the pinned references return a non-error textual result. The error is the
+  stricter, machine-checkable signal; both reference replies are retained in the
+  evidence.
+
+Every other scenario reaches the same allow/deny decision on the candidate and
+both pinned references. An ACL file must keep the `default` user **enabled**:
+the candidate rejects a file whose default user is `off` with `MissingDefault`
+(the matrix gives it a password instead), which is a profile requirement for ACL
+files rather than a Redis compatibility claim.
+
+Evidence: the fail-closed `ACL allow/deny matrix` job in the upstream
+compatibility workflow runs the matrix with the pinned bundle on every PR and
+uploads `result.json`, `summary.md` and per-scenario server logs. Offline tests
+validate the manifest, the decision vocabulary and the divergence declarations
+without starting a server.
+
+Not covered: every Redis ACL semantic (for example `%R~`/`%W~` interactions
+beyond the recorded cases), ACL file concurrency, key-spec extraction for
+arbitrary third-party commands, and any security review conclusion. Those remain
+tracked in the canonical checklist.
+
 `--aclfile PATH` loads a Redis-style text file instead of `--requirepass`
 (the two options are mutually exclusive). Each non-comment line is
 `user <name> <rules>`; an enabled `default` user is required or startup fails.
