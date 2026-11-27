@@ -232,6 +232,45 @@ fn production_acceptance_registry_is_machine_checked() {
     );
 }
 
+/// V7: every required merge gate is mapped to the property it proves, and the map
+/// explicitly states the production properties no merge gate covers. The checker
+/// and its regression suite run here, so the mapping cannot silently drift from
+/// `.github/pr-workflow-gates.json` or start claiming a production pass.
+#[test]
+fn merge_gates_are_mapped_to_the_properties_they_prove() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_gate_scope.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline gate-scope check");
+    assert!(
+        check.status.success(),
+        "gate scope check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Gate scope valid"),
+        "unexpected gate scope output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_gate_scope"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the gate-scope regression tests");
+    assert!(
+        unit.status.success(),
+        "gate scope regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
 /// L4: release notes are checked against the candidate's real state, so they
 /// cannot drift from the open P0 inventory, stop naming the exercised drills, or
 /// reference evidence paths that do not exist. The checker's own regression suite
@@ -266,6 +305,52 @@ fn release_notes_track_the_candidate_and_its_exercised_drills() {
     assert!(
         unit.status.success(),
         "release notes regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// L7: GHCR packages start private, so publishing must fail closed until a
+/// maintainer records an anonymous, digest-pinned pull for both tested platforms.
+/// The record cross-links the released versions, and the same checker runs in the
+/// release gate with `--require-public`.
+#[test]
+fn package_visibility_is_recorded_and_gated_before_publish() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .args(["scripts/check_package_visibility.py", "--check"])
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline package-visibility check");
+    assert!(
+        check.status.success(),
+        "package visibility check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Package visibility record valid"),
+        "unexpected package visibility output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let release = std::fs::read_to_string(manifest.join("scripts/cut-release.sh"))
+        .expect("release gate script");
+    assert!(
+        release.contains("check_package_visibility.py") && release.contains("--require-public"),
+        "cut-release.sh must fail closed on unverified package visibility"
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_package_visibility"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the package-visibility regression tests");
+    assert!(
+        unit.status.success(),
+        "package visibility regression tests failed:\n{}\n{}",
         String::from_utf8_lossy(&unit.stdout),
         String::from_utf8_lossy(&unit.stderr)
     );

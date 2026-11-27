@@ -16,6 +16,7 @@ project's front page.
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
+| Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
 | See who accepted which production claim | [Production acceptance sign-offs](release-acceptance.md) |
@@ -57,6 +58,7 @@ configure for the ordinary offline development loop.
 - [Reference conformance](reference-conformance.md) and [original upstream evidence](upstream-ci.md): what has actually been tested.
 - [Benchmark methodology](benchmarks.md), [dashboard](../benchmarks/README.md) and [reporting](benchmark-reports.md): measurements and publication.
 - [Protected delivery](pr-quality-gate.md), [check inventory](actions-gate-audit.md), [independent PR delivery](parallel-pr-delivery.md) and [parallel work lanes](parallel-work-lanes.md): repository governance.
+- [What each merge gate proves](gate-scope.md): the property behind every required context, the production properties no merge gate covers, and where release evidence lives.
 
 ### Architecture and research
 
