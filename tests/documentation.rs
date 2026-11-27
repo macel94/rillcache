@@ -123,3 +123,44 @@ fn public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_statu
         );
     }
 }
+
+/// S1: the threat model, review scope, findings log and sign-off registry are
+/// machine-checked in the required CI graph. A missing evidence path, a finding
+/// closed without retest evidence, an open finding without a tracking gap, or an
+/// independent sign-off claimed without a reviewer/signature fails the build.
+#[test]
+fn security_review_registry_scope_and_signoff_are_checked_in_ci() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .args(["scripts/security_review.py", "--check"])
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline security review check");
+    assert!(
+        check.status.success(),
+        "security review registry check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let output = String::from_utf8_lossy(&check.stdout);
+    assert!(
+        output.contains("Security review registry valid"),
+        "unexpected security review output: {output}"
+    );
+
+    // The regression suite must run here as well, otherwise a broken checker
+    // could pass itself and the registry would silently become an attestation.
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_security_review"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the security review regression tests");
+    assert!(
+        unit.status.success(),
+        "security review regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
