@@ -140,7 +140,7 @@ fn slow_subscribers_are_bounded_and_counted_without_blocking_others() {
         let message = read_frame(&mut healthy, 0);
         assert_eq!(
             message,
-            b">3\r\n$7\r\nmessage\r\n$4\r\nlive\r\n$2\r\nok\r\n"
+            b"*3\r\n$7\r\nmessage\r\n$4\r\nlive\r\n$2\r\nok\r\n"
         );
         server.shutdown().unwrap();
     }
