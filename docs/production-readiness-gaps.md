@@ -61,7 +61,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
-| Availability and topology | Missing | No replication, failover, Sentinel or cluster |
+| Availability and topology | Excluded / open | Failover and cluster excluded by reviewed decisions; replication decision (A1) and topology runbooks (A5) still open |
 | Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
@@ -643,13 +643,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   bounded backlog, offsets/IDs, reconnect, replica apply and mixed-version
   interop pass; acknowledged-write loss is documented.
 
-- [ ] **A2. Sentinel/failover is missing.** [P0]
-  There is no quorum failure detection, election, promotion, fencing, client
-  rediscovery or split-brain handling. A single process is a single point of
-  failure.
-  **Closes when:** a Sentinel-compatible control plane or equivalent is
-  implemented and tested with packet loss, partitions, stale configuration,
-  flapping nodes, leader loss, promotion and reconnect; RPO/RTO are stated.
+- [x] **A2. Sentinel/failover is missing.** [P0]
+  **Excluded by reviewed profile decision (2026-11-27); HA is outside the first
+  profile.** No Sentinel-compatible control plane, quorum detection, election,
+  promotion, fencing or client rediscovery exists and none is claimed. The
+  reviewed single-node boundary is recorded in the
+  [A2 decision](production-readiness/availability-and-topology.md#a2-profile-decision-sentinel-and-automatic-failover-excluded)
+  (rationale, rejected alternatives, revisit triggers, detection/recovery
+  contract and the hard rules against promoting stale copies or fronting two
+  writers). Enforced behavior: every `SENTINEL` form fails closed on the first
+  call, `FAILOVER` and `REPLICAOF`/`SLAVEOF` host forms return the explicit
+  replication-unsupported error, `REPLICAOF NO ONE`/`SLAVEOF NO ONE` are the
+  declared no-ops with no state change, and `ROLE`/`INFO replication` stay
+  `master` with `master_failover_state:no-failover`, zero replicas and no replid.
+  Evidence: `tests/failover_boundary.rs` (entry points, no-op promotion, reported
+  state, and a two-instance drill where killing the primary loses its address and
+  data while the survivor does not take over), plus the measured restore path from
+  the D5 drill. The replication link itself is the separate A1 decision and is not
+  claimed here. Recovery is the documented verified restore, never an election: RPO is
+  the newest off-host verified archive and RTO is the measured restore plus
+  validation before traffic. Upgrades/rollback (A4) and topology runbooks/failure
+  exercises (A5) remain open and are not covered by this decision.
 
 - [x] **A3. Cluster mode is missing.** [P0]
   **Complete (2026-11-26) by the criterion's exclusion branch: the profile
