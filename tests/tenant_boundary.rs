@@ -9,7 +9,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rillcache::protocol::encode_request;
@@ -25,10 +25,10 @@ fn temp_name(label: &str) -> PathBuf {
     path
 }
 
-fn start(acl: &PathBuf) -> ServerHandle {
+fn start(acl: &Path) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
-        aclfile: Some(acl.clone()),
+        aclfile: Some(acl.to_path_buf()),
         ..Config::default()
     })
     .unwrap()
