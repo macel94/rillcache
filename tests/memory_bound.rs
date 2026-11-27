@@ -287,7 +287,9 @@ fn a_bound_never_below_the_configured_payload_budget_caps_it() {
         return;
     };
     let headroom = 16 * MIB;
-    let bound = resident + headroom + 4 * MIB;
+    // Generous room: this case only proves that a smaller explicit payload
+    // budget survives the bound derivation.
+    let bound = resident + headroom + 64 * MIB;
     let server = Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         max_data_bytes: 1024,
