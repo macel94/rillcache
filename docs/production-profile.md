@@ -183,6 +183,39 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Single-owner capacity envelope
+
+The supported data path is **one owner**: data commands are executed by a single
+owner thread, so command-execution parallelism is one CPU regardless of pipeline
+depth or client count. `--storage-owners N` (2..=64) is an opt-in experimental
+mode, not a capacity claim: its own measurements put it below the one-owner path
+at pipeline 16 on the test host, and no protected benchmark gates multi-owner
+mode. The default `Config` therefore keeps `storage_owners` unset.
+
+Because there is no measured throughput SLO, the declared capacity limit is the
+enforced admission envelope rather than a requests-per-second number:
+
+| Bound | Default | Enforced by |
+| --- | --- | --- |
+| Data-execution owners | 1 | `--storage-owners` (opt-in experimental only) |
+| Simultaneous admitted clients | 128 | `--max-clients`; further connections receive `ERR max number of clients reached` and are closed |
+| Logical key/value payload | 64 MiB | `--max-data-bytes`; writes beyond the budget are refused without partial application |
+| Request argument / frame | 1 MiB / 2 MiB | `--max-bulk-bytes` / `--max-frame-bytes` |
+
+Capacity in practice is bounded by whichever of those limits is reached first,
+plus CPU and memory overhead outside the logical payload budget (metadata,
+buffers, sockets and allocator fragmentation are not covered by
+`--max-data-bytes`). Scaling vertically increases the limits, not the number of
+data owners. Multi-owner scaling, a throughput SLO and cross-owner capacity
+sharing are not claimed and are not gated.
+
+`tests/owner_capacity.rs` binds the declaration: the default config is
+single-owner with 128 clients, and in default, fixed-one and four-worker modes the
+third client beyond `max_clients = 2` receives the explicit refusal while
+existing clients keep working and closing one client releases capacity.
+`tests/maxclients_info.rs` and `tests/storage_ownership_tests` cover
+`INFO clients` reporting and owner-thread isolation.
+
 ## Runtime configuration changes
 
 Startup options are read once. Only a declared mutable subset can change while
