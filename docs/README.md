@@ -56,6 +56,7 @@ configure for the ordinary offline development loop.
 - [Reference conformance](reference-conformance.md) and [original upstream evidence](upstream-ci.md): what has actually been tested.
 - [Benchmark methodology](benchmarks.md), [dashboard](../benchmarks/README.md) and [reporting](benchmark-reports.md): measurements and publication.
 - [Protected delivery](pr-quality-gate.md), [check inventory](actions-gate-audit.md), [independent PR delivery](parallel-pr-delivery.md) and [parallel work lanes](parallel-work-lanes.md): repository governance.
+- [What each merge gate proves](gate-scope.md): the property behind every required context, the production properties no merge gate covers, and where release evidence lives.
 
 ### Architecture and research
 
