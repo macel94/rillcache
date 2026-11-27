@@ -108,6 +108,14 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **One process is one tenant.** Multi-tenant deployment is excluded: ACL users
+  share the keyspace, payload budget, connection/CPU budget, Pub/Sub namespace,
+  auth budgets and process lifetime. Scoped users cannot read other tenants'
+  keys or run keyspace-wide commands without an all-key grant, but a user with
+  `@pubsub` can enumerate channel names and any tenant can consume shared
+  capacity. Run one process per tenant with separate network and resource
+  limits. See
+  [tenant isolation](production-profile.md#tenant-isolation-boundary).
 - **HyperLogLog uses a private payload.** `PFADD`/`PFCOUNT`/`PFMERGE` work with an
   exact set up to 4,096 members and then a 2^14-register sketch (~0.81 % standard
   error). Redis/Valkey payloads are not interchangeable: `DUMP`/`RESTORE`/
