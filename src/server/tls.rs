@@ -15,7 +15,7 @@ use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 struct SniResolver {
@@ -605,11 +605,23 @@ fn read_ocsp_response(path: &Path) -> io::Result<Vec<u8>> {
             path.display()
         )));
     }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .map_err(|error| invalid(format!("system clock before the Unix epoch: {error}")))?;
+    crate::server::ocsp::validate_staple(&bytes, now).map_err(|reason| {
+        invalid(format!(
+            "TLS OCSP response {} is not usable: {reason}",
+            path.display()
+        ))
+    })?;
     Ok(bytes)
 }
 
-// Validate complete DER TLV framing. rustls treats OCSP as opaque bytes; this
-// does not validate OCSP semantics, signatures, status, certificate identity, or freshness.
+// Validate complete DER TLV framing before the semantic OCSP checks in
+// `crate::server::ocsp`. rustls treats the staple as opaque bytes, so the
+// status/freshness enforcement lives in that module; certificate-identity
+// binding (certID) remains the client's check and is documented in docs/tls.md.
 fn valid_der_sequence(bytes: &[u8]) -> bool {
     if bytes.first() != Some(&0x30) {
         return false;
