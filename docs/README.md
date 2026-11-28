@@ -21,6 +21,7 @@ project's front page.
 | Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
 | See a representative mixed workload, separate from the merge gate | [Mixed workload report](mixed-workload.md) |
 | Check a repeated-round performance trend | [Performance trend](performance-trends.md) |
+| See how long O(N) commands hold the owner | [Owner work guidance](owner-work-guidance.md) |
 | See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |

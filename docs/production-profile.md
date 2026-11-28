@@ -680,6 +680,22 @@ references, so an excluded capability cannot silently start succeeding.
 - Any durability RPO/RTO, independent security review, true RSS enforcement,
   cross-process observability or production SLO (D1–D11, S1–S9, O1–O9).
 
+## O(N) commands and the latency contract
+
+The single owner executes one command at a time and there is **no per-command
+deadline, cancellation or CPU quota**. Whole-keyspace and full-collection commands
+therefore hold the execution turn for their entire duration and are **excluded from
+any latency contract in this profile**: `KEYS`, `SORT`, `SCAN`'s snapshot work,
+`GEOSEARCH`, `HGETALL`/ranges and other large-collection reads, and full-state
+rewrites. Measured on one development host at 20 000 items
+([owner-work-guidance.md](owner-work-guidance.md)): `KEYS *` 352 ms, full `SCAN`
+165 ms, `ZRANGEBYSCORE` 332 ms, `ZRANGE 0 -1` 394 ms, `HGETALL` with 20 000 fields
+812 ms — against a ~1 ms per-command cost for the measured workload. Keep these
+commands at or below ~1 000 items when single-digit-millisecond turns matter.
+`CLIENT KILL` closes the connection but does not interrupt a command already
+running, and no timeout aborts one. `tests/owner_work_contract.rs` fails if this
+statement, the guidance page or the measured table disappears.
+
 ## Persistence contract
 
 The private journal is **best-effort**, not an interoperable AOF. With

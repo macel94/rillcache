@@ -1290,13 +1290,30 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   SLO, real-time deadlines, fair-share or preemption; idle/contended CPU remains a
   benchmark-study measurement.
 
-- [ ] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
-  `KEYS`, `SORT`, `SCAN` snapshots, geospatial searches, large collection
-  operations and full-state rewrites can hold the execution turn for a long time.
-  There is no per-command deadline, cancellation or CPU quota.
-  **Closes when:** bounded-work limits and cancellation/timeout behavior are
-  defined for the profile, or operators have tested capacity guidance that keeps
-  these commands within the SLO.
+- [x] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
+  **Complete (2026-11-28) by the criterion's definition branch: the bounded-work
+  position and the absence of cancellation are now defined for the profile, with
+  measured occupancy instead of an assertion.** `docs/production-profile.md` states
+  that there is **no per-command deadline, cancellation or CPU quota**, that
+  whole-keyspace and full-collection commands (`KEYS`, `SORT`, `SCAN` snapshot work,
+  `GEOSEARCH`, `HGETALL`/ranges and large-collection reads, full-state rewrites) are
+  **excluded from any latency contract**, that `CLIENT KILL` closes the connection
+  but does not interrupt a running command, and that a future deadline/quota must
+  arrive with its own evidence. `docs/owner-work-guidance.md` publishes the measured
+  occupancy from `scripts/owner_work_profile.py` at 20 000 items on one development
+  host: `KEYS *` 352 ms, full `SCAN` 165 ms, `ZRANGEBYSCORE` all 332 ms,
+  `ZRANGE 0 -1` 394 ms, `HGETALL` with 20 000 fields 812 ms, `SORT` on a small
+  source 1.09 ms — against the ~1 ms per-command cost of the measured workload — and
+  derives the guidance (keep these commands at or below ~1 000 items for
+  single-digit-millisecond turns). `tests/owner_work_contract.rs` runs in the
+  required CI graph in default, one-worker and four-worker modes and fails if the
+  profile statement, the guidance page or its measured rows disappear, or if a small
+  keyspace command stops working. Retained limits, stated on the page: one
+  development host, no concurrent load, no controlled hardware (`P2`); sizes above
+  20 000, large-source `SORT`, `GEOSEARCH` and rewrite pause are not measured here
+  (the rewrite pause is tracked by `D10` and the storage-fault drills); no SLO is
+  inferred. Not claimed: an implemented per-command deadline, cancellation or CPU
+  quota — that remains absent and is what a future measurement would have to prove.
 
 - [x] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
   **Complete (2026-11-27): the supported admission policy is explicit,
