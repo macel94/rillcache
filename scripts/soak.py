@@ -27,6 +27,7 @@ import json
 import os
 import signal
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -217,9 +218,9 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
             memory = info(addr, "memory")
             clients = info(addr, "clients")
             rss, cpu = proc_stats(process.pid)
-            journal_bytes = sum(
-                path.stat().st_size for path in directory.iterdir() if path.is_file()
-            )
+            journal_files = [path for path in directory.iterdir() if path.is_file()]
+            journal_bytes = sum(path.stat().st_size for path in journal_files)
+            free_disk = shutil.disk_usage(directory).free
             samples.append({
                 "at_seconds": round(options.duration - (deadline - time.monotonic()), 1),
                 "rss_kib": rss,
@@ -228,6 +229,8 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
                 "connected_clients": clients.get("connected_clients"),
                 "blocked_clients": clients.get("blocked_clients"),
                 "journal_bytes": journal_bytes,
+                "journal_files": sorted(path.name for path in journal_files),
+                "free_disk_bytes": free_disk,
             })
             if options.rewrite_every and len(samples) % options.rewrite_every == 0:
                 client = Client(addr)
@@ -284,6 +287,9 @@ def summarize(report: dict) -> str:
     journal_first = samples[0].get("journal_bytes", 0) if samples else 0
     journal_peak = max((s.get("journal_bytes", 0) for s in samples), default=0)
     journal_last = samples[-1].get("journal_bytes", 0) if samples else 0
+    free_first = samples[0].get("free_disk_bytes", 0) if samples else 0
+    free_last = samples[-1].get("free_disk_bytes", 0) if samples else 0
+    last_files = samples[-1].get("journal_files", []) if samples else []
     lines = [
         "| Metric | Value |",
         "| --- | ---: |",
@@ -292,6 +298,8 @@ def summarize(report: dict) -> str:
         f"| Samples | {len(samples)} |",
         f"| RSS first/peak/last (KiB) | {first} / {peak} / {last} |",
         f"| Journal first/peak/last (bytes) | {journal_first} / {journal_peak} / {journal_last} |",
+        f"| Free disk first/last (bytes) | {free_first} / {free_last} |",
+        f"| Journal files at end | {', '.join(last_files) if last_files else '-'} |",
         f"| Rewrites triggered | {report['rewrites']} |",
         f"| Recovered keys | {report['recovered_keys']} |",
         f"| Graceful stop | {report['graceful_stop']} |",
