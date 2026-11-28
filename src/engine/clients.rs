@@ -320,6 +320,21 @@ impl super::ServerServices {
     }
 }
 
+/// Server-side socket descriptor for CLIENT INFO/LIST, or -1 when the platform
+/// cannot report it. This is the accepted socket, not the client's address.
+fn socket_fd(stream: &TcpStream) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        stream.as_raw_fd()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stream;
+        -1
+    }
+}
+
 #[cfg(test)]
 mod pause_tests {
     use super::*;
@@ -343,20 +358,5 @@ mod pause_tests {
         assert_eq!(store.client_pause_mode(), Some(true));
         std::thread::sleep(std::time::Duration::from_millis(30));
         assert_eq!(store.client_pause_mode(), None);
-    }
-}
-
-/// Server-side socket descriptor for CLIENT INFO/LIST, or -1 when the platform
-/// cannot report it. This is the accepted socket, not the client's address.
-fn socket_fd(stream: &TcpStream) -> i32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        stream.as_raw_fd()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = stream;
-        -1
     }
 }
