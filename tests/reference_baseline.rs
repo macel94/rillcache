@@ -247,6 +247,167 @@ fn assert_command(client: &mut Client, args: &[&[u8]], expected: Resp) {
     assert_eq!(client.command(args).unwrap(), expected, "command {args:?}");
 }
 
+/// Stream trim/read semantics (C9): exact `XTRIM ... MAXLEN =`/`MINID =` behaviour,
+/// range reads with COUNT, XDEL and the basic group read/ack flow. Deterministic
+/// ids keep the corpus clock-free; approximate (`~`) trimming is deliberately not
+/// asserted because its retained size is implementation-defined.
+fn run_stream_trim_read_corpus(client: &mut Client, suffix: &[u8]) {
+    let stream = key(b"rillcache:baseline:stream-trim:", suffix);
+    assert_command(client, &[b"DEL", &stream], Resp::Integer(0));
+
+    let entry = |id: &[u8], field: &[u8], value: &[u8]| {
+        Resp::Array(Some(vec![
+            Resp::Bulk(Some(id.to_vec())),
+            Resp::Array(Some(vec![
+                Resp::Bulk(Some(field.to_vec())),
+                Resp::Bulk(Some(value.to_vec())),
+            ])),
+        ]))
+    };
+
+    for (id, field) in [
+        (b"1-1".as_slice(), b"a".as_slice()),
+        (b"2-2", b"b"),
+        (b"3-3", b"c"),
+    ] {
+        assert_command(
+            client,
+            &[b"XADD", &stream, id, field, b"v"],
+            Resp::Bulk(Some(id.to_vec())),
+        );
+    }
+    assert_command(client, &[b"XLEN", &stream], Resp::Integer(3));
+    assert_command(
+        client,
+        &[b"XRANGE", &stream, b"-", b"+", b"COUNT", b"2"],
+        Resp::Array(Some(vec![
+            entry(b"1-1", b"a", b"v"),
+            entry(b"2-2", b"b", b"v"),
+        ])),
+    );
+    assert_command(
+        client,
+        &[b"XREVRANGE", &stream, b"+", b"-", b"COUNT", b"1"],
+        Resp::Array(Some(vec![entry(b"3-3", b"c", b"v")])),
+    );
+
+    // Exact trimming removes the oldest entries and keeps the range monotonically.
+    assert_command(
+        client,
+        &[b"XTRIM", &stream, b"MAXLEN", b"=", b"2"],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"XLEN", &stream], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"XRANGE", &stream, b"-", b"+"],
+        Resp::Array(Some(vec![
+            entry(b"2-2", b"b", b"v"),
+            entry(b"3-3", b"c", b"v"),
+        ])),
+    );
+    assert_command(
+        client,
+        &[b"XTRIM", &stream, b"MINID", b"=", b"3"],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"XLEN", &stream], Resp::Integer(1));
+    assert_command(client, &[b"XDEL", &stream, b"3-3"], Resp::Integer(1));
+    assert_command(client, &[b"XLEN", &stream], Resp::Integer(0));
+
+    // Reads are ordered and bounded; a requested id already seen yields no entries.
+    assert_command(
+        client,
+        &[b"XADD", &stream, b"4-4", b"k", b"v1"],
+        Resp::Bulk(Some(b"4-4".to_vec())),
+    );
+    assert_command(
+        client,
+        &[b"XADD", &stream, b"5-5", b"k", b"v2"],
+        Resp::Bulk(Some(b"5-5".to_vec())),
+    );
+    assert_command(
+        client,
+        &[b"XREAD", b"COUNT", b"1", b"STREAMS", &stream, b"0"],
+        Resp::Array(Some(vec![Resp::Array(Some(vec![
+            Resp::Bulk(Some(stream.clone())),
+            Resp::Array(Some(vec![entry(b"4-4", b"k", b"v1")])),
+        ]))])),
+    );
+    assert_command(
+        client,
+        &[b"XREAD", b"STREAMS", &stream, b"4-4"],
+        Resp::Array(Some(vec![Resp::Array(Some(vec![
+            Resp::Bulk(Some(stream.clone())),
+            Resp::Array(Some(vec![entry(b"5-5", b"k", b"v2")])),
+        ]))])),
+    );
+    assert_command(
+        client,
+        &[b"XREAD", b"STREAMS", &stream, b"5-5"],
+        Resp::Array(None),
+    );
+
+    // Group flow: create, deliver one entry to a new consumer, acknowledge it once.
+    let group = b"g1".as_slice();
+    let consumer = b"c1".as_slice();
+    assert_command(
+        client,
+        &[b"XGROUP", b"CREATE", &stream, group, b"0"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            group,
+            consumer,
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            &stream,
+            b">",
+        ],
+        Resp::Array(Some(vec![Resp::Array(Some(vec![
+            Resp::Bulk(Some(stream.clone())),
+            Resp::Array(Some(vec![entry(b"4-4", b"k", b"v1")])),
+        ]))])),
+    );
+    assert_command(client, &[b"XACK", &stream, group, b"4-4"], Resp::Integer(1));
+    assert_command(client, &[b"XACK", &stream, group, b"4-4"], Resp::Integer(0));
+    assert_command(
+        client,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            group,
+            consumer,
+            b"STREAMS",
+            &stream,
+            b">",
+        ],
+        Resp::Array(Some(vec![Resp::Array(Some(vec![
+            Resp::Bulk(Some(stream.clone())),
+            Resp::Array(Some(vec![entry(b"5-5", b"k", b"v2")])),
+        ]))])),
+    );
+    assert_command(
+        client,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            group,
+            consumer,
+            b"STREAMS",
+            &stream,
+            b">",
+        ],
+        Resp::Array(None),
+    );
+    assert_command(client, &[b"DEL", &stream], Resp::Integer(1));
+}
+
 fn assert_deadline(client: &mut Client, key: &[u8], deadline: i64) {
     assert_command(client, &[b"PEXPIRETIME", key], Resp::Integer(deadline));
     assert_command(
@@ -687,6 +848,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_expiry_corpus(&mut client, suffix);
     run_conditional_write_corpus(&mut client, suffix);
     run_transaction_corpus(address, suffix);
+    run_stream_trim_read_corpus(&mut client, suffix);
 
     assert_command(
         &mut client,
