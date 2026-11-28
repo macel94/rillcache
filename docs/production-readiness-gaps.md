@@ -649,41 +649,51 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Retained limitation:** Rillcache does not prevent clock-step resurrection;
   the operational contract is explicit rather than an anti-rollback guarantee.
 
-- [x] **D10. Durability performance is unmeasured.** [P1]
-  **Complete (2026-11-28): matched policy cohorts publish throughput, tails,
-  fsync cost and rewrite pause, and every rewrite row is inside the reviewed
-  start-pause SLO.** `scripts/durability_profile.py` fills a keyspace and issues
-  one `BGREWRITEAOF` while a second client measures `PING` for the whole window;
-  it records the start pause, worst/p99 client stall, duration and sample count,
-  and the restart check compares the recovered key count with the pre-stop count.
-  Evidence: [persistence-performance.md](persistence-performance.md) against the
-  release binary built from `83a02763` (SHA-256
-  `9d3d18026e72bc93c977a67d0e631ebe62b056bc0fd8f9e35ff7f9be55d6b02f`) on one
-  6-vCPU AMD EPYC host, Debian 13, kernel 6.12.113, journal on ext4. Matched
-  20,000-write rows: `none` 4652 req/s, `always` 111 req/s / p99 465 ms /
-  0.001384 CPU s per write, `everysec` 1318 req/s / p99 63 ms, `no-fsync`
-  1608 req/s; replay-to-ready at 200,000 keys is 0.95–1.58 s with the exact key
-  count recovered. Rewrite rows against the reviewed bound (≤1 s start pause and
-  ≤1 s worst concurrent stall for ≤1,000,000 keys,
-  [persistence](persistence.md#compaction-with-bgrewriteaof)): `always`
-  253.7/261.3 ms, `everysec` 88.5/179.2 ms and `no-fsync` 82.5/743.0 ms at
-  199,993 keys; `everysec` 693.8/723.8 ms at 999,993 keys. `none` has no rewrite.
-  The declared workload is the single matched 8-client, 64-byte-value mix; other
-  workloads remain under `P2`/`P6`. Retained failures/limits: the first 1M
-  attempt stopped at 551,773 keys with `-OOM configured payload limit exceeded`
-  because the default 64 MiB payload budget cannot hold that dataset; the ceiling
-  run raised it explicitly with `--max-data-bytes 268435456`. The 1M ceiling is
-  measured only for `everysec`; `always`/`no-fsync` are 200k only. A `PING`
-  client, not a sustained write storm, was concurrent, and the stall is
-  client-observed on loopback and includes Python scheduling. One host and one
-  cloud volume, no controlled hardware, no throughput or latency SLO (`P2`,
-  `P3`, `R6`, `O9` stay open). Not claimed: behaviour above 1M keys, on another
-  disk, under a write storm, or a production capacity figure.
+- [ ] **D10. Durability performance is unmeasured.** [P1]
+  Persistence serializes commands through the exclusive gate; there is no
+  throughput/latency evidence for `always`/`everysec`/`no`, rewrite pauses or
+  large journals.
+  **Partial (2026-11-28): measurement harness and proposed budgets.** `scripts/durability_measure.py`
+  starts a fresh disposable server per supported policy (`no`, `everysec`,
+  `always`) with `--appendonly yes`, measures a matched `set` workload (throughput
+  median, batch p99), samples `PING` before and during a `BGREWRITEAOF`, and writes
+  `target/benchmarks/durability.json` plus a summary table. The scheduled
+  `Comparative benchmarks` workflow runs it after building the release binary and
+  keeps both files in the benchmark artifact, so each run retains its own numbers
+  and failures. `docs/durability-benchmarks.md` states the four proposed budgets
+  (always p99 within 3x `no`, everysec throughput within 10% of `no`, rewrite
+  `PING` p99 under 250 ms, no policy failing the workload or PING afterwards) and
+  records that accepting, amending or rejecting them is the owner decision that
+  remains. `scripts/test_durability_measure.py` covers the dry-run plan, the
+  missing-binary failure mode, summary stability and percentile monotonicity.
+  **Additional matched evidence (2026-11-28, ext4):** `scripts/durability_profile.py`
+  now also fills a keyspace, issues one `BGREWRITEAOF` while a second client
+  measures `PING`, and records the start pause, worst/p99 client stall, duration
+  and whether the run is inside the reviewed D2 start-pause SLO
+  ([persistence](persistence.md#compaction-with-bgrewriteaof): ≤1 s start pause
+  and ≤1 s worst concurrent stall for ≤1,000,000 keys). It also fixes
+  restart-to-ready to include replay and compares the recovered key count with
+  the pre-stop count. [persistence-performance.md](persistence-performance.md)
+  publishes the result for the release binary built from `83a02763` on one
+  6-vCPU AMD EPYC host, Debian 13, kernel 6.12.113, journal on ext4: matched
+  20,000-write rows give `none` 4652 req/s, `always` 111 req/s / p99 465 ms /
+  0.001384 CPU s per write, `everysec` 1318 req/s / p99 63 ms and `no-fsync`
+  1608 req/s, with 0.95–1.58 s replay-to-ready at 200,000 keys and the exact key
+  count recovered. Rewrite rows: `always` 253.7/261.3 ms, `everysec`
+  88.5/179.2 ms and `no-fsync` 82.5/743.0 ms at 199,993 keys; `everysec`
+  693.8/723.8 ms at 999,993 keys. `none` has no rewrite. Retained failure: the
+  first 1M attempt stopped at 551,773 keys with
+  `-OOM configured payload limit exceeded` because the default 64 MiB payload
+  budget cannot hold that dataset; the ceiling run raised it explicitly with
+  `--max-data-bytes 268435456`. The 1M ceiling is measured only for `everysec`;
+  200k only for `always`/`no-fsync`. A `PING` client, not a write storm, was
+  concurrent; the stall is client-observed on loopback and includes Python
+  scheduling. One host and one cloud volume, no controlled hardware. The reviewed
+  D2 SLO is met, but it is a rewrite-pause bound, not the throughput/tail
+  regression budget the harness above proposes; D10 therefore stays open until
+  the owner accepts, amends or rejects those budgets.
   **Closes when:** matched benchmarks report throughput, tails, fsync cost and
   rewrite pause for each supported policy and workload, with an accepted SLO.
-  Met by the published matched profile, the rewrite rows and the reviewed D2
-  start-pause SLO.
-
 - [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
   Tests cover ordinary restart, truncated tails and mid-file corruption. The
   Linux same-binary torn-tail drill checks checksum and HMAC journals, including
