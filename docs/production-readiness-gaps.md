@@ -302,7 +302,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
 
-- [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
+- [x] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
   Entries, last IDs, group cursors, consumers and pending records survive restart
   (D6 complete), but `XINFO` still diverges (`nacked-count` is zero), and
   approximate `XTRIM` follows a different granularity.
@@ -317,6 +317,24 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `ENTRIESREAD -1` or an unknown counter. Consumer `idle` now uses last
   attempted interaction and `inactive` uses last successful delivery/claim,
   with both timestamps persisted across rewrite/replay.
+  **Complete (2026-11-28): field matrix documented and trim/read semantics in the differential corpus.**
+  `docs/streams.md` publishes the metadata matrix for `XINFO STREAM`,
+  `XINFO STREAM FULL`, `XINFO GROUPS` and `XINFO CONSUMERS` with the fields
+  emitted and the declared differences: `nacked-count` fixed at `0` (no
+  XNACK/unowned pending entries), `entries-read` undercount when history was
+  trimmed without an explicit counter, `lag` null for an unknown counter, no
+  radix-tree internals or `recorded-first-entry-id`, and bounded
+  `pending`/`consumers` bodies. Trim/read semantics are in the differential
+  corpus: `tests/reference_baseline.rs::run_stream_trim_read_corpus` asserts exact
+  `XTRIM ... MAXLEN =`/`MINID =` removal counts, contiguous post-trim ranges,
+  `XRANGE`/`XREVRANGE` with `COUNT`, `XREAD` at `0`/mid/`latest` (null), the
+  basic `XGROUP CREATE` -> `XREADGROUP` -> `XACK` flow with a repeated `XACK`
+  returning `0`, and the declared `~` granularity (bounded batch removal of at
+  most `LIMIT`, default 10000, entries) is documented instead of being claimed as
+  reference-identical. Machine-checked coverage accounting
+  (`ci/differential/coverage.json`) now includes the stream commands, and the
+  existing engine tests retain the `entries-read`/`lag`/consumer-time fields
+  across journal rewrite and replay.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 

@@ -123,6 +123,36 @@ states that it does not survive restart. There is no replication or failover.
 Workloads that must survive loss of the whole process or host need the external
 transport option in [the production profile](production-profile.md).
 
+## Metadata and trim matrix (C9)
+
+The metadata contract is pinned field by field against the declared references
+(Redis 8.10.2 / Valkey 9.1.2) and states what is approximate:
+
+| Reply | Fields emitted | Declared differences |
+| --- | --- | --- |
+| `XINFO STREAM` | `length`, `last-generated-id`, `max-deleted-entry-id`, `entries-added`, `groups` (count), `first-entry`, `last-entry` | No radix-tree node/key internals and no `recorded-first-entry-id` are fabricated. |
+| `XINFO STREAM FULL` | the same plus `groups` (array of full group bodies), `max-deleted-entry-id`, `entries-added` | `nacked-count` is fixed at `0` because this subset has no XNACK/unowned pending entries; `pending`/`consumers` bodies are bounded by the request `COUNT`. |
+| `XINFO GROUPS` | `name`, `last-delivered-id`, `entries-read` (integer or nil), `lag` (integer or nil), `pel-count`, `nacked-count`, `pending`, `consumers` | `entries-read` is an undercount when history was deleted/trimmed and no explicit counter was set; `lag` is null for `entries-read` `-1` or an unknown counter. |
+| `XINFO CONSUMERS` | `name`, `seen-time`, `active-time`, `pel-count`, `pending` | `idle`/`inactive` derive from `seen-time`/`active-time` (last attempted interaction and last successful delivery/claim), matching the reference split; no `nacked-count`. |
+
+Trim and read semantics:
+
+- `XTRIM ... MAXLEN = n` and `XTRIM ... MINID = id` remove exactly the entries
+  that fall outside the bound and return the number removed; the remaining
+  `XRANGE` range is contiguous and ordered.
+- `XTRIM ... MAXLEN ~ n [LIMIT k]` is a bounded batch removal (at most `LIMIT`,
+  default 10000, entries per call) rather than a reference-identical
+  radix-tree-node approximation; the retained length can therefore stay above
+  `n` until further trims. This is the declared granularity difference.
+- `XREAD`/`XREADGROUP` reply ordering follows entry ids; a requested id already
+  seen yields a null array; `XACK` returns the number of pending entries actually
+  removed and a repeated `XACK` returns `0`.
+
+`tests/reference_baseline.rs::run_stream_trim_read_corpus` asserts the exact
+trim/read/group replies above in the differential corpus, and the engine unit
+tests assert the `entries-read`/`lag`/consumer-time fields across journal
+rewrite and replay.
+
 ## Limits
 
 This is not Redis Streams feature completeness. Multi-stream history reads and
