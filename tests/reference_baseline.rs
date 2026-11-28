@@ -408,6 +408,177 @@ fn run_stream_trim_read_corpus(client: &mut Client, suffix: &[u8]) {
     assert_command(client, &[b"DEL", &stream], Resp::Integer(1));
 }
 
+/// Command-surface differential cases (V2): deterministic replies for the
+/// string/bit, hash, list, set, sorted-set, HLL and generic families that the
+/// coverage accounting previously listed as uncovered. Values stay small and
+/// clock-free so the replies are exact and comparable with the pinned servers.
+fn run_command_surface_corpus(client: &mut Client, suffix: &[u8]) {
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let array = |items: Vec<Resp>| Resp::Array(Some(items));
+
+    let string = key(b"rillcache:baseline:surface-string:", suffix);
+    assert_command(client, &[b"SETNX", &string, b"abc"], Resp::Integer(1));
+    assert_command(client, &[b"SETNX", &string, b"x"], Resp::Integer(0));
+    assert_command(client, &[b"STRLEN", &string], Resp::Integer(3));
+    assert_command(client, &[b"GETRANGE", &string, b"1", b"-1"], bulk(b"bc"));
+    assert_command(
+        client,
+        &[b"SETRANGE", &string, b"1", b"Z"],
+        Resp::Integer(3),
+    );
+    assert_command(client, &[b"GET", &string], bulk(b"aZc"));
+    assert_command(client, &[b"GETDEL", &string], bulk(b"aZc"));
+    assert_command(client, &[b"EXISTS", &string], Resp::Integer(0));
+    assert_command(
+        client,
+        &[b"SETEX", &string, b"100", b"v"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"GETSET", &string, b"w"], bulk(b"v"));
+    assert_command(
+        client,
+        &[b"TYPE", &string],
+        Resp::Simple(b"string".to_vec()),
+    );
+
+    let bits = key(b"rillcache:baseline:surface-bits:", suffix);
+    assert_command(client, &[b"SETBIT", &bits, b"0", b"1"], Resp::Integer(0));
+    assert_command(client, &[b"SETBIT", &bits, b"7", b"1"], Resp::Integer(0));
+    assert_command(client, &[b"GETBIT", &bits, b"0"], Resp::Integer(1));
+    assert_command(client, &[b"BITCOUNT", &bits], Resp::Integer(2));
+    assert_command(client, &[b"BITPOS", &bits, b"1"], Resp::Integer(0));
+
+    let hash = key(b"rillcache:baseline:surface-hash:", suffix);
+    assert_command(
+        client,
+        &[b"HSET", &hash, b"a", b"1", b"b", b"2"],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"HGETALL", &hash],
+        array(vec![bulk(b"a"), bulk(b"1"), bulk(b"b"), bulk(b"2")]),
+    );
+    assert_command(
+        client,
+        &[b"HKEYS", &hash],
+        array(vec![bulk(b"a"), bulk(b"b")]),
+    );
+    assert_command(
+        client,
+        &[b"HVALS", &hash],
+        array(vec![bulk(b"1"), bulk(b"2")]),
+    );
+    assert_command(client, &[b"HEXISTS", &hash, b"a"], Resp::Integer(1));
+    assert_command(client, &[b"HSTRLEN", &hash, b"a"], Resp::Integer(1));
+    assert_command(client, &[b"HINCRBY", &hash, b"a", b"4"], Resp::Integer(5));
+    assert_command(client, &[b"HDEL", &hash, b"b"], Resp::Integer(1));
+    assert_command(client, &[b"HLEN", &hash], Resp::Integer(1));
+
+    let list = key(b"rillcache:baseline:surface-list:", suffix);
+    assert_command(
+        client,
+        &[b"RPUSH", &list, b"1", b"2", b"3"],
+        Resp::Integer(3),
+    );
+    assert_command(client, &[b"LLEN", &list], Resp::Integer(3));
+    assert_command(client, &[b"LINDEX", &list, b"1"], bulk(b"2"));
+    assert_command(
+        client,
+        &[b"LSET", &list, b"1", b"9"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[b"LTRIM", &list, b"0", b"1"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[b"LRANGE", &list, b"0", b"-1"],
+        array(vec![bulk(b"1"), bulk(b"9")]),
+    );
+    assert_command(client, &[b"LPOP", &list], bulk(b"1"));
+    assert_command(client, &[b"RPOP", &list], bulk(b"9"));
+    assert_command(client, &[b"EXISTS", &list], Resp::Integer(0));
+    assert_command(client, &[b"RPUSH", &list, b"a"], Resp::Integer(1));
+    assert_command(client, &[b"RPUSHX", &list, b"b"], Resp::Integer(2));
+    assert_command(client, &[b"LPUSHX", &list, b"c"], Resp::Integer(3));
+    assert_command(
+        client,
+        &[b"LMOVE", &list, &list, b"LEFT", b"RIGHT"],
+        bulk(b"c"),
+    );
+    assert_command(
+        client,
+        &[b"LINSERT", &list, b"BEFORE", b"a", b"z"],
+        Resp::Integer(4),
+    );
+    assert_command(
+        client,
+        &[b"LMPOP", b"1", &list, b"LEFT", b"COUNT", b"2"],
+        array(vec![bulk(&list), array(vec![bulk(b"z"), bulk(b"a")])]),
+    );
+
+    let set = key(b"rillcache:baseline:surface-set:", suffix);
+    assert_command(client, &[b"SADD", &set, b"a", b"b"], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"SMISMEMBER", &set, b"a", b"c"],
+        array(vec![Resp::Integer(1), Resp::Integer(0)]),
+    );
+    assert_command(client, &[b"SREM", &set, b"b"], Resp::Integer(1));
+    assert_command(client, &[b"SCARD", &set], Resp::Integer(1));
+    let set2 = key(b"rillcache:baseline:surface-set2:", suffix);
+    assert_command(client, &[b"SADD", &set2, b"a", b"d"], Resp::Integer(2));
+    assert_command(client, &[b"SINTER", &set, &set2], array(vec![bulk(b"a")]));
+    assert_command(
+        client,
+        &[b"SUNION", &set, &set2],
+        array(vec![bulk(b"a"), bulk(b"d")].into_iter().collect::<Vec<_>>()),
+    );
+    assert_command(client, &[b"SDIFF", &set2, &set], array(vec![bulk(b"d")]));
+
+    let zset = key(b"rillcache:baseline:surface-zset:", suffix);
+    assert_command(
+        client,
+        &[b"ZADD", &zset, b"1", b"a", b"2", b"b", b"3", b"c"],
+        Resp::Integer(3),
+    );
+    assert_command(client, &[b"ZCOUNT", &zset, b"1", b"2"], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"ZMSCORE", &zset, b"a", b"c"],
+        array(vec![bulk(b"1"), bulk(b"3")]),
+    );
+    assert_command(client, &[b"ZREVRANK", &zset, b"a"], Resp::Integer(2));
+    assert_command(client, &[b"ZINCRBY", &zset, b"10", b"a"], bulk(b"11"));
+    assert_command(client, &[b"ZREM", &zset, b"c"], Resp::Integer(1));
+    assert_command(client, &[b"ZCARD", &zset], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"ZPOPMIN", &zset],
+        array(vec![bulk(b"b"), bulk(b"2")]),
+    );
+
+    let hll = key(b"rillcache:baseline:surface-hll:", suffix);
+    assert_command(client, &[b"PFADD", &hll, b"x", b"y"], Resp::Integer(1));
+    assert_command(client, &[b"PFCOUNT", &hll], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"PFMERGE", &hll, &hll],
+        Resp::Simple(b"OK".to_vec()),
+    );
+
+    assert_command(client, &[b"ECHO", b"hi"], bulk(b"hi"));
+    let counter = key(b"rillcache:baseline:surface-counter:", suffix);
+    assert_command(
+        client,
+        &[b"SET", &counter, b"5"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"DECR", &counter], Resp::Integer(4));
+}
 fn assert_deadline(client: &mut Client, key: &[u8], deadline: i64) {
     assert_command(client, &[b"PEXPIRETIME", key], Resp::Integer(deadline));
     assert_command(
@@ -849,6 +1020,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_conditional_write_corpus(&mut client, suffix);
     run_transaction_corpus(address, suffix);
     run_stream_trim_read_corpus(&mut client, suffix);
+    run_command_surface_corpus(&mut client, suffix);
 
     assert_command(
         &mut client,
