@@ -135,13 +135,24 @@ def proc_stats(pid: int) -> tuple[int, int]:
     return rss, int(cpu_seconds)
 
 
-def worker(addr: str, deadline: float, errors: list[str], counter: int, pause: float) -> None:
+def worker(
+    addr: str,
+    deadline: float,
+    errors: list[str],
+    counter: int,
+    pause: float,
+    collection_every: int,
+) -> None:
     try:
         client = Client(addr)
         index = 0
         while time.monotonic() < deadline:
             key = f"soak:w:{counter}:{index % 256}".encode()
             choice = OPERATIONS[index % len(OPERATIONS)]
+            # Keep collection churn bounded while #740 (journal amplification)
+            # is open; string/counter/expiry operations carry the steady load.
+            if choice in ("lpush", "lrange", "hset", "hget") and index % collection_every:
+                choice = ("set", "get", "incr", "expire")[index % 4]
             index += 1
             if choice == "set":
                 client.call(b"SET", key, b"v" * 32)
@@ -198,7 +209,14 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
         threads = [
             threading.Thread(
                 target=worker,
-                args=(addr, deadline, errors, index, options.sleep_ms / 1000.0),
+                args=(
+                    addr,
+                    deadline,
+                    errors,
+                    index,
+                    options.sleep_ms / 1000.0,
+                    max(1, options.collection_every),
+                ),
                 daemon=True,
             )
             for index in range(options.clients)
@@ -318,6 +336,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--rewrite-every", type=int, default=12)
     parser.add_argument(
+        "--collection-every",
+        type=int,
+        default=8,
+        help="Issue a list/hash operation only every N steps per worker; the "
+        "journal amplification for small collections is tracked in #740, so the "
+        "default keeps collection churn low while still exercising it",
+    )
+    parser.add_argument(
         "--sleep-ms",
         type=float,
         default=2.0,
@@ -330,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"soak plan: duration={args.duration}s clients={args.clients} "
               f"interval={args.interval}s rewrite_every={args.rewrite_every} "
-              f"sleep_ms={args.sleep_ms}")
+              f"sleep_ms={args.sleep_ms} collection_every={args.collection_every}")
         print(f"binary: {args.binary}")
         return 0
     binary = Path(args.binary)

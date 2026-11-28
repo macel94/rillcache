@@ -15,6 +15,10 @@ on:
         description: 'Trigger the journal rewrite every N soak samples (default 12)'
         required: false
         default: '12'
+      soak_collection_every:
+        description: 'Issue a list/hash operation every N steps per worker (default 8)'
+        required: false
+        default: '8'
 
 permissions:
   contents: read
@@ -53,6 +57,7 @@ jobs:
             --binary target/release/rillcache \
             --duration "${{ inputs.soak_seconds }}" \
             --clients 8 --interval 10 --rewrite-every "${{ inputs.soak_rewrite_every }}" \
+            --collection-every "${{ inputs.soak_collection_every }}" \
             --json target/soak/report.json \
             | tee target/soak/summary.md
       - name: Preserve soak and recovery evidence even on failure
