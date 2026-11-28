@@ -98,6 +98,18 @@ Observed `rillcache: startup options validated (server not started)`, exit 0 fro
 - **Container archives:** `gh run download 46045730657 -p 'rillcache-container-*' -D "$DIST"`. The locally inspected `image-amd64.tar` and `image-arm64.tar` SHA-256 were `2f2cb2fb575c5ba3e4b24a1d067a92cb8cf7784e2f9e90a61b5c62da9d71e5be` and `4e67d81c1322d007e47bb4792978602d7545af9620f7e947aed1f382086159a0`. Both had the candidate revision label, Linux target architecture, numeric `65532:65532`, exec-form probe, six runtime files (server plus notices) and adjacent SPDX 2.3 inventory. Local Podman on amd64 loaded the tested archive in isolated storage, ran it with `--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges`, and `podman exec "$CID" /rillcache --healthcheck 127.0.0.1:6379` returned 0. arm64 native execution is hosted build evidence, not a local retest. [The publish failure](https://github.com/macel94/rillcache/actions/runs/46045730657) is retained; neither a `v0.1.0` tag nor a GitHub release was present at review time.
 - **Deployment examples:** `systemd-analyze verify --man=no "$TMP/rillcache.service"` passed after substituting only the extracted binary path for `/usr/local/bin/rillcache` in a disposable copy; no unit was installed or launched. The unit binds loopback, uses `StateDirectoryMode=0700`, `UMask=0077` and strict ACL-file mode. Compose published host loopback with read-only root, dropped capabilities and a 256 MiB cap; no AUTH arguments by default. The Kubernetes base is single replica/nonroot with read-only root, no service-account token, ClusterIP, and opt-in same-namespace ingress requiring a NetworkPolicy-capable CNI. `k3s kubectl kustomize deploy` rendered the password overlay successfully: server and both probes use the same read-only password mount, mode `0440` with `fsGroup: 65532`, **not** the server's owner-only strict mode. Neither `latest` example pins an immutable release digest. No workload was applied to a live cluster.
 
+## Outstanding independent signature
+
+This document is the completed in-repo artifact set for S1: scoped threat model,
+review scope and date, findings with dispositions, and the retest commands and
+artifact verifications above. The one item it cannot supply is the third-party
+signature S1 names: an **independent human security reviewer** (or external
+penetration test) recording findings here and accepting the residual risk for a
+release candidate. That signature stays recorded as `security / unassigned` with
+findings `F-001` in `docs/acceptance/signoffs.tsv`; `python3
+scripts/check_acceptance.py --outstanding` prints it. S1 therefore remains open,
+and closing the review task when this PR merges is administrative only.
+
 ## Conclusion — 2026-11-27 UTC
 
 The sampled auth/ACL, TLS, parsing, admission and redaction controls held on the reviewed paths under the stated assumptions. No remotely exploitable authorization bypass was demonstrated. This review accepts the listed conditional residual risks for the narrowly scoped report, not for arbitrary deployments. Signed image distribution is unverified and remains open. No runtime code, workflow, protection rule or readiness checkbox is changed by this PR. Closing the review task when the PR merges is administrative; it does not satisfy a human sign-off, close the release-distribution gap, or change the profile's **NOT PRODUCTION READY** status. A new runtime or artifact candidate needs candidate-bound retests and a maintainer decision on these findings before a production claim.
