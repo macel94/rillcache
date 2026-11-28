@@ -103,7 +103,7 @@ class PolicyTests(unittest.TestCase):
         self.assertIs(status['strict_required_status_checks_policy'], True)
         self.assertIs(status['do_not_enforce_on_create'], False)
         self.assertEqual(status['required_status_checks'], required_checks())
-        self.assertEqual(len(status['required_status_checks']), 16)
+        self.assertEqual(len(status['required_status_checks']), 14)
 
     def test_every_pr_runs_read_only_frozen_tools_without_path_exemptions(self):
         workflow = (ROOT / '.github/workflows/pr-quality.yml').read_text()
