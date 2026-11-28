@@ -39,7 +39,8 @@ column, or if this document claims a production pass.
   corpus, the language-client matrix and the declared profile exclusions
   (`V2`, `C7`).
 - It does not prove durability: fsync policy behaviour, fault injection and recovery
-  bounds are covered by `D10`, `D11` and the drill jobs, not by the merge gate.
+  bounds are covered by `D10`, the crash-recovery matrix and the drill jobs, not by
+  the merge gate.
 - It does not exercise the non-default modes (TLS, persistence, Tokio, multi-owner)
   as production recommendations (`P5`, `R2`).
 
@@ -54,7 +55,6 @@ item, and the checker fails if one is closed here without being closed there:
 - `V6` — acceptance runbook executed against a release candidate.
 - `P2` — controlled-hardware capacity and SLO evidence.
 - `D10` — measured fsync-policy behaviour per durability mode.
-- `D11` — recovery across the supported failure and disk matrix.
 - `R6` — persistence contention measured against an accepted SLO.
 
 ## Where the production evidence lives
