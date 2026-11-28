@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: '17 8 * * 2'
   workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: 'Also run the O9 mixed-workload soak for this many seconds (0 skips)'
+        required: false
+        default: '0'
 
 permissions:
   contents: read
@@ -22,6 +27,38 @@ env:
   REQUIRE_THREAD_MODES: '1'
 
 jobs:
+
+  # O9: the mixed-workload soak runs only on manual dispatch and keeps its own
+  # evidence artifact. It is not a PR check and never gates a merge.
+  soak:
+    if: github.event_name == 'workflow_dispatch' && inputs.soak_seconds != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository-pinned minimal Rust toolchain
+        run: rustup show active-toolchain
+      - name: Build the release server and bench client
+        run: make bench-threads BENCH_ARGS='--requests 10 --clients 1 --pipeline 1 --runs 1 --workload ping'
+      - name: Run the mixed-workload soak and recovery drill
+        run: |
+          mkdir -p target/soak
+          python3 scripts/soak.py \
+            --binary target/release/rillcache \
+            --duration "${{ inputs.soak_seconds }}" \
+            --clients 8 --interval 10 --rewrite-every 12 \
+            --json target/soak/report.json \
+            | tee target/soak/summary.md
+      - name: Preserve soak and recovery evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/soak/
+          if-no-files-found: warn
+          retention-days: 30
   compare:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

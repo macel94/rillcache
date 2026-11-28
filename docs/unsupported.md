@@ -35,6 +35,34 @@ These replies are explicit capability boundaries, not silent no-ops. Enabling
 cluster routing, replication or module loading requires separate implementation,
 configuration and validation work and is not implied by this surface.
 
+## Multi-node topology and its failure modes
+
+Multi-node deployment is **excluded**, not "unsupported but operable". One
+Rillcache process owns one host's data path; there is no replica, no promotion, no
+quorum, and no cross-node state to reconcile. Consequently the following operator
+scenarios are outside the profile and have no runbook, drill or readiness claim:
+
+| Excluded scenario | Why it cannot be supported in this profile |
+| --- | --- |
+| Node loss with promotion/failover | No replica exists to promote; `REPLICAOF`/`SLAVEOF` and Sentinel entry points fail closed. |
+| Network partition and rejoin | There is no second node, no quorum and no rejoin protocol; a partition only isolates clients from the one authoritative process. |
+| Split-brain detection and fencing tokens | There is no second writer to fence; a fencing token would have no consumer. |
+| Cross-node data reconciliation | No replication stream or conflict detection exists; writes made anywhere else are not merged. |
+| Multi-node deployment guide | The Kubernetes example is deliberately one replica with no cross-node topology. |
+
+The supported substitute for a *single host* is the
+[standalone incident runbook](standalone-incident-runbook.md) and the executed
+[incident drills](incident-runbook.md) (`scripts/incident_drills.py`), plus
+independently maintained backups: after host loss, recovery is a restore of that
+host's data, never a promotion. Evidence that the boundary is real and fails
+closed: `tests/failover_boundary.rs`
+(`sentinel_and_promotion_entry_points_fail_closed`,
+`a_dead_primary_is_not_promoted_and_its_address_stays_gone`),
+`tests/replication_boundary.rs`
+(`replication_entry_points_fail_closed_and_keep_the_standalone_state`,
+`a_second_instance_cannot_attach_and_keeps_its_own_data`) and
+`tests/unsupported_surface.rs` for the cluster/module surface.
+
 ## Serialization, migration and admin exclusions
 
 The following surfaces return a named capability error instead of pretending to

@@ -163,10 +163,12 @@ jobs:
             sources+=("$image@$digest")
           done
           tags=(--tag "$image:sha-$GITHUB_SHA")
-          docker buildx imagetools create "${tags[@]}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --annotation 'index:org.opencontainers.image.description=Experimental safe-std-only Rillcache; no authentication, TLS or persistence' \
-            "${sources[@]}"
+          # The per-architecture images are pushed as Docker manifest media types,
+          # and `imagetools create` rejects `--annotation` for those ("annotations
+          # are not supported for Docker manifest lists"). Index metadata is therefore
+          # left to the SBOM/SLSA attestation steps, which publish against the exact
+          # digests; the index itself still carries the tested digests and tags.
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
           ref="$image:sha-$GITHUB_SHA"
           digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
