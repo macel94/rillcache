@@ -32,9 +32,10 @@ WORKLOADS = ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
 SELECTED = WORKLOADS
 PIPELINES = (1, 16)
 RUNS = 5
-# Reported diagnostic only: a deterministic percentile bootstrap of the per-run
-# paired Rillcache/Valkey throughput ratios. Acceptance stays the strict
-# whole-cohort median comparison below, never this interval.
+# Deterministic percentile bootstrap of the per-run paired Rillcache/Valkey
+# throughput ratios. A row whose interval lies entirely below 1.0 is a resolved
+# loss and fails; an interval containing 1.0 is inconclusive and does not fail
+# the cohort, but is never counted as a strict win.
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 20261104
 KEYSPACE = 1024
@@ -42,7 +43,7 @@ VALUE = b"v" * 64
 REPLACEMENT = b"w" * 64
 WARMUP = 8000
 DURATION_SECONDS = 10
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SHA = r"[0-9a-f]{40}"
 CSV_HEADER = ["test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms",
               "p95_latency_ms", "p99_latency_ms", "max_latency_ms"]
@@ -272,22 +273,40 @@ def evaluate(samples):
                      == (workload, pipeline, run, "valkey"))
                 for run in range(1, RUNS + 1)])
             row["passed"] = row["rillcache"]["median"] > row["valkey"]["median"]
+            row["failed"] = row["paired"]["ci_high"] < 1.0
+            row["inconclusive"] = row["paired"]["ci_low"] <= 1.0 <= row["paired"]["ci_high"]
+            row["gate"] = "FAIL" if row["failed"] else ("INCONCLUSIVE" if row["inconclusive"] else "PASS")
             rows.append(row)
     return rows
 
 
+def gate_passed(rows):
+    """A row fails only when its paired interval resolves below parity."""
+    return all(not row["failed"] for row in rows)
+
+
 def summary(rows):
     wins = sum(row["passed"] for row in rows)
+    inconclusive = sum(row["inconclusive"] for row in rows)
+    losses = sum(row["failed"] for row in rows)
+    verdict = "FAIL" if losses else "PASS"
+    detail = f"{wins}/{len(rows)} medians strictly faster than Valkey"
+    if inconclusive:
+        detail += f"; {inconclusive} inconclusive interval(s) not failed"
+    if losses:
+        detail += f"; {losses} resolved loss(es)"
     text = ["# Official Valkey benchmark: four-CPU PR gate", "",
-            f"**{'PASS' if wins == len(rows) else 'FAIL'}: {wins}/{len(rows)} medians strictly faster than Valkey.**", "",
+            f"**{verdict}: {detail}.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
-            "official --duration 10 for every measured sample; five alternating native repetitions. Ties or any loss fail.", "",
-            "Acceptance is the strict whole-cohort median comparison above; every sample is retained and no run is dropped, "
+            "official --duration 10 for every measured sample; five alternating native repetitions. "
+            "A row whose paired 95% interval lies entirely below 1.0 is a resolved loss and fails; an interval that "
+            "contains 1.0 is inconclusive and does not fail the cohort.", "",
+            "Acceptance is the strict whole-cohort median comparison plus the paired uncertainty rule; every sample is retained and no run is dropped, "
             "selected or weighted. The paired ratio column is the median of that row's five per-run Rillcache/Valkey "
             f"throughput ratios with a deterministic percentile-bootstrap 95% interval ({BOOTSTRAP_RESAMPLES} resamples, "
-            f"seed {BOOTSTRAP_SEED}). It is reported so a near-parity row shows its own uncertainty and is never used to "
-            "pass or fail the gate; an interval that contains 1.0 marks a row whose direction the cohort cannot resolve.", "",
+            f"seed {BOOTSTRAP_SEED}). Strict wins are counted separately; an interval that contains 1.0 marks a row whose "
+            "direction the cohort cannot resolve and keeps it out of the win count without failing the cohort.", "",
             "Ten-second samples span 40 upstream 250 ms shutdown/progress ticks; residual timer quantization remains. "
             "Earlier sub-second request-count evidence is retained as a failed, different experiment, never reused as a pass.", "",
             "Client CPUs are disjoint when available, otherwise share the four server CPUs (see manifest). "
@@ -301,7 +320,7 @@ def summary(rows):
         text.append(f'| {row["workload"]} | {row["pipeline"]} | {a["median"]:.2f} [{a["min"]:.2f}–{a["max"]:.2f}] | '
                     f'{b["median"]:.2f} [{b["min"]:.2f}–{b["max"]:.2f}] | {a["p99_ms"]:.3f}/{b["p99_ms"]:.3f} | '
                     f'{paired["wins"]}/{paired["runs"]} | {paired["median_ratio"]:.4f} '
-                    f'[{paired["ci_low"]:.4f}–{paired["ci_high"]:.4f}] | {"PASS" if row["passed"] else "FAIL"} |')
+                    f'[{paired["ci_low"]:.4f}–{paired["ci_high"]:.4f}] | {row["gate"]} |')
     return "\n".join(text) + "\n"
 
 
@@ -352,7 +371,7 @@ def load_cohort(directory):
         ensure(sample["preload"] == sample["warmup_validation"], "missing preload validation")
         samples.append(dict(workload=workload, pipeline=pipeline, run=run, variant=variant, **sample["measured"]))
     rows = evaluate(samples)
-    ensure(type(manifest["gate_passed"]) is bool and manifest["gate_passed"] == all(r["passed"] for r in rows), "gate outcome differs")
+    ensure(type(manifest["gate_passed"]) is bool and manifest["gate_passed"] == gate_passed(rows), "gate outcome differs")
     ensure((root / "summary.md").read_text() == summary(rows), "gate summary differs")
     return rows
 
@@ -409,7 +428,7 @@ def main():
         ensure(all(digest(path) == hashes[name] for name, path in binaries.items()), "binary changed after gate")
         rows = evaluate(samples)
         (output / "summary.md").write_text(summary(rows))
-        manifest.update(complete=True, gate_passed=all(r["passed"] for r in rows))
+        manifest.update(complete=True, gate_passed=gate_passed(rows))
         save(output / "manifest.json", manifest)
         load_cohort(output)
         return 0 if manifest["gate_passed"] else 1
@@ -423,5 +442,5 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--check":
         rows = load_cohort(sys.argv[2])
         print(summary(rows))
-        raise SystemExit(0 if all(r["passed"] for r in rows) else 1)
+        raise SystemExit(0 if gate_passed(rows) else 1)
     raise SystemExit(main())

@@ -24,8 +24,9 @@ Workload: 8 concurrent Python clients, pipeline depth 1, 64-byte values, plain T
 one owner worker, no TLS, no eviction pressure. The generator is a single-CPU
 Python process and is **the bottleneck for the `none` row**, so absolute
 throughput is a ceiling of this harness, not of the server. Only the *relative*
-cost of durability is interpreted, and no throughput or latency SLO is claimed
-(`P2`, `P3` stay open).
+cost of durability is interpreted. D10's accepted **relative regression budgets**
+are recorded in [durability benchmarks](durability-benchmarks.md); no absolute
+throughput or latency SLO follows from these tables (`P2`, `P3` stay open).
 
 | Durability mode | Writes | req/s | p50 ms | p99 ms | p99.9 ms | Server CPU s | CPU s/write | RSS KiB | Restart to ready s | Key recovered | Keys match |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
@@ -119,8 +120,9 @@ What the rewrite rows show:
 - Rewrite stall numbers are client-observed with a Python `PING` loop on
   loopback, so they include client scheduling and round-trip time. No
   server-internal stall histogram is published.
-- No throughput or latency SLO follows from either table (`P2`, `P3`, `R6`
-  remain open). The only accepted SLO used here is the reviewed rewrite
-  start-pause bound above.
+- No absolute throughput or latency SLO follows from either table (`P2`, `P3`
+  and `R6` remain open). The accepted bounds used here are the reviewed rewrite
+  start-pause bound above and D10's relative regression budgets in
+  [durability benchmarks](durability-benchmarks.md).
 - Replication lag, failover time and cluster migration are **not applicable**:
   those topologies are explicit exclusions (`A1`, `A2`), not unimplemented rows.
