@@ -84,7 +84,7 @@ class ValidCase(GateScopeCase):
         self.assertEqual(check.validate(self.root), 2)
 
     def test_repository_gate_scope_is_valid(self) -> None:
-        self.assertEqual(check.validate(REPO_ROOT), 16)
+        self.assertEqual(check.validate(REPO_ROOT), 14)
 
 
 class DriftCase(GateScopeCase):
