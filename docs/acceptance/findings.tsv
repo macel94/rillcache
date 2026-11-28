@@ -1,0 +1,4 @@
+id	scope	summary	severity	disposition	retest_evidence	status
+F-001	security	No independent human security review of the release profile has been performed. The scoped threat model, review scope and date, findings with dispositions and retest commands exist in docs/security-review-v0.1.0.md from an automated reviewer, but an automated review is not the third-party signature S1 names.	high	-	-	open
+F-002	performance	The P-series controlled-hardware measurement criteria (workload mix, durability modes, long-duration regression budgets) remain open, so performance acceptance cannot be signed.	medium	-	-	open
+F-003	recovery	Soak, failure and recovery evidence retention (O9) and the staging upgrade/rollback drills (O8) remain open, so recovery acceptance cannot be signed.	medium	-	-	open
