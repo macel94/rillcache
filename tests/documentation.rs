@@ -435,3 +435,36 @@ fn security_review_registry_scope_and_signoff_are_checked_in_ci() {
         String::from_utf8_lossy(&unit.stderr)
     );
 }
+
+/// V2: the differential corpus must carry machine-checked coverage accounting
+/// against the advertised command surface. The script fails closed on drift, a
+/// missing file or a corpus command that the matrix does not advertise, and its
+/// own controls run here so the accounting cannot silently rot.
+#[test]
+fn differential_corpus_coverage_is_machine_checked() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_corpus_coverage.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the differential-coverage check");
+    assert!(
+        check.status.success(),
+        "differential corpus coverage drifted:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let unit = Command::new("python3")
+        .arg("scripts/test_check_corpus_coverage.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the differential-coverage controls");
+    assert!(
+        unit.status.success(),
+        "differential coverage controls failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}

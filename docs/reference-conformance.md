@@ -116,3 +116,28 @@ Sources: [Redis SET](https://redis.io/docs/latest/commands/set/),
 [Redis EXPIRE](https://redis.io/docs/latest/commands/expire/),
 [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
 [RESP specification](https://redis.io/docs/latest/develop/reference/protocol-spec/).
+
+## Differential corpus coverage accounting (V2)
+
+`tests/reference_baseline.rs` is the versioned differential corpus: it asserts
+exact RESP replies for the supported commands and, when a pinned native reference
+is supplied (`make compare` starts Redis 8.10.2 and Valkey 9.1.2 and runs the
+ignored native comparison), replays the same corpus against both references.
+
+Coverage is machine-checked so the gap cannot hide:
+
+- `scripts/check_corpus_coverage.py` reads the advertised command surface from
+  [the command matrix](production-readiness/command-matrix.md) and the command
+  literals used by the corpus, then validates `ci/differential/coverage.json`.
+- The committed file records `advertised`, `covered`, `uncovered`, the per-command
+  assertion counts and the explicit `uncovered_commands` list; it must be
+  refreshed with `--write` whenever the corpus or matrix changes, and the check
+  fails on drift, a missing file, a wrong schema or a corpus command the matrix
+  does not advertise.
+- `tests/documentation.rs::differential_corpus_coverage_is_machine_checked` runs
+  the check and its negative controls in the required offline suite.
+
+Current accounting: 54 of 247 advertised names have at least one corpus
+assertion; 193 remain uncovered and are listed in the file. The criterion stays
+open until that list is empty and reviewed, so coverage cannot be claimed from a
+green merge gate.
