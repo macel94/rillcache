@@ -445,3 +445,65 @@ fn client_kill_skipme_no_can_kill_the_caller_and_absent_types_are_empty() {
     send(&mut victim, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
+
+/// O3: the documented per-client resource fields. `fd` is the server-side
+/// socket descriptor and `idle` is seconds since that client's last command,
+/// sampled once per accepted command; a non-negative `fd` is required on Unix
+/// and the field stays present (with -1) where the platform cannot report one.
+#[test]
+fn client_info_and_list_report_fd_and_idle_with_documented_units() {
+    let server = start();
+    let mut observer = connect(&server);
+    let mut worker = connect(&server);
+    send(&mut worker, &[b"PING"], b"+PONG\r\n");
+
+    let listed = client_list(&mut observer, &[]);
+    let worker_id = client_id(&mut worker);
+    let mut found = None;
+    for line in listed.lines() {
+        let fields: std::collections::HashMap<&str, &str> = line
+            .split(' ')
+            .filter_map(|field| field.split_once('='))
+            .collect();
+        if fields.get("id").and_then(|id| id.parse::<u64>().ok()) == Some(worker_id) {
+            found = Some(fields);
+        }
+    }
+    let fields = found.expect("CLIENT LIST must contain the worker");
+    let fd: i64 = fields.get("fd").expect("fd field").parse().unwrap();
+    let idle: u64 = fields.get("idle").expect("idle field").parse().unwrap();
+    if cfg!(unix) {
+        assert!(fd >= 0, "unix should report a real descriptor, got {fd}");
+    }
+    assert!(
+        idle < 60,
+        "a just-active client must report small idle, got {idle}"
+    );
+
+    // CLIENT INFO (self) reports the same documented fields.
+    let mut self_info = connect(&server);
+    send(&mut self_info, &[b"CLIENT", b"INFO"], b"");
+    let info = String::from_utf8(bulk(&mut self_info)).unwrap();
+    assert!(info.contains(" fd="), "CLIENT INFO must report fd:\n{info}");
+    assert!(
+        info.contains(" idle="),
+        "CLIENT INFO must report idle:\n{info}"
+    );
+
+    // Idle is a sampled second-granularity value: after a pause it grows.
+    std::thread::sleep(Duration::from_millis(1_100));
+    let listed = client_list(&mut observer, &[]);
+    let idle_after = listed
+        .lines()
+        .find(|line| line.contains(&format!("id={worker_id} ")))
+        .and_then(|line| {
+            line.split(' ')
+                .find_map(|field| field.strip_prefix("idle="))
+        })
+        .expect("worker row");
+    assert!(
+        idle_after.parse::<u64>().unwrap() >= 1,
+        "idle must advance after a second without commands"
+    );
+    server.shutdown().unwrap();
+}

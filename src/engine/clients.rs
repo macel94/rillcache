@@ -17,6 +17,10 @@ pub struct ClientRecord {
     pub(super) resp3: bool,
     pub(super) user: Option<Vec<u8>>,
     pub(super) created: Instant,
+    /// Monotonic milliseconds since `created` at the client's last command.
+    pub(super) last_command_ms: std::sync::atomic::AtomicU64,
+    /// Server-side socket descriptor, `-1` when the transport cannot report one.
+    pub(super) fd: i32,
     pub(super) blocked: std::sync::atomic::AtomicBool,
     pub(super) control: Option<TcpStream>,
 }
@@ -39,6 +43,10 @@ pub struct ClientSnapshot {
     pub user: Vec<u8>,
     pub age_seconds: u64,
     pub age_ms: u64,
+    /// Seconds since this client's last command (updated once per command).
+    pub idle_seconds: u64,
+    /// Server-side socket descriptor, `-1` when unknown.
+    pub fd: i64,
     pub blocked: bool,
     pub sub: usize,
     pub psub: usize,
@@ -132,6 +140,8 @@ impl super::ServerServices {
                     resp3: false,
                     user: None,
                     created: Instant::now(),
+                    last_command_ms: std::sync::atomic::AtomicU64::new(0),
+                    fd: socket_fd(&control),
                     blocked: std::sync::atomic::AtomicBool::new(false),
                     control: Some(control),
                 },
@@ -219,6 +229,13 @@ impl super::ServerServices {
                 user: record.user.clone().unwrap_or_else(|| b"default".to_vec()),
                 age_seconds: record.created.elapsed().as_secs(),
                 age_ms: u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
+                idle_seconds: record.created.elapsed().as_secs().saturating_sub(
+                    record
+                        .last_command_ms
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        / 1_000,
+                ),
+                fd: i64::from(record.fd),
                 blocked: record.blocked.load(std::sync::atomic::Ordering::Relaxed),
                 sub,
                 psub,
@@ -239,6 +256,18 @@ impl super::ServerServices {
         }
         if !blocked && let Ok(mut requests) = self.unblock_requests.lock() {
             requests.remove(&id);
+        }
+    }
+
+    /// Record that this client just ran a command. One relaxed store per command.
+    pub fn touch_client(&self, id: u64) {
+        if let Ok(clients) = self.clients.read()
+            && let Some(record) = clients.get(&id)
+        {
+            record.last_command_ms.store(
+                u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 
@@ -314,5 +343,20 @@ mod pause_tests {
         assert_eq!(store.client_pause_mode(), Some(true));
         std::thread::sleep(std::time::Duration::from_millis(30));
         assert_eq!(store.client_pause_mode(), None);
+    }
+}
+
+/// Server-side socket descriptor for CLIENT INFO/LIST, or -1 when the platform
+/// cannot report it. This is the accepted socket, not the client's address.
+fn socket_fd(stream: &TcpStream) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        stream.as_raw_fd()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stream;
+        -1
     }
 }
