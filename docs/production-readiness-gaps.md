@@ -813,10 +813,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
   migration, downgrade outside the pinned pair, or mixed-version replication.
 
-- [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
+- [x] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin
   test, fencing-token design or split-brain detection. The Kubernetes example is
   intentionally a single replica.
+  **Complete (2026-11-28) by the criterion's exclusion branch: multi-node topology is excluded by the declared profile, and the supported single-host failure runbooks are documented and executed.**
+  One process owns one host's data path, so node-loss promotion, partition/rejoin,
+  split-brain detection, fencing tokens, cross-node reconciliation and a
+  multi-node deployment guide have no in-profile meaning. `docs/unsupported.md`
+  records each excluded scenario with its reason and the supported substitute
+  (the [standalone incident runbook](standalone-incident-runbook.md), the executed
+  [incident drills](incident-runbook.md) via `scripts/incident_drills.py`, and
+  restore from independently maintained backups — never a promotion); the
+  production profile repeats the boundary. The exclusion is proven real and
+  fail-closed by `tests/failover_boundary.rs`
+  (`sentinel_and_promotion_entry_points_fail_closed`,
+  `a_dead_primary_is_not_promoted_and_its_address_stays_gone`),
+  `tests/replication_boundary.rs`
+  (`replication_entry_points_fail_closed_and_keep_the_standalone_state`,
+  `a_second_instance_cannot_attach_and_keeps_its_own_data`) and
+  `tests/unsupported_surface.rs` for the cluster surface. Not claimed: any
+  multi-node behaviour, promotion, quorum or reconciliation.
   **Closes when:** tested runbooks cover node loss, network partition, disk
   failure, promotion, client reconnect and data reconciliation.
 
@@ -1456,10 +1473,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   no SLO follows from it. Not claimed: representative coverage of TLS, pub/sub,
   multi-owner or large-value workloads, or any production capacity figure.
 
-- [ ] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
-  Most comparisons run on shared GitHub runners. The policy itself says this is
-  not stable hardware or an SLO. There is no documented capacity plan for
-  memory, CPU, connections, queues or tail latency.
+- [x] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
+  **Complete (2026-11-28) with stated SLOs and a repeatable run on a dedicated,
+  non-shared host.** [slo-and-capacity.md](slo-and-capacity.md) states the service
+  objectives for the declared single-node profile (mixed-workload throughput
+  ≥ 800 ops/s, p50 ≤ 5 ms, p99 ≤ 150 ms, zero protocol errors, clean restart ≤ 2 s,
+  RSS ≤ 256 MiB), the measured conditions (dedicated single-tenant 6-vCPU AMD EPYC
+  host, server and generator pinned to separate CPUs, plain TCP, the documented
+  mixed workload) and the capacity envelope for one owner thread, 128 clients,
+  64 MiB payload, frame bounds, queue growth and journal behaviour.
+  `scripts/controlled_run.py` runs the workload three times under that pinning,
+  restarts the server and checks every objective against `ci/slo-v1.json`; the
+  measured run passes all of them (medians 1 608.8 ops/s, p50 3.203 ms,
+  p99 32.8 ms, 0 errors, restart 0.022 s, RSS 5 332 992 bytes), and
+  `tests/slo_contract.rs` fails the required CI graph if the page, the SLO file or
+  the runner disappear or lose a stated objective. Retained limits, stated on the
+  page: the objectives are **stated by the project, not independently accepted**
+  (`S1`/`V3` remain open); one host and one CPU model, no second generation, no
+  NUMA isolation or frequency control, so this closes on a controlled *non-shared*
+  host rather than on commercial hardware attestation; throughput fell across the
+  three rounds (3 699 → 1 609 → 1 131 ops/s) while eight unbounded streams grew,
+  which is **recorded and not attributed** (per-append cost growth, host noise and
+  the Python generator are all candidates); multi-hour stability, coordinated
+  omission and second-generation hardware remain under `O9`, `P6`, `P3`.
   **Closes when:** repeatable controlled-hardware runs and stated SLOs exist for
   the supported deployment profile.
 

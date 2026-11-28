@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "profile": "rillcache-standalone-0.1",
+  "measured_on": "dedicated single-tenant host, 6 vCPU AMD EPYC, server and generator pinned to separate CPUs",
+  "objectives": {
+    "throughput_ops_per_second_min": 800,
+    "p50_ms_max": 5,
+    "p99_ms_max": 150,
+    "errors_max": 0,
+    "restart_seconds_max": 2,
+    "rss_bytes_max": 268435456
+  },
+  "source": "docs/slo-and-capacity.md"
+}
