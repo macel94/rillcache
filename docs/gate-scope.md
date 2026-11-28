@@ -53,7 +53,6 @@ item, and the checker fails if one is closed here without being closed there:
 - `V3` — independent acceptance sign-offs for profile, security, performance and recovery.
 - `V6` — acceptance runbook executed against a release candidate.
 - `P2` — controlled-hardware capacity and SLO evidence.
-- `P6` — long-duration regression budgets and stability trends.
 - `D10` — measured fsync-policy behaviour per durability mode.
 - `D11` — recovery across the supported failure and disk matrix.
 - `R6` — persistence contention measured against an accepted SLO.
