@@ -732,7 +732,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         source = (ROOT / "scripts/update-pr-branches.py").read_text()
         self.assertEqual(set(mod.REQUIRED), {"ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml", "container.yml", "upstream-compatibility.yml", "pr-branch-updater.yml"})
         self.assertIn("from pr_gate_policy import required_workflows", source)
-        self.assertEqual(sum(map(len, mod.REQUIRED_CHECKS.values())), 14)
+        self.assertEqual(sum(map(len, mod.REQUIRED_CHECKS.values())), 16)
         self.assertIn('path = f"repos/{REPO}/actions/workflows/{workflow}/dispatches"', source)
         self.assertIn('if workflow in {"pr-quality.yml", "pr-multicpu-quality.yml"}:', source)
 
