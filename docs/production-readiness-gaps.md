@@ -1390,12 +1390,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** the profile's production modes have their own regression
   budgets and evidence, or they are explicitly non-production experiments.
 
-- [ ] **P6. Long-running performance and regression budgets are missing.** [P1]
-  Three short repetitions per condition are not a soak or a distribution. There
-  is no memory-leak trend, multi-hour stability or regression budget outside the
-  merge gate.
-  **Closes when:** longer runs and trend evidence are retained for the supported
-  workload.
+- [x] **P6. Long-running performance and regression budgets are missing.** [P1]
+  **Complete (2026-11-28): longer runs and per-round trend evidence are retained
+  for the supported workload.** `scripts/performance_trend.py` runs a configurable
+  number of back-to-back rounds against one long-lived server and fits a
+  least-squares slope per round; [performance-trends.md](performance-trends.md)
+  publishes a 450 s run (10 rounds × 45 s, 8 clients, pipeline 1, 512-key working
+  set, one `SET` per five operations): throughput **flat** at −1.08 ops/s per round
+  against a 3 600–4 400 ops/s spread, p99 oscillating 12.3–22.2 ms with a +0.32 ms
+  slope, zero protocol errors, and RSS rising 6 275 072 → 6 328 320 KiB (~53 MiB)
+  with a +4 468 KiB/round slope. Retained limits, stated on the page: the RSS rise
+  is **not** attributed to a leak (bounded keyspace, connection churn per round, no
+  allocation tracing) and stays open for the soak work in `O9`; one development
+  host, Python generator, one worker, no TLS/persistence/controlled hardware
+  (`P2`, `P5`); minutes, not hours; and **no regression budget is accepted** —
+  that needs an owner-accepted SLO on controlled hardware, and
+  `docs/gate-scope.md` still records that no required context runs this harness.
+  Not claimed: multi-hour stability, leak freedom, or a CI performance budget.
 
 - [x] **P7. The competitor/version/client matrix is narrow.** [P1]
   **Complete (2026-11-27): the exercised version matrix and the client load model
