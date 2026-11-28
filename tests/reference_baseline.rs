@@ -1051,11 +1051,6 @@ fn run_extended_surface_corpus(client: &mut Client, suffix: &[u8]) {
     );
     assert_command(
         client,
-        &[b"HPEXPIRETIME", &hash, b"FIELDS", b"1", b"f"],
-        array(vec![Resp::Integer(0)]),
-    );
-    assert_command(
-        client,
         &[
             b"HPEXPIREAT",
             &hash,
@@ -1065,6 +1060,11 @@ fn run_extended_surface_corpus(client: &mut Client, suffix: &[u8]) {
             b"f",
         ],
         array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[b"HPEXPIRETIME", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(4_102_444_800_000)]),
     );
 
     let list = key(b"rillcache:baseline:ext-sort:", suffix);
