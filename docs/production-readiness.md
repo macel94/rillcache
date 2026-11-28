@@ -43,6 +43,11 @@ Each capability now lives in its own area file so a feature PR edits one gate:
 | Production evidence | [production-evidence.md](production-readiness/production-evidence.md) |
 | Command and subcommand differential matrix (C5) | [command-matrix.md](production-readiness/command-matrix.md) |
 
+The executable acceptance procedure, evidence record and outstanding signatures are
+in the [production acceptance runbook](production-readiness/acceptance-runbook.md)
+and [release acceptance](release-acceptance.md); a passing capability gate is not
+release acceptance.
+
 ## Incremental delivery order
 
 1. Explicit worker modes, local/GitHub correctness matrix and mode benchmarks (S11).
