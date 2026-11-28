@@ -19,6 +19,7 @@ project's front page.
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Handle a disk, memory, credential or journal incident | [Incident runbook](incident-runbook.md) |
 | Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
+| Check crash recovery across kill points, framings and filesystems | [Recovery matrix](recovery-matrix.md) |
 | See a representative mixed workload, separate from the merge gate | [Mixed workload report](mixed-workload.md) |
 | Check a repeated-round performance trend | [Performance trend](performance-trends.md) |
 | See how long O(N) commands hold the owner | [Owner work guidance](owner-work-guidance.md) |
