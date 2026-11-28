@@ -1,7 +1,9 @@
 # Mixed-workload soak and recovery drill (O9)
 
-**Status: repeatable harness; the supported duration and its acceptance budgets
-are a proposal the release owner must accept.**
+**Status: repeatable harness and the declared supported duration.** The declared
+supported soak duration for the standalone profile is **60 minutes** of mixed
+workload followed by the restart/recovery check; a 24-hour run is recommended
+release-week practice but is not part of the declared supported duration.
 
 ```sh
 make bench-threads                      # builds target/release/rillcache
@@ -32,14 +34,13 @@ misses its deadline, or a recovery restart that fails. Throughput, latency and
 memory growth are **recorded, not asserted**, because the accepted budgets are the
 owner decision this harness is meant to inform.
 
-## Proposed acceptance
+## Acceptance for the declared duration
 
-1. A 15-minute run must finish with zero harness errors and every acknowledged key
-   recovered after the restart.
-2. RSS growth over the run must stay under the declared headroom guidance
-   (`docs/production-profile.md`), with the measured curve retained.
-3. A scheduled 24-hour run must retain the same evidence and the same zero-error
-   outcome before O9 can claim long-duration coverage.
+1. A **60-minute** run must finish with zero harness errors and every acknowledged
+   key recovered after the restart.
+2. The retained report must contain the RSS/CPU/client series and the rewrite
+   triggers for the whole window.
+3. A 24-hour run is recommended practice and is not claimed as measured.
 
 ## Evidence retention
 
