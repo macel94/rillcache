@@ -760,10 +760,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
   migration, downgrade outside the pinned pair, or mixed-version replication.
 
-- [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
+- [x] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin
   test, fencing-token design or split-brain detection. The Kubernetes example is
   intentionally a single replica.
+  **Complete (2026-11-28) by the criterion's exclusion branch: multi-node topology is excluded by the declared profile, and the supported single-host failure runbooks are documented and executed.**
+  One process owns one host's data path, so node-loss promotion, partition/rejoin,
+  split-brain detection, fencing tokens, cross-node reconciliation and a
+  multi-node deployment guide have no in-profile meaning. `docs/unsupported.md`
+  records each excluded scenario with its reason and the supported substitute
+  (the [standalone incident runbook](standalone-incident-runbook.md), the executed
+  [incident drills](incident-runbook.md) via `scripts/incident_drills.py`, and
+  restore from independently maintained backups — never a promotion); the
+  production profile repeats the boundary. The exclusion is proven real and
+  fail-closed by `tests/failover_boundary.rs`
+  (`sentinel_and_promotion_entry_points_fail_closed`,
+  `a_dead_primary_is_not_promoted_and_its_address_stays_gone`),
+  `tests/replication_boundary.rs`
+  (`replication_entry_points_fail_closed_and_keep_the_standalone_state`,
+  `a_second_instance_cannot_attach_and_keeps_its_own_data`) and
+  `tests/unsupported_surface.rs` for the cluster surface. Not claimed: any
+  multi-node behaviour, promotion, quorum or reconciliation.
   **Closes when:** tested runbooks cover node loss, network partition, disk
   failure, promotion, client reconnect and data reconciliation.
 
