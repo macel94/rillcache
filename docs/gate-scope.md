@@ -38,8 +38,10 @@ column, or if this document claims a production pass.
 - It does not cover compatibility beyond the selected Tcl files, the differential
   corpus, the language-client matrix and the declared profile exclusions
   (`V2`, `C7`).
-- It does not prove durability: fsync policy behaviour, fault injection and recovery
-  bounds are covered by `D10`, the crash-recovery matrix and the drill jobs, not by
+- It does not prove durability: fsync-policy behaviour is measured by the
+  [durability performance profile](persistence-performance.md) (`D10`), and fault
+  injection, crash-recovery kill points and recovery bounds are covered by
+  [the crash-recovery matrix](recovery-matrix.md) (`D11`) and the drill jobs, not by
   the merge gate.
 - It does not exercise the non-default modes (TLS, persistence, Tokio, multi-owner)
   as production recommendations (`P5`, `R2`).

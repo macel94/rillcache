@@ -137,7 +137,14 @@ Coverage is machine-checked so the gap cannot hide:
 - `tests/documentation.rs::differential_corpus_coverage_is_machine_checked` runs
   the check and its negative controls in the required offline suite.
 
-Current accounting: 54 of 247 advertised names have at least one corpus
-assertion; 193 remain uncovered and are listed in the file. The criterion stays
+Current accounting: 201 of 247 advertised names have at least one corpus
+assertion; the remaining 46 are dispositioned explicitly in the committed file —
+18 excluded by the declared profile (scripting, replication/failover, cluster
+connection commands, RDB, multi-DB, MONITOR, shutdown), 3 published extensions
+absent from both references (`DIGEST`, `DELEX`, `DELIFEQ`) and 25
+nondeterministic/implementation-specific replies (random selection, clock,
+iteration order, allocator/encoding introspection, dynamic client state). A name
+without a disposition fails the check, and `--require-complete` fails while any
+disposition is still `pending`. The criterion stays
 open until that list is empty and reviewed, so coverage cannot be claimed from a
 green merge gate.
