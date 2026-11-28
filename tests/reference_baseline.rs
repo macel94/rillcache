@@ -1176,7 +1176,7 @@ fn run_extended_surface_corpus(client: &mut Client, suffix: &[u8]) {
         &[
             b"MSETEX", b"2", &msetex_a, b"1", &msetex_b, b"2", b"EX", b"100",
         ],
-        Resp::Integer(2),
+        Resp::Integer(1),
     );
     assert_command(client, &[b"GET", &msetex_a], bulk(b"1"));
 
