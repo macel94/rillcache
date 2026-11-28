@@ -15,13 +15,6 @@ use rillcache::protocol::{Limits, encode_request};
 use rillcache::server::IoMode;
 use rillcache::{Config, Server, ServerHandle};
 
-const MODES: [(Option<usize>, bool); 4] = [
-    (None, false),
-    (None, true),
-    (Some(1), false),
-    (Some(4), false),
-];
-
 /// Budget admission is dispatcher-level, not I/O-path-level: two wire modes
 /// plus the engine unit tests cover it. The slow-reader policy is I/O-path
 /// specific and keeps the full matrix below.
