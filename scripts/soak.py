@@ -121,7 +121,7 @@ def info(addr: str, section: str) -> dict[str, str]:
     for line in body.splitlines():
         if ":" in line and not line.startswith("#"):
             key, value = line.split(":", 1)
-            fields[key] = value
+            fields[key] = value.strip()
     return fields
 
 
@@ -151,11 +151,15 @@ def worker(addr: str, deadline: float, errors: list[str], counter: int) -> None:
             elif choice == "expire":
                 client.call(b"EXPIRE", key, b"5")
             elif choice == "lpush":
+                # Keep the list bounded: an unbounded push stream fills the disk
+                # (and the journal) instead of measuring steady state.
                 client.call(b"LPUSH", b"soak:list", key)
+                client.call(b"LTRIM", b"soak:list", b"0", b"63")
             elif choice == "lrange":
                 client.call(b"LRANGE", b"soak:list", b"0", b"9")
             elif choice == "hset":
-                client.call(b"HSET", b"soak:hash", key, b"v")
+                # Fixed field set keeps the hash bounded too.
+                client.call(b"HSET", b"soak:hash", f"f{index % 64}".encode(), b"v")
             else:
                 client.call(b"HGET", b"soak:hash", key)
         client.close()
