@@ -1,0 +1,308 @@
+{
+  "policies": [
+    {
+      "policy": "baseline",
+      "rewrite_reply": "(no journal)",
+      "runs": [
+        {
+          "workload": "set",
+          "run": 1,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.093270374,
+          "ops_per_second": 214430.36,
+          "batch_p50_us": 35.884,
+          "batch_p95_us": 45.167,
+          "batch_p99_us": 50.725,
+          "batch_max_us": 2689.58,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 2,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.093067892,
+          "ops_per_second": 214896.88,
+          "batch_p50_us": 35.601,
+          "batch_p95_us": 46.032,
+          "batch_p99_us": 51.32,
+          "batch_max_us": 821.824,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 3,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.094039537,
+          "ops_per_second": 212676.5,
+          "batch_p50_us": 36.083,
+          "batch_p95_us": 47.016,
+          "batch_p99_us": 52.996,
+          "batch_max_us": 1140.58,
+          "server_profile": null
+        }
+      ],
+      "throughput_median_ops": 214430.36,
+      "batch_p99_median_us": 51.32,
+      "ping_before": {
+        "samples": 200,
+        "p50_ms": 0.237,
+        "p99_ms": 0.55,
+        "max_ms": 0.554
+      },
+      "ping_during_rewrite": {
+        "samples": 200,
+        "p50_ms": 0.188,
+        "p99_ms": 0.557,
+        "max_ms": 0.567
+      },
+      "rewrite_pause_p99_ms": 0.557,
+      "contention_ratio_vs_baseline": "1.000"
+    },
+    {
+      "policy": "no",
+      "rewrite_reply": "+Background append only file rewriting started",
+      "runs": [
+        {
+          "workload": "set",
+          "run": 1,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.619290758,
+          "ops_per_second": 32295.01,
+          "batch_p50_us": 243.704,
+          "batch_p95_us": 290.444,
+          "batch_p99_us": 304.176,
+          "batch_max_us": 6697.128,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 2,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.6197311,
+          "ops_per_second": 32272.06,
+          "batch_p50_us": 245.002,
+          "batch_p95_us": 293.341,
+          "batch_p99_us": 307.918,
+          "batch_max_us": 7068.181,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 3,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.653808768,
+          "ops_per_second": 30589.98,
+          "batch_p50_us": 271.664,
+          "batch_p95_us": 299.348,
+          "batch_p99_us": 312.618,
+          "batch_max_us": 4751.162,
+          "server_profile": null
+        }
+      ],
+      "throughput_median_ops": 32272.06,
+      "batch_p99_median_us": 307.918,
+      "ping_before": {
+        "samples": 200,
+        "p50_ms": 0.215,
+        "p99_ms": 0.548,
+        "max_ms": 0.575
+      },
+      "ping_during_rewrite": {
+        "samples": 200,
+        "p50_ms": 0.208,
+        "p99_ms": 0.578,
+        "max_ms": 0.586
+      },
+      "rewrite_pause_p99_ms": 0.578,
+      "contention_ratio_vs_baseline": "0.151"
+    },
+    {
+      "policy": "everysec",
+      "rewrite_reply": "+Background append only file rewriting started",
+      "runs": [
+        {
+          "workload": "set",
+          "run": 1,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.605835675,
+          "ops_per_second": 33012.25,
+          "batch_p50_us": 239.51,
+          "batch_p95_us": 291.348,
+          "batch_p99_us": 307.004,
+          "batch_max_us": 9325.678,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 2,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.643996897,
+          "ops_per_second": 31056.05,
+          "batch_p50_us": 263.862,
+          "batch_p95_us": 298.039,
+          "batch_p99_us": 313.653,
+          "batch_max_us": 6857.776,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 3,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 0.636130403,
+          "ops_per_second": 31440.09,
+          "batch_p50_us": 268.605,
+          "batch_p95_us": 299.923,
+          "batch_p99_us": 315.57,
+          "batch_max_us": 4143.875,
+          "server_profile": null
+        }
+      ],
+      "throughput_median_ops": 31440.09,
+      "batch_p99_median_us": 313.653,
+      "ping_before": {
+        "samples": 200,
+        "p50_ms": 0.254,
+        "p99_ms": 0.615,
+        "max_ms": 0.619
+      },
+      "ping_during_rewrite": {
+        "samples": 200,
+        "p50_ms": 0.082,
+        "p99_ms": 0.544,
+        "max_ms": 0.571
+      },
+      "rewrite_pause_p99_ms": 0.544,
+      "contention_ratio_vs_baseline": "0.147"
+    },
+    {
+      "policy": "always",
+      "rewrite_reply": "+Background append only file rewriting started",
+      "runs": [
+        {
+          "workload": "set",
+          "run": 1,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 2.622006543,
+          "ops_per_second": 7627.75,
+          "batch_p50_us": 1044.185,
+          "batch_p95_us": 1184.675,
+          "batch_p99_us": 1283.775,
+          "batch_max_us": 34007.735,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 2,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 3.087545549,
+          "ops_per_second": 6477.64,
+          "batch_p50_us": 1193.63,
+          "batch_p95_us": 1581.264,
+          "batch_p99_us": 1692.936,
+          "batch_max_us": 31409.692,
+          "server_profile": null
+        },
+        {
+          "workload": "set",
+          "run": 3,
+          "requests": 20000,
+          "clients": 8,
+          "pipeline": 1,
+          "keyspace": 1024,
+          "value_size": 64,
+          "warmup_per_client": 1000,
+          "batches": 20000,
+          "elapsed_seconds": 2.663266773,
+          "ops_per_second": 7509.57,
+          "batch_p50_us": 1060.834,
+          "batch_p95_us": 1217.834,
+          "batch_p99_us": 1396.206,
+          "batch_max_us": 36105.93,
+          "server_profile": null
+        }
+      ],
+      "throughput_median_ops": 7509.57,
+      "batch_p99_median_us": 1396.206,
+      "ping_before": {
+        "samples": 200,
+        "p50_ms": 0.26,
+        "p99_ms": 0.621,
+        "max_ms": 0.676
+      },
+      "ping_during_rewrite": {
+        "samples": 200,
+        "p50_ms": 0.088,
+        "p99_ms": 0.496,
+        "max_ms": 0.597
+      },
+      "rewrite_pause_p99_ms": 0.496,
+      "contention_ratio_vs_baseline": "0.035"
+    }
+  ]
+}

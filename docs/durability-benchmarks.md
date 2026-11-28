@@ -61,6 +61,36 @@ the release owner:
 The harness records the measured ratios either way; it does not fail on them,
 because the ratios are the SLO that has not been accepted yet.
 
+## Measured result (2026-11-28, hosted shared runner)
+
+Run `46135095874` on commit `127253a9` (scheduled benchmark runner, 2 vCPU, 8
+clients, 20,000 `set` requests per run, 3 runs, ext4 on the runner disk). Raw
+records: [`benchmark-reports/durability-2026-11-28-hosted.json`](benchmark-reports/durability-2026-11-28-hosted.json).
+
+| Policy | Throughput median req/s | vs AOF-off | batch p99 median us | PING p99 during rewrite ms |
+| --- | ---: | ---: | ---: | ---: |
+| AOF off (baseline) | 214430.36 | 1.000 | 51.32 | 0.557 |
+| `no` | 32272.06 | 0.151 | 307.918 | 0.578 |
+| `everysec` | 31440.09 | 0.147 | 313.653 | 0.544 |
+| `always` | 7509.57 | 0.035 | 1396.206 | 0.496 |
+
+What this measures and what it does not:
+
+- The exclusive persistence gate costs ~85% of AOF-off throughput for `no` and
+  `everysec`, and ~96% for `always`, on this runner and workload. That is the
+  measured cost of the current design, not a target.
+- The client-observed `PING` p99 while the journal rewrites stays far inside the
+  one explicitly accepted bound in [persistence performance](persistence-performance.md)
+  (rewrite start pause <= 1 s), but at 20,000 keys, not at the million-key ceiling
+  measured there.
+- The proposed budgets above (90%/75%/40%) are **not met** by this run. They were
+  a proposal; the data rejects them as realistic for this design, and they are not
+  claimed as accepted.
+- No throughput or latency SLO for the persistence path is accepted anywhere in
+  the repository; `docs/persistence-performance.md` says so explicitly and keeps
+  R6 open. Deciding the acceptable persistence cost (or choosing the
+  concurrent/ordered design instead) is the release owner's decision.
+
 ## Evidence retention
 
 `target/benchmarks/durability.json` (raw records) and `durability.md` (summary
