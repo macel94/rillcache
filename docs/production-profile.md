@@ -692,6 +692,28 @@ references, so an excluded capability cannot silently start succeeding.
 - Any durability RPO/RTO, independent security review, true RSS enforcement,
   cross-process observability or production SLO (D1–D11, S1–S9, O1–O9).
 
+## Non-production experiment modes
+
+The protected merge gates measure **one** configuration: default plain TCP, default
+Mio/fixed-worker execution, no persistence, no TLS, one owner, the default
+in-process container build. Everything else is either supported-but-ungated or an
+explicit experiment, and none of it may be selected for a production claim:
+
+| Mode | Selection | Status today |
+| --- | --- | --- |
+| TLS listener | `--tls-bind`, `--tls-cert-file`, `--tls-key-file` | Supported for connectivity, **no regression budget and no gate**: latency and throughput under TLS are unmeasured. |
+| Journal persistence under load | `--appendonly yes` with any `--appendfsync` | Supported for durability, **no performance gate**: fsync-policy throughput and tails are tracked by `D10`, not measured by a merge gate. |
+| Async transport | `--io-mode tokio` | **Opt-in experiment outside this profile** (R2 review record): the default paths are supported; async results never substitute for them. |
+| Multi-owner data path | `--storage-owners N` (2..=64) | **Opt-in experiment**: its own measurements are below the one-owner path at pipeline 16 on the test host and no gate covers it (`R1`). |
+| Fixed-worker policy | `--threads N` | Supported tradeoff documented in `R3`, **no latency SLO and no gate**. |
+| Container/Compose/Kubernetes deployment | shipped manifests | Deployment artifacts only; the protected gates run the bare binary, so image-specific performance is unmeasured (`L6`, `P5`). |
+
+`docs/gate-scope.md` records that the fourteen required contexts cover only the
+default configuration, and `tests/declared_modes.rs` fails if this table, the gate
+scope or the checklist drift apart. Adding a regression budget for any row above
+means adding the matching required evidence, not editing this table to say
+"measured".
+
 ## O(N) commands and the latency contract
 
 The single owner executes one command at a time and there is **no per-command
