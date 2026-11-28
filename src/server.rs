@@ -234,6 +234,16 @@ pub struct Config {
     pub shutdown_deadline: Duration,
     /// Monotonic deadline for assembling an incomplete plaintext request; None disables it.
     pub frame_assembly_timeout: Option<Duration>,
+    /// Deadline for a connection whose pending reply bytes make no write
+    /// progress. It is independent of `idle_timeout` so operators can keep
+    /// long-lived idle clients while still shedding non-reading writers; the
+    /// shorter of the two deadlines applies. None disables the separate stall
+    /// deadline (the idle timeout still closes the socket).
+    pub write_stall_timeout: Option<Duration>,
+    /// Fixed-window process-wide command budget in commands per second; 0 off.
+    pub global_command_budget: u32,
+    /// Fixed-window per-authenticated-user command budget per second; 0 off.
+    pub user_command_budget: u32,
     /// Default-user password. `None` or empty disables authentication.
     /// Never include this value in Debug output or logs.
     pub requirepass: Option<Vec<u8>>,
@@ -328,6 +338,9 @@ impl std::fmt::Debug for Config {
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
             .field("frame_assembly_timeout", &self.frame_assembly_timeout)
+            .field("write_stall_timeout", &self.write_stall_timeout)
+            .field("global_command_budget", &self.global_command_budget)
+            .field("user_command_budget", &self.user_command_budget)
             .field(
                 "requirepass",
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
@@ -393,6 +406,9 @@ impl Default for Config {
             idle_timeout: Duration::from_secs(30),
             shutdown_deadline: Duration::from_secs(25),
             frame_assembly_timeout: Some(Duration::from_secs(60)),
+            write_stall_timeout: Some(Duration::from_secs(30)),
+            global_command_budget: 0,
+            user_command_budget: 0,
             requirepass: None,
             requirepass_file: None,
             secure_secret_files: false,
@@ -470,6 +486,11 @@ impl Config {
             || self
                 .frame_assembly_timeout
                 .is_some_and(|timeout| timeout.is_zero() || timeout > Duration::from_secs(600))
+            || self
+                .write_stall_timeout
+                .is_some_and(|timeout| timeout.is_zero() || timeout > Duration::from_secs(600))
+            || self.global_command_budget > 1_000_000
+            || self.user_command_budget > 1_000_000
             || self
                 .requirepass
                 .as_ref()
@@ -863,6 +884,7 @@ impl Server {
         );
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
+        store.set_command_budget(config.global_command_budget, config.user_command_budget);
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let (tls_listener, tls_acceptor) = match config.tls_bind_addr {
@@ -883,6 +905,7 @@ impl Server {
                     services: store.services_handle(),
                     handshake_timeout: config.tls_handshake_timeout,
                     idle_timeout: config.idle_timeout,
+                    write_stall_timeout: config.write_stall_timeout,
                 })?;
                 let listener = TcpListener::bind(addr)?;
                 listener.set_nonblocking(true)?;
@@ -1126,7 +1149,11 @@ fn serve_plain(
             stream.set_nodelay(true)?;
             store.record_connection();
             stream.set_read_timeout(Some(config.idle_timeout))?;
-            stream.set_write_timeout(Some(config.idle_timeout))?;
+            stream.set_write_timeout(Some(
+                config
+                    .write_stall_timeout
+                    .map_or(config.idle_timeout, |stall| stall.min(config.idle_timeout)),
+            ))?;
             if store.connected_clients() >= store.max_clients() {
                 store.record_rejected_connection();
                 let _ = (&stream).write_all(b"-ERR max number of clients reached\r\n");
@@ -1431,7 +1458,7 @@ fn serve_client(
             while pushed < 64 {
                 match receiver.try_recv() {
                     Ok(frame) => {
-                        stream.write_all(&frame)?;
+                        stream.write_all_bounded(&frame)?;
                         pushed += 1;
                     }
                     Err(_) => break,
@@ -1442,7 +1469,7 @@ fn serve_client(
                     output.extend_from_slice(&reply);
                 }
                 if !output.is_empty() {
-                    stream.write_all(&output)?;
+                    stream.write_all_bounded(&output)?;
                     output.clear();
                 }
                 if session.is_blocked() {
@@ -1469,7 +1496,7 @@ fn serve_client(
                 if let Some((reply, action)) = session.poll_paused(store) {
                     output.extend_from_slice(&reply);
                     if !output.is_empty() {
-                        stream.write_all(&output)?;
+                        stream.write_all_bounded(&output)?;
                         output.clear();
                     }
                     if action == Action::Close {
@@ -1510,14 +1537,14 @@ fn serve_client(
                     Ok(None) => break,
                     Err(error) => {
                         write!(output, "-ERR Protocol error: {error}\r\n")?;
-                        stream.write_all(&output)?;
+                        stream.write_all_bounded(&output)?;
                         return Ok(());
                     }
                 };
                 consumed += used;
                 commands += 1;
                 if output.len() >= 64 * 1024 || action == Action::Close {
-                    stream.write_all(&output)?;
+                    stream.write_all_bounded(&output)?;
                     output.clear();
                     if action != Action::Close && policy.yield_reply(commands, permit) {
                         thread::yield_now();
@@ -1554,7 +1581,7 @@ fn serve_client(
                 frame_deadline.deadline(context.frame_assembly_timeout),
             );
             if !output.is_empty() {
-                stream.write_all(&output)?;
+                stream.write_all_bounded(&output)?;
                 output.clear();
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
                     // Several clients can form a busy burst even when each
@@ -1600,7 +1627,8 @@ fn serve_client(
                 subscriber_timeout = polling;
             }
             if room == 0 {
-                stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
+                stream
+                    .write_all_bounded(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
                 return Ok(());
             }
             let desired_read_timeout = if polling {
@@ -1617,7 +1645,9 @@ fn serve_client(
             match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
                     if !input.is_empty() && !context.stopping.load(Ordering::Acquire) {
-                        stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
+                        stream.write_all_bounded(
+                            b"-ERR Protocol error: unexpected end of stream\r\n",
+                        )?;
                     }
                     return Ok(());
                 }

@@ -30,6 +30,7 @@ project's front page.
 - [Docker, Compose and Kubernetes](containers.md): images, resource isolation, networking and lifecycle.
 - [Startup configuration](configuration.md): CLI flags and the bounded `--config` startup file.
 - [Security](security.md) and [TLS](tls.md): passwords, ACLs, audit tooling and encrypted listeners.
+- [Overload and slow-reader policy](overload-policy.md): enforced thresholds and what clients see when they cross one.
 - [Security threat model](security/threat-model.md) and the [independent review scope](security/independent-review.md): scoped threats, findings, retest evidence and the sign-off registry for the draft profile.
 - [Persistence](persistence.md): the optional journal, replay, compaction and durability boundaries.
 - [Eviction](eviction.md): payload budgets and memory policies.

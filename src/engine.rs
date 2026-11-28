@@ -245,6 +245,7 @@ pub struct Stats {
     pub pubsub_channels: usize,
     pub pubsub_patterns: usize,
     pub pubsub_queue_full_drops: u64,
+    pub command_budget_rejections: u64,
     pub audit_log_write_failures: u64,
     pub audit_syslog_write_failures: u64,
 }
@@ -294,7 +295,28 @@ pub(crate) struct Observers {
     pub commandstats: bool,
     pub paused: bool,
     pub monitor: bool,
+    pub budget: bool,
 }
+
+/// Result of one fixed-window command-budget admission check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommandAdmission {
+    Allowed,
+    GlobalExceeded,
+    UserExceeded,
+}
+
+/// One fixed wall-clock second of admitted commands. The per-user map is capped;
+/// identities beyond the cap still pay the global budget, so admission cannot
+/// grow memory without limit.
+#[derive(Default)]
+struct CommandBudgetWindow {
+    second: i64,
+    global: u32,
+    users: std::collections::BTreeMap<Vec<u8>, u32>,
+}
+
+const COMMAND_BUDGET_USER_CAP: usize = 1024;
 
 pub struct ServerServices {
     #[cfg(test)]
@@ -341,6 +363,11 @@ pub struct ServerServices {
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: [CommandCounter; COMMAND_COUNTER_SHARDS],
     rejected_connections: std::sync::atomic::AtomicU64,
+    /// Packed per-second command admission budgets (high half global, low half
+    /// per-user); zero disables the window entirely with one relaxed load.
+    command_budget: std::sync::atomic::AtomicU64,
+    command_budget_window: std::sync::Mutex<CommandBudgetWindow>,
+    command_budget_rejections: std::sync::atomic::AtomicU64,
     slowlog: std::sync::RwLock<std::collections::VecDeque<slowlog::SlowlogEntry>>,
     slowlog_next_id: std::sync::atomic::AtomicU64,
     slowlog_threshold_us: std::sync::atomic::AtomicI64,
@@ -471,6 +498,9 @@ impl ServerServices {
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::array::from_fn(|_| CommandCounter::default()),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
+            command_budget: std::sync::atomic::AtomicU64::new(0),
+            command_budget_window: std::sync::Mutex::new(CommandBudgetWindow::default()),
+            command_budget_rejections: std::sync::atomic::AtomicU64::new(0),
             slowlog: std::sync::RwLock::new(std::collections::VecDeque::new()),
             slowlog_next_id: std::sync::atomic::AtomicU64::new(0),
             slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
@@ -518,6 +548,18 @@ impl ServerServices {
     /// The atomic fast path keeps the common benchmark path lock-free.
     const SECURITY_AUTH_REQUIRED: u32 = 1;
     const SECURITY_ACL_RESTRICTED: u32 = 2;
+    const SECURITY_COMMAND_BUDGET: u32 = 4;
+
+    /// One masked load for the hottest command: no authentication, no ACL
+    /// restriction and no command budget. Cheaper than materializing the
+    /// authorization tuple on every PING.
+    pub(crate) fn hot_path_clear(&self) -> bool {
+        self.security_word.load(Ordering::Acquire)
+            & (Self::SECURITY_AUTH_REQUIRED
+                | Self::SECURITY_ACL_RESTRICTED
+                | Self::SECURITY_COMMAND_BUDGET)
+            == 0
+    }
 
     /// Authorization state in one load: required authentication and whether any
     /// user/rule restriction exists.
@@ -719,6 +761,77 @@ impl ServerServices {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Install the startup fixed-window command budgets (commands per second).
+    /// A zero limit leaves that dimension unlimited; both zero disable accounting.
+    pub fn set_command_budget(&self, global: u32, per_user: u32) {
+        self.command_budget.store(
+            (u64::from(global) << 32) | u64::from(per_user),
+            Ordering::Relaxed,
+        );
+        if let Ok(mut window) = self.command_budget_window.lock() {
+            *window = CommandBudgetWindow::default();
+        }
+        if global != 0 || per_user != 0 {
+            self.security_word
+                .fetch_or(Self::SECURITY_COMMAND_BUDGET, Ordering::Release);
+        } else {
+            self.security_word
+                .fetch_and(!Self::SECURITY_COMMAND_BUDGET, Ordering::Release);
+        }
+        self.refresh_observers();
+    }
+
+    pub fn record_command_budget_rejection(&self) {
+        self.command_budget_rejections
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Fixed one-second window admission. The disabled path is one relaxed load
+    /// and no lock; it never reads the wall clock.
+    pub(crate) fn admit_command(&self, user: Option<&[u8]>) -> CommandAdmission {
+        let budget = self.command_budget.load(Ordering::Relaxed);
+        if budget == 0 {
+            return CommandAdmission::Allowed;
+        }
+        let global_limit = (budget >> 32) as u32;
+        let user_limit = budget as u32;
+        if global_limit == 0 && user_limit == 0 {
+            return CommandAdmission::Allowed;
+        }
+        let second = self.clock.now_ms().div_euclid(1000);
+        let mut window = self
+            .command_budget_window
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if window.second != second {
+            window.second = second;
+            window.global = 0;
+            window.users.clear();
+        }
+        if user_limit > 0 {
+            let name = user.unwrap_or(b"default");
+            let used = window.users.get(name).copied().unwrap_or(0);
+            if used >= user_limit {
+                return CommandAdmission::UserExceeded;
+            }
+        }
+        if global_limit > 0 && window.global >= global_limit {
+            return CommandAdmission::GlobalExceeded;
+        }
+        if global_limit > 0 {
+            window.global = window.global.saturating_add(1);
+        }
+        if user_limit > 0 {
+            let name = user.unwrap_or(b"default");
+            if let Some(used) = window.users.get_mut(name) {
+                *used = used.saturating_add(1);
+            } else if window.users.len() < COMMAND_BUDGET_USER_CAP {
+                window.users.insert(name.to_vec(), 1);
+            }
+        }
+        CommandAdmission::Allowed
+    }
+
     pub fn record_command(&self, client_id: u64) {
         let shard = (client_id as usize) % COMMAND_COUNTER_SHARDS;
         self.commands_processed[shard]
@@ -768,6 +881,7 @@ impl ServerServices {
     const OBSERVER_COMMANDSTATS: u32 = 4;
     const OBSERVER_PAUSED: u32 = 8;
     const OBSERVER_MONITOR: u32 = 16;
+    const OBSERVER_BUDGET: u32 = 32;
 
     /// All observation collectors in one load.
     pub(crate) fn observers(&self) -> Observers {
@@ -778,6 +892,7 @@ impl ServerServices {
             commandstats: word & Self::OBSERVER_COMMANDSTATS != 0,
             paused: word & Self::OBSERVER_PAUSED != 0,
             monitor: word & Self::OBSERVER_MONITOR != 0,
+            budget: word & Self::OBSERVER_BUDGET != 0,
         }
     }
 
@@ -803,6 +918,9 @@ impl ServerServices {
         }
         if self.monitor_count.load(Ordering::Relaxed) != 0 {
             word |= Self::OBSERVER_MONITOR;
+        }
+        if self.command_budget.load(Ordering::Relaxed) != 0 {
+            word |= Self::OBSERVER_BUDGET;
         }
         self.observer_word.store(word, Ordering::Relaxed);
     }
@@ -938,6 +1056,7 @@ impl ServerServices {
                 .map(|counter| counter.0.load(Ordering::Relaxed))
                 .sum(),
             rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
+            command_budget_rejections: self.command_budget_rejections.load(Ordering::Relaxed),
             expired_keys,
             expired_subkeys,
             evicted_keys,
@@ -1560,6 +1679,7 @@ impl ShardExecutor {
             counter.0.store(0, Ordering::Relaxed);
         }
         self.rejected_connections.store(0, Ordering::Relaxed);
+        self.command_budget_rejections.store(0, Ordering::Relaxed);
         self.reset_command_statistics();
         self.data.try_borrow_mut().is_ok_and(|mut data| {
             data.expired_keys = 0;
@@ -1628,6 +1748,9 @@ fn wrong_type(output: &mut Vec<u8>) {
     );
 }
 
+#[cfg(test)]
+#[path = "engine/admission_tests.rs"]
+mod admission_tests;
 #[cfg(test)]
 #[path = "engine/command_counter_tests.rs"]
 mod command_counter_tests;
