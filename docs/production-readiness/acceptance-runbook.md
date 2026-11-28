@@ -80,3 +80,15 @@ exclusion needs the responsible review and a decision in the
 [canonical checklist](../production-readiness-gaps.md); this runbook is not an
 exclusion mechanism. Record the decision to promote or stop with the evidence;
 this runbook has not yet been executed for a production release candidate.
+
+## Sign-off registry and outstanding signatures
+
+`docs/release-acceptance.md` defines the acceptance scopes and the review
+protocol. Each accepted scope is a row in `docs/acceptance/signoffs.tsv` with the
+reviewer, reviewer kind, evidence, the reviewer's own review-scope statement and
+the findings it closes; `docs/acceptance/findings.tsv` records findings with
+disposition and retest evidence. Run `make acceptance-check` (or
+`python3 scripts/check_acceptance.py`) before a release and
+`python3 scripts/check_acceptance.py --require-all` as the release gate. The
+`--outstanding` report names the signatures that are still missing, which is the
+residual external dependency, not an acceptance claim.

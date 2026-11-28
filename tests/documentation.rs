@@ -213,7 +213,8 @@ fn production_acceptance_registry_is_machine_checked() {
         .expect("acceptance registry");
     let header = registry.lines().next().unwrap_or_default();
     assert_eq!(
-        header, "candidate\tscope\treviewer\treviewer_kind\tevidence\tsigned_at\tstate",
+        header,
+        "candidate\tscope\treviewer\treviewer_kind\tevidence\treview_scope\tfindings\tsigned_at\tstate",
         "registry header changed"
     );
     for scope in ["profile", "security", "performance", "recovery", "release"] {
