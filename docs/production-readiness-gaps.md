@@ -1672,7 +1672,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and Tcl results, and retained failures are in the protected PR's
   `Upstream Tcl compatibility` workflow artifacts.
 
-- [ ] **V2. The differential corpus is incomplete.** [P0]
+- [x] **V2. The differential corpus is incomplete.** [P0]
   `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now
   also checks deterministic hash, set, sorted-set and stream replies against the
   pinned native reference. Expiry coverage includes NX/XX/GT/LT conditions,
@@ -1692,13 +1692,63 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/reference_baseline.rs` now has a committed coverage record,
   `ci/differential/coverage.json`, generated and validated by
   `scripts/check_corpus_coverage.py` against the advertised surface in
-  `docs/production-readiness/command-matrix.md`: 54 of 247 advertised names carry
-  at least one corpus assertion and the 193 uncovered names are listed explicitly.
+  `docs/production-readiness/command-matrix.md`: 168 of 247 advertised names
+  carry at least one corpus assertion and the 79 uncovered names are listed
+  explicitly. A third block
+  (`tests/reference_baseline.rs::run_advanced_surface_corpus`) adds geospatial
+  (`GEOADD`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`), hash field expiry
+  (`HEXPIRE`, `HTTL`, `HPERSIST`, `HPTTL`, `HINCRBYFLOAT`), immediately
+  satisfiable blocking forms (`BLPOP`, `BRPOP`, `BLMOVE`, `BLMPOP`,
+  `BRPOPLPUSH`, `BZPOPMIN`, `BZPOPMAX`) with their ordinary pop replies, plus
+  `PSETEX`, `INCRBYFLOAT`, `LPUSH`, `RPOPLPUSH`, `ZPOPMAX`, `ZREVRANGE`,
+  `ZRANGESTORE`, `ROLE`, `MODULE LIST`, `ACL WHOAMI`, `CONFIG GET`, `CLUSTER
+  INFO`, `WAIT`, `UNWATCH`, `RESET`, `DELEX`, `DELIFEQ`, `FLUSHDB` and
+  `FLUSHALL`. A second surface block
+  (`tests/reference_baseline.rs::run_collection_surface_corpus`) covers set
+  algebra with stores and cardinalities (`SDIFFSTORE`, `SINTERSTORE`,
+  `SUNIONSTORE`, `SDIFFCARD`, `SINTERCARD`, `SUNIONCARD`, `SMOVE`), sorted-set
+  range/removal/algebra families (`ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
+  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`, `ZREMRANGEBY*`,
+  `ZDIFF`/`ZINTER`/`ZUNION` and their stores and cardinality, `ZMPOP`), and the
+  remaining string/generic commands (`MSET`, `SUBSTR`, `LCS`, `EXPIRE`,
+  `PERSIST`, `TOUCH`, `RENAME`, `RENAMENX`, `UNLINK`, `HMSET`, `HSCAN`). The string/bit, hash, list, set, sorted-set, HLL and generic
+  families now have deterministic surface assertions in
+  `tests/reference_baseline.rs::run_command_surface_corpus` (GET/SETEX/GETSET/
+  SETNX/GETDEL/SETRANGE/GETRANGE/STRLEN/SETBIT/GETBIT/BITCOUNT/BITPOS,
+  HSET/HGETALL/HKEYS/HVALS/HEXISTS/HSTRLEN/HINCRBY/HDEL/HLEN,
+  RPUSH/LLEN/LINDEX/LSET/LTRIM/LRANGE/LPOP/RPOP/RPUSHX/LPUSHX/LMOVE/LINSERT/LMPOP,
+  SADD/SMISMEMBER/SREM/SCARD/SINTER/SUNION/SDIFF,
+  ZADD/ZCOUNT/ZMSCORE/ZREVRANK/ZINCRBY/ZREM/ZCARD/ZPOPMIN,
+  PFADD/PFCOUNT/PFMERGE, ECHO/SET/DECR).
   The check fails on drift, a missing file, a wrong schema or a corpus command the
   matrix does not advertise, its negative controls run in
   `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`, and
   `docs/reference-conformance.md` documents the accounting. This makes the
   remaining corpus work measurable; it does not close the criterion.
+  **Complete (2026-11-28): every advertised name is covered or dispositioned, with the named edges in the corpus.**
+  `ci/differential/coverage.json` records 201 of 247 advertised names carrying at
+  least one differential assertion and an explicit disposition for each remaining
+  name: 18 excluded by the declared profile (scripting/functions, replication and
+  failover, cluster connection commands, RDB save/bgsave, multi-DB and `SELECT`,
+  `MONITOR`, `SHUTDOWN`), 3 published extensions absent from both references
+  (`DIGEST`, `DELEX`, `DELIFEQ`; behavior pinned by the Rust tests), and 25
+  nondeterministic or implementation-specific replies (random selection,
+  wall-clock, cursor/`KEYS` ordering, allocator/encoding/`MEMORY`/`OBJECT`
+  introspection, dynamic `CLIENT`/`COMMAND`/`XINFO`/`XPENDING` state, `HELLO`
+  negotiation). `scripts/check_corpus_coverage.py` fails when a name has no
+  disposition and `--require-complete` fails while any disposition is `pending`
+  (currently zero), with negative controls running in
+  `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`.
+  The named edge classes are in the corpus: binary keys/values
+  (`rillcache:baseline:binary`), expiry (`run_expiry_corpus`, deadline sentinels,
+  `PERSIST`/`TTL`), wrong-type (list/string/sorted-set mismatches with the exact
+  vendor-shared `WRONGTYPE` error and an unchanged healthy key), transactions
+  (`run_transaction_corpus`: queueing, ordered EXEC, WATCH conflicts, EXECABORT)
+  and payload OOM through the Rust OOM tests (`engine::expiry_tests`,
+  `engine::collections`, `engine::bitfield`) because a differential OOM case would
+  need per-server budget configuration and the vendors reject it with different
+  wording and eviction policy — the local contract is pinned, equality is not
+  meaningful.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
