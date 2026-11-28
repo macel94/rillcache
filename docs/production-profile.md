@@ -183,6 +183,42 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Admission and quota policy
+
+Admission is explicit, observable and deliberately incomplete for sharing:
+
+- **Global:** `--max-clients` bounds every admitted connection, authenticated or
+  not (default 128); the next connection receives `ERR max number of clients
+  reached` and is closed. `--max-data-bytes` bounds logical payload,
+  `--max-bulk-bytes`/`--max-frame-bytes` bound requests, and `MGET` replies are
+  capped at 2 MiB.
+- **Per authenticated user:** an ACL `maxconnections=N` rule caps concurrent
+  sessions for that user; admission and release are atomic, and the over-limit
+  attempt receives `ERR max connections reached for user`.
+- **Authentication budgets:** `--auth-failure-limit` closes a connection after
+  consecutive failures, and the opt-in per-source/global budgets lock out a peer
+  or the process for the configured window.
+- **Unauthenticated sessions:** they are admitted and count against
+  `--max-clients` exactly like authenticated ones; there is **no separate
+  unauthenticated cap**. Such a session may only run the auth-exempt commands
+  (`AUTH`, `HELLO`, `QUIT`, `RESET`); anything else returns `NOAUTH
+  Authentication required.` and a failed AUTH budget closes it.
+- **Observability:** `INFO clients` reports `connected_clients`,
+  `blocked_clients`, `maxclients` and the configured auth limits; `INFO stats`
+  reports `rejected_connections`.
+
+Absent by design: per-user command or memory quotas, CPU fairness, slow-client
+share and per-tenant quotas. Admission is per process, so shared or multi-tenant
+deployments must add an external limiter (see the tenant and rate-limit
+boundaries). A single admitted user can therefore consume its share of owner CPU
+and the global payload budget.
+
+`tests/admission_policy.rs` pins the boundaries: unauthenticated sessions are
+admitted, receive `NOAUTH` for data commands, and are refused beyond
+`max_clients` with the global refusal; releasing a session frees the slot; and an
+ACL `maxconnections=1` user is refused a second concurrent session with the
+per-user error until the first disconnects. `INFO clients` exposes the limits.
+
 ## Fixed-worker scheduling and latency
 
 The default Unix mode is readiness-based (Mio, owner-local reactor). Opting into

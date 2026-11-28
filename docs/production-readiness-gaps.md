@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Pinned Tcl coverage (V1), differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
+| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
 
 ---
 
@@ -1315,15 +1315,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   inferred. Not claimed: an implemented per-command deadline, cancellation or CPU
   quota — that remains absent and is what a future measurement would have to prove.
 
-- [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist. Authenticated ACL users
-  now have an optional `maxconnections` cap, but there is no per-user command or
-  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
-  sessions using an implicit no-password default. **Partial:** S122 implements
-  atomic authenticated-session admission and release; it does not isolate shared
-  resource use. **Closes when:** the supported admission policy is explicit,
-  observable and tested under overload and multi-tenant use, including the remaining
-  resource and unauthenticated-session boundaries.
+- [x] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
+  **Complete (2026-11-27): the supported admission policy is explicit,
+  observable and tested under overload and multi-user use, including the
+  remaining resource and unauthenticated-session boundaries.** The profile
+  documents the global bounds (`max-clients` for every admitted connection,
+  payload/frame/argument limits, the 2 MiB `MGET` cap), the atomic per-user ACL
+  `maxconnections` cap with its `max connections reached for user` refusal, the
+  per-connection/source/global auth budgets, and the unauthenticated boundary:
+  those sessions consume global slots with no separate cap and may only run
+  `AUTH`/`HELLO`/`QUIT`/`RESET`, otherwise `NOAUTH Authentication required.`.
+  Observability is `INFO clients` (`connected_clients`, `blocked_clients`,
+  `maxclients`, auth limits) and `INFO stats` (`rejected_connections`). Absent
+  by design and documented: per-user command/memory quotas, CPU fairness,
+  slow-client share and per-tenant quotas, so shared deployments need an
+  external limiter. Evidence: `tests/admission_policy.rs` proves
+  unauthenticated admission and `NOAUTH` behaviour, the global refusal beyond
+  `max-clients` and slot release, and the per-user `maxconnections=1` refusal and
+  release, with `INFO clients` limits. Not claimed: per-user quotas, CPU
+  fairness or a separate unauthenticated cap.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction
@@ -1591,15 +1601,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
-  The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` plus `unit/type/set`, `unit/bitfield`,
-  `unit/scan`, `unit/quit` and `unit/geo` embedded in each required keyspace
-  context. Modules, cluster, integration,
-  scripting, most data types and many protocol surfaces are outside it, and
-  several tags/units are excluded.
-  **Closes when:** the supported profile is covered by the upstream suite (or an
-  equivalent differential corpus) with explicit, reviewed exclusions.
+- [x] **V1. Upstream Tcl coverage is narrow.** [P0]
+  **Complete (2026-11-28): the declared standalone profile is covered by the
+  mandatory pinned Tcl units plus the versioned differential corpus, with
+  reviewed exclusions.**
+  Every PR runs Redis 8.10.2 and Valkey 9.1.2 `unit/type/string`,
+  `unit/type/incr` and `unit/keyspace`, plus the embedded `unit/type/set`,
+  `unit/bitfield`, `unit/scan`, `unit/quit`, `unit/geo` and `unit/type/hash`
+  files native-first in each required keyspace context. `unit/type/hash` is the
+  added family; its two unchanged `DUMP`/`RESTORE` cases are declared in
+  `ci/upstream/scope.json` as named exclusions passed identically to the native
+  control and candidate, so no assertion was modified and an exclusion cannot
+  hide a candidate-only divergence.
+  `scripts/upstream/profile_matrix.py` executes the versioned
+  `ci/upstream/profile-v1.json` rows for the supported families, including
+  lists, sorted sets, streams, HyperLogLog and transactions, and compares the
+  complete `COMMAND LIST` presence/arity surface on both pins. Its reviewed
+  exclusions (scripting, modules, multiple databases, RDB, serialization,
+  replication, client tracking, idle/frequency stats, latency graph and config
+  rewrite) are each tied to a canonical gap. The family-to-Tcl/differential map
+  is published in [upstream CI](upstream-ci.md#supported-family-coverage-map);
+  retained red Tcl diagnostics are never counted as passes.
+  This closes profile coverage, not every per-command/per-edge case (**V2**
+  stays open) and not production readiness. The exact candidate head, per-row
+  and Tcl results, and retained failures are in the protected PR's
+  `Upstream Tcl compatibility` workflow artifacts.
 
 - [ ] **V2. The differential corpus is incomplete.** [P0]
   `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now
@@ -1714,7 +1740,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   security section, and this PR restores that heading without changing any gap
   content. Scope: this closes the documentation/link/claim-check criterion only;
   claim-by-claim behavioural verification and the remaining verification gaps
-  (V1, V2, V3, V4, V6, V7) are not claimed.
+  (V2, V3, V4, V6, V7) are not claimed.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
   The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
@@ -1761,7 +1787,7 @@ declared deployment. The sequence should be:
 4. Close the security review and hardening path (S1-S5, S9).
 5. Add memory/observability/configuration operations (O1-O9, R1-R6).
 6. Produce realistic controlled-hardware performance and acceptance evidence
-   (P1-P7, V1-V7).
+   (P1-P7, V2-V7).
 7. Re-run this entire list against the release candidate; do not reuse a prior
    pass for a changed head.
 

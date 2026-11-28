@@ -108,6 +108,14 @@ def run(reference, suite, name, directory):
     config = SCOPE["compatibility"]
     argv = ["tclsh", "tests/test_helper.tcl", "--single", suite, *config["options"],
             "--tags", " ".join("-" + tag for tag in config["denied_tags"]), "--host", "127.0.0.1"]
+    # Named exclusions are applied to BOTH the native control and the candidate,
+    # each with a reviewed reason. An exclusion can therefore never hide a
+    # candidate-only divergence or turn an unsupported command into a pass.
+    exclusions = config.get("named_test_exclusions", [])
+    for exclusion in exclusions:
+        if not exclusion.get("name") or not exclusion.get("reason"):
+            raise ValueError("named test exclusions need a name and a reviewable reason")
+        argv += ["--skiptest", exclusion["name"]]
     # Public startup selection, constant for the entire original suite: the
     # pinned vendors disagree on selected MSETEX and HGETDEL error wording. No test probing,
     # assertion rewriting or suite-specific server behavior is involved.
@@ -120,6 +128,7 @@ def run(reference, suite, name, directory):
         text += "\n" + (directory / "tcl/stderr.log").read_text(errors="replace")
         result.update({"events": events(text), "server_alive": proc.poll() is None,
                        "error_dialect": error_dialect,
+                       "named_test_exclusions": exclusions,
                        "prerequisites": probes, "missing_prerequisites": [p for p in probes if p["status"] != "available"]})
         result["counts"] = test_counts(result["events"])
         result["status"] = classify(result)
@@ -225,6 +234,10 @@ def main():
             if missing is not None:
                 text += f"Native passes missing from candidate passes: **{len(missing)}** (names in JSON).\n\n"
             text += "Diagnostic only: this result is not an every-PR check or a supported-profile decision.\n\n"
+        exclusions = SCOPE["compatibility"].get("named_test_exclusions", [])
+        if exclusions:
+            text += "Named exclusions applied identically to native and candidate (reviewed, not silent): " + "; ".join(
+                f"`{item['name']}`" for item in exclusions) + ". Reasons are recorded in `scope.json` and the result JSON.\n\n"
         text += f"Redis `{PINS['upstreams']['redis']['revision']}`; Valkey `{PINS['upstreams']['valkey']['revision']}`.\n"
         summary(text, directory / "summary.md")
     if not args.diagnostic:

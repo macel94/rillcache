@@ -108,6 +108,12 @@ show what has actually been checked, including exclusions and failures.
   one process must front it with an authoritative, fail-closed rate limiter
   that runs before `AUTH`; the server budgets stay as defence in depth.
   See [rate limiting](production-profile.md#deployment-wide-rate-limiting).
+- **Admission is per process and explicitly bounded.** `max-clients` bounds all
+  connections (authenticated or not); an ACL `maxconnections=N` caps a user's
+  concurrent sessions; auth budgets bound attempts. There is no separate
+  unauthenticated cap, per-user command/memory quota, CPU fairness or per-tenant
+  quota — add an external limiter for shared deployments. See
+  [admission policy](production-profile.md#admission-and-quota-policy).
 - **Fixed workers poll; this is a tradeoff, not a deadline.** `--threads N` uses
   cooperative polling with a ~1 ms idle wait, a bounded active window and ~10 ms
   polling for blocking commands; the default readiness mode is the lower-idle-CPU
