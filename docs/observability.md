@@ -342,8 +342,11 @@ measured.
 ## Deliberate gaps
 
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
-- No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
-  or cross-process client view. `INFO clients` intentionally omits those fields.
+- Per-client `fd` (server-side descriptor, `-1` where unavailable) and `idle`
+  (seconds since the last accepted command, sampled per command) are reported by
+  `CLIENT INFO`/`CLIENT LIST`. Last command name, input/output buffer bytes,
+  allocator/memory, network-byte totals and a cross-process client view remain
+  absent; `INFO clients` reports only the aggregate counters listed above.
 - `INFO latencystats` uses a bounded 32-bucket logarithmic approximation, not an
   HDR histogram or exact percentile contract. There is no CPU accounting,
   network-byte counter or per-database stats. `LATENCY` exposes only the two

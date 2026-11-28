@@ -1074,7 +1074,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `INFO memory`, and the rejection of `allkeys-lfu` with the previous policy
   retained, in default, fixed-one and four-worker modes. Not claimed: LFU,
   read-idle tracking, exact LRU or frequency-based eviction.
-- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
+- [x] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
@@ -1093,6 +1093,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   in microseconds. This is an approximation, not HDR or an exact percentile
   contract. The dispatcher takes no timer or histogram update while the
   collector is disabled.
+  **Complete (2026-11-28): documented per-client resource/queue state with units and sampling limits.**
+  `CLIENT INFO` and `CLIENT LIST` now report the server-side socket descriptor
+  `fd` (`-1` where the platform cannot report it) and `idle` in seconds since the
+  client's last accepted command, alongside the existing `age`, `blocked`
+  participation, live `sub`/`psub`/`ssub` subscription state and WATCH count.
+  `idle` is sampled once per accepted command (one relaxed store), so it has
+  one-second granularity and does not advance while the client is blocked inside
+  a command; `age` is measured from connection acceptance. `INFO latencystats`
+  keeps the documented 32-bucket logarithmic per-command latency distribution
+  (bucket upper bounds in microseconds, p50/p99/p99.9 reported from buckets, not
+  exact HDR percentiles). Evidence: `tests/clients.rs`
+  (`client_info_and_list_report_fd_and_idle_with_documented_units`) asserts the
+  fields in all worker modes, a non-negative Unix descriptor, small idle for a
+  just-active client and idle advancing after a second without commands.
+  Explicitly not reported, and not invented: last command name, input/output
+  buffer (`qbuf`/`obl`) bytes, allocator bytes, network-byte totals and a
+  cross-process client view. Transport buffer bytes would need a counter on every
+  read/write cycle in all three transports; that trade-off is recorded here
+  instead of silently claiming parity with Redis's `CLIENT LIST` column set.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
