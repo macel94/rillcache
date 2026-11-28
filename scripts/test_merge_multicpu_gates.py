@@ -61,6 +61,10 @@ def partial(root, workloads, rate=1.0, **overrides):
 
 
 class MergeTests(unittest.TestCase):
+    @staticmethod
+    def harness_workloads():
+        return ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
+
     def setUp(self):
         self.harness = fake_harness()
 
@@ -150,6 +154,35 @@ class MergeTests(unittest.TestCase):
                 record, _ = M.merge(self.harness, dirs, root / "merged-inconclusive")
             self.assertTrue(record["gate_passed"])
             self.assertEqual("INCONCLUSIVE", next(r for r in record["rows"] if r["workload"] == "ping")["gate"])
+
+    def test_legacy_partial_harness_without_gate_passed_still_merges(self):
+        class LegacyHarness:
+            WORKLOADS = MergeTests.harness_workloads()
+            PIPELINES = (1, 16)
+            KEYSPACE = 1024
+
+            @staticmethod
+            def summary(rows):
+                wins = sum(row["passed"] for row in rows)
+                return f"# legacy merged gate\n\n**{wins}/{len(rows)}**\n"
+
+            @staticmethod
+            def load_cohort(root):
+                manifest = M.read_json(Path(root) / "manifest.json")
+                return [{"workload": workload, "pipeline": pipeline, "passed": True,
+                         "rillcache": {"median": 2.0}, "valkey": {"median": 1.0}}
+                        for workload in manifest["workloads"] for pipeline in LegacyHarness.PIPELINES]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dirs = []
+            for index, workload in enumerate(LegacyHarness.WORKLOADS):
+                directory = root / f"p{index}"
+                partial(directory, [workload])
+                dirs.append(str(directory))
+            record, rows = M.merge(LegacyHarness, dirs, root / "merged-legacy")
+            self.assertTrue(record["gate_passed"])
+            self.assertEqual(10, len(rows))
 
     def test_merging_requires_actions_context(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, {}, clear=True), \
