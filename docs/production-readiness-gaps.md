@@ -1449,6 +1449,20 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   integrity owned by the crash drills) and states that accepting them is the owner
   decision that remains. `scripts/test_durability_measure.py` pins the baseline
   row, the ratio column and the plan.
+  **Measured (2026-11-28, hosted shared runner, run 46135095874 on `127253a9`), still open on the SLO clause.**
+  Matched 20,000-request `set` runs, 8 clients, AOF-off baseline plus each policy:
+  baseline 214430.36 req/s; `no` 32272.06 (0.151 of baseline); `everysec` 31440.09
+  (0.147); `always` 7509.57 (0.035). Client-observed `PING` p99 during the rewrite
+  is 0.50-0.58 ms, far inside the one explicitly accepted bound in
+  `docs/persistence-performance.md` (rewrite start pause <= 1 s) but at 20,000 keys
+  rather than the million-key ceiling. Raw records:
+  `docs/benchmark-reports/durability-2026-11-28-hosted.json`. The proposed
+  90%/75%/40% contention budgets are **not met** and are explicitly not claimed as
+  accepted. No throughput or latency SLO for the persistence path is accepted
+  anywhere in the repository, so R6 cannot honestly close on measurement alone.
+  Remaining owner decision: accept a persistence throughput/latency SLO for this
+  design (the measured numbers are the evidence), or require the
+  concurrent/ordered design the criterion offers as the alternative.
   **Closes when:** durability and throughput are measured for the supported
   profile and an accepted SLO, or a concurrent/ordered design is implemented.
 

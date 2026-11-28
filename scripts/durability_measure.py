@@ -132,7 +132,10 @@ def measure_policy(binary: Path, bench: Path, policy: str, options: argparse.Nam
             )
             if completed.returncode != 0:
                 raise RuntimeError(f"bench failed for {policy}: {completed.stderr.strip()[:400]}")
-            rows = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+            # The bench client prints one JSON object: server_configuration plus
+            # a results array. Parse that shape rather than assuming JSONL.
+            document = json.loads(completed.stdout)
+            rows = document["results"]
             reply = "(no journal)" if policy == BASELINE else rewrite(addr)
             during = sample_ping(addr, options.samples)
             throughput = [row["ops_per_second"] for row in rows]

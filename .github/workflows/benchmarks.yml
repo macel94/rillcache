@@ -79,7 +79,9 @@ jobs:
       - name: Benchmark fixed one-worker and four-worker execution with eight clients
         run: make bench-threads BENCH_ARGS='--requests 10000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 100 --runs 3'
       - name: Measure each journal fsync policy and the rewrite pause (D10)
+        shell: bash
         run: |
+          set -o pipefail
           mkdir -p target/benchmarks
           python3 scripts/durability_measure.py \
             --binary target/release/rillcache \
