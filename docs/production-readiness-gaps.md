@@ -1283,13 +1283,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 7. Performance evidence
 
-- [ ] **P1. The benchmark scope is not representative.** [P1]
-  The protected gates use PING, SET, GET, NX-existing and XX-existing with
-  64-byte values, 1024 cyclic keys, 8 clients and pipelines 1/16. There are no
-  mixed read/write, TTL churn, collection, stream, pub/sub, large-value,
-  persistence, TLS or multi-owner production workloads.
-  **Closes when:** a realistic workload suite covers the declared profile and is
-  reported separately from the narrow merge gate.
+- [x] **P1. The benchmark scope is not representative.** [P1]
+  **Complete (2026-11-27): a representative mixed workload exists and is reported
+  separately from the merge gate.** `scripts/mixed_workload.py` drives one sampled
+  mix covering the declared profile — `GET` hit/miss over a 512-key working set,
+  `SET`, `HSET`/`HGET`, `LPUSH`/`LRANGE`, `SADD`, `ZADD`, `PEXPIRE` TTL churn,
+  `XADD`, and a 4 KiB large-value write — in two phases (default and journal with
+  `--appendfsync everysec`), reporting ops/s, p50/p95/p99, per-op counts, errors and
+  RSS. [mixed-workload.md](mixed-workload.md) publishes a 15 s run per phase:
+  3907 ops/s default vs 2078 with `everysec`, p99 15.1 → 33.8 ms, zero protocol
+  errors, with the per-op counts recorded. Retained limits, stated on the page: one
+  development host with a Python client, so throughput is a harness ceiling; not
+  matched against a competitor; TLS, Pub/Sub fan-out, multi-owner, large
+  collections under memory pressure and controlled hardware are **not** covered and
+  stay open under `P2`, `P5`, `P6`, `R6`, `O9`; no required gate runs this suite and
+  no SLO follows from it. Not claimed: representative coverage of TLS, pub/sub,
+  multi-owner or large-value workloads, or any production capacity figure.
 
 - [ ] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
   Most comparisons run on shared GitHub runners. The policy itself says this is

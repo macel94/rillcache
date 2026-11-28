@@ -19,6 +19,7 @@ project's front page.
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Handle a disk, memory, credential or journal incident | [Incident runbook](incident-runbook.md) |
 | Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
+| See a representative mixed workload, separate from the merge gate | [Mixed workload report](mixed-workload.md) |
 | See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
