@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 
 POLICIES = ("no", "everysec", "always")
+# The AOF-off run is the matched control for persistence contention (R6).
+BASELINE = "baseline"
 PING_SAMPLES = 200
 PING_INTERVAL = 0.005
 
@@ -70,12 +72,15 @@ def sample_ping(addr: str, samples: int) -> dict:
 
 
 def start_server(binary: Path, directory: Path, policy: str) -> tuple[subprocess.Popen, str]:
+    append = ["--appendonly", "no"] if policy == BASELINE else [
+        "--appendonly", "yes",
+        "--appendfsync", policy,
+    ]
     process = subprocess.Popen(
         [
             str(binary),
             "--bind", "127.0.0.1:0",
-            "--appendonly", "yes",
-            "--appendfsync", policy,
+            *append,
             "--dir", str(directory),
         ],
         stdout=subprocess.DEVNULL,
@@ -128,7 +133,7 @@ def measure_policy(binary: Path, bench: Path, policy: str, options: argparse.Nam
             if completed.returncode != 0:
                 raise RuntimeError(f"bench failed for {policy}: {completed.stderr.strip()[:400]}")
             rows = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-            reply = rewrite(addr)
+            reply = "(no journal)" if policy == BASELINE else rewrite(addr)
             during = sample_ping(addr, options.samples)
             throughput = [row["ops_per_second"] for row in rows]
             return {
@@ -152,13 +157,18 @@ def measure_policy(binary: Path, bench: Path, policy: str, options: argparse.Nam
 
 
 def summary(records: list[dict]) -> str:
+    baseline = next((r for r in records if r["policy"] == BASELINE), None)
     lines = [
-        "| Policy | Throughput median req/s | batch p99 median us | PING p99 before ms | PING p99 during rewrite ms |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Policy | Throughput median req/s | vs AOF-off | batch p99 median us | PING p99 before ms | PING p99 during rewrite ms |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for record in records:
+        ratio = "-"
+        if baseline and baseline["throughput_median_ops"]:
+            ratio = f"{record['throughput_median_ops'] / baseline['throughput_median_ops']:.3f}"
+        record["contention_ratio_vs_baseline"] = ratio
         lines.append(
-            f"| {record['policy']} | {record['throughput_median_ops']} | "
+            f"| {record['policy']} | {record['throughput_median_ops']} | {ratio} | "
             f"{record['batch_p99_median_us']} | {record['ping_before']['p99_ms']} | "
             f"{record['rewrite_pause_p99_ms']} |"
         )
@@ -182,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     binary = Path(args.binary)
     bench = Path(args.bench)
     if args.dry_run:
-        print(f"policies: {', '.join(POLICIES)}")
+        print(f"policies: {BASELINE} (AOF off), {', '.join(POLICIES)}")
         print(f"binary: {binary}")
         print(f"bench: {bench}")
         print(f"workload: set, requests={args.requests}, clients={args.clients}, "
@@ -196,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     records = []
-    for policy in POLICIES:
+    for policy in (BASELINE, *POLICIES):
         records.append(measure_policy(binary, bench, policy, args))
         print(f"measured {policy}", file=sys.stderr)
     print(summary(records), end="")

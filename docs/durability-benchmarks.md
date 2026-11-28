@@ -26,7 +26,8 @@ batch p99 median), samples `PING` round trips before the rewrite, issues
 | `batch_p99_median_us` | median whole-batch p99 from the upstream-style bench |
 | `ping_before` | `PING` p50/p99/max before the rewrite (control) |
 | `ping_during_rewrite`, `rewrite_pause_p99_ms` | `PING` p50/p99/max while the journal rewrites |
-| `rewrite_reply` | the server's rewrite acknowledgement |
+| `rewrite_reply` | the server's rewrite acknowledgement (`(no journal)` for the baseline) |
+| `contention_ratio_vs_baseline` | policy throughput divided by the AOF-off baseline (the persistence serialization cost) |
 
 The matching properties are measured, not assumed: the same binary, keyspace,
 value size and client counts are used for every policy, the policy is set only
@@ -44,6 +45,21 @@ measured values and the deltas, it does not self-accept:
    reference runner, with the measured value recorded even when it exceeds it.
 4. No policy may fail the workload or leave the server unable to answer `PING`
    after the rewrite.
+
+## Persistence contention (R6)
+
+The `baseline` row is the matched control for the exclusive transaction gate that
+persistence takes: `contention_ratio_vs_baseline` is the fraction of AOF-off
+throughput the policy retains on the same host and workload. Proposed budget for
+the release owner:
+
+1. `no` must retain at least 90% of the AOF-off baseline throughput.
+2. `everysec` must retain at least 75%.
+3. `always` must retain at least 40% and must not lose acknowledged writes (the
+   crash drills own that property).
+
+The harness records the measured ratios either way; it does not fail on them,
+because the ratios are the SLO that has not been accepted yet.
 
 ## Evidence retention
 

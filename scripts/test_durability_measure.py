@@ -20,7 +20,7 @@ class DurabilityMeasureTests(unittest.TestCase):
         with redirect_stdout(buffer):
             self.assertEqual(0, measure.main(["--dry-run"]))
         plan = buffer.getvalue()
-        for policy in measure.POLICIES:
+        for policy in (*measure.POLICIES, measure.BASELINE):
             self.assertIn(policy, plan)
         self.assertIn("workload: set", plan)
 
@@ -34,6 +34,13 @@ class DurabilityMeasureTests(unittest.TestCase):
         self.assertIn("missing server binary", buffer.getvalue())
 
     def test_summary_is_a_stable_table_with_one_row_per_policy(self):
+        baseline = {
+            "policy": "baseline",
+            "throughput_median_ops": 1000.0,
+            "batch_p99_median_us": 100.0,
+            "ping_before": {"p99_ms": 0.1},
+            "rewrite_pause_p99_ms": 0.1,
+        }
         record = {
             "policy": "everysec",
             "throughput_median_ops": 1000.0,
@@ -41,11 +48,11 @@ class DurabilityMeasureTests(unittest.TestCase):
             "ping_before": {"p99_ms": 0.2},
             "rewrite_pause_p99_ms": 12.5,
         }
-        table = measure.summary([record])
+        table = measure.summary([baseline, record])
         lines = table.strip().splitlines()
-        self.assertEqual(3, len(lines))
-        self.assertIn("| everysec | 1000.0 |", lines[2])
-        self.assertIn("12.5", lines[2])
+        self.assertEqual(4, len(lines))
+        self.assertIn("| everysec | 1000.0 | 1.000 |", lines[3])
+        self.assertIn("12.5", lines[3])
 
     def test_ping_sampler_percentiles_are_monotonic(self):
         samples = [float(value) for value in range(1, 101)]
