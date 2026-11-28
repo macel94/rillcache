@@ -204,7 +204,7 @@ impl Session {
             && !self.monitoring
             && !self.is_blocked()
             && !self.is_paused()
-            && store.security_and_budget() == (false, false, false)
+            && store.hot_path_clear()
             && !self.command_paused(store, arguments)
         {
             store.record_command(self.id);

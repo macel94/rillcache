@@ -550,15 +550,15 @@ impl ServerServices {
     const SECURITY_ACL_RESTRICTED: u32 = 2;
     const SECURITY_COMMAND_BUDGET: u32 = 4;
 
-    /// Authorization state plus command-budget presence in one load, for the
-    /// hot path that would otherwise need a second configuration load.
-    pub(crate) fn security_and_budget(&self) -> (bool, bool, bool) {
-        let word = self.security_word.load(Ordering::Acquire);
-        (
-            word & Self::SECURITY_AUTH_REQUIRED != 0,
-            word & Self::SECURITY_ACL_RESTRICTED != 0,
-            word & Self::SECURITY_COMMAND_BUDGET != 0,
-        )
+    /// One masked load for the hottest command: no authentication, no ACL
+    /// restriction and no command budget. Cheaper than materializing the
+    /// authorization tuple on every PING.
+    pub(crate) fn hot_path_clear(&self) -> bool {
+        self.security_word.load(Ordering::Acquire)
+            & (Self::SECURITY_AUTH_REQUIRED
+                | Self::SECURITY_ACL_RESTRICTED
+                | Self::SECURITY_COMMAND_BUDGET)
+            == 0
     }
 
     /// Authorization state in one load: required authentication and whether any
