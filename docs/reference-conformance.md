@@ -137,7 +137,7 @@ Coverage is machine-checked so the gap cannot hide:
 - `tests/documentation.rs::differential_corpus_coverage_is_machine_checked` runs
   the check and its negative controls in the required offline suite.
 
-Current accounting: 104 of 247 advertised names have at least one corpus
-assertion; 143 remain uncovered and are listed in the file. The criterion stays
+Current accounting: 136 of 247 advertised names have at least one corpus
+assertion; 111 remain uncovered and are listed in the file. The criterion stays
 open until that list is empty and reviewed, so coverage cannot be claimed from a
 green merge gate.

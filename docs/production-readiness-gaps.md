@@ -1680,9 +1680,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/reference_baseline.rs` now has a committed coverage record,
   `ci/differential/coverage.json`, generated and validated by
   `scripts/check_corpus_coverage.py` against the advertised surface in
-  `docs/production-readiness/command-matrix.md`: 104 of 247 advertised names
-  carry at least one corpus assertion and the 143 uncovered names are listed
-  explicitly. The string/bit, hash, list, set, sorted-set, HLL and generic
+  `docs/production-readiness/command-matrix.md`: 136 of 247 advertised names
+  carry at least one corpus assertion and the 111 uncovered names are listed
+  explicitly. A second surface block
+  (`tests/reference_baseline.rs::run_collection_surface_corpus`) covers set
+  algebra with stores and cardinalities (`SDIFFSTORE`, `SINTERSTORE`,
+  `SUNIONSTORE`, `SDIFFCARD`, `SINTERCARD`, `SUNIONCARD`, `SMOVE`), sorted-set
+  range/removal/algebra families (`ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
+  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`, `ZREMRANGEBY*`,
+  `ZDIFF`/`ZINTER`/`ZUNION` and their stores and cardinality, `ZMPOP`), and the
+  remaining string/generic commands (`MSET`, `SUBSTR`, `LCS`, `EXPIRE`,
+  `PERSIST`, `TOUCH`, `RENAME`, `RENAMENX`, `UNLINK`, `HMSET`, `HSCAN`). The string/bit, hash, list, set, sorted-set, HLL and generic
   families now have deterministic surface assertions in
   `tests/reference_baseline.rs::run_command_surface_corpus` (GET/SETEX/GETSET/
   SETNX/GETDEL/SETRANGE/GETRANGE/STRLEN/SETBIT/GETBIT/BITCOUNT/BITPOS,
