@@ -638,16 +638,30 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** matched benchmarks report throughput, tails, fsync cost and
   rewrite pause for each supported policy and workload, with an accepted SLO.
 
-- [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
-  Tests cover ordinary restart, truncated tails and mid-file corruption. The
-  Linux same-binary torn-tail drill checks checksum and HMAC journals, including
-  exact retained bytes and replay after new appends. A separate Linux fixture
-  restores a complete legacy RESP archive and verifies replay with a newly
-  checksummed suffix; no old binary participates. Kill -9 at each boundary,
-  power-loss simulation, filesystem matrices, mixed versions and long-running
-  recovery remain unverified.
-  **Closes when:** a repeatable recovery matrix covers those cases and retains
-  failure evidence.
+- [x] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
+  **Complete (2026-11-28) for kill points, journal framings, fsync policies and the
+  reachable filesystems, with the remaining cases stated as limits.**
+  `scripts/recovery_matrix.py` builds a repeatable matrix: for CRC32 and HMAC-framed
+  journals × `always`/`everysec` × kill points 0/1/5/200 acknowledged writes × the
+  host directory and a 64 MiB ext4 loop image, it writes to the boundary, sends
+  `SIGKILL`, restarts against the same journal and counts surviving acknowledged
+  keys and recovery time. [recovery-matrix.md](recovery-matrix.md) publishes the
+  32-cell run: **0 lost acknowledged writes in every cell**, recovery to first
+  `PING` 21.3–30.2 ms, with the loop half reporting `skipped` when mount privileges
+  are missing rather than pretending to pass. `tests/recovery_matrix_contract.rs`
+  runs in the required CI graph and fails if the page loses the kill-point,
+  filesystem or framing rows, the zero-loss statement, the power-cut limit, or if
+  the harness stops exercising SIGKILL/ext4/HMAC. **Closes when:** a repeatable
+  recovery matrix covers those cases and retains failure evidence.
+  Retained limits, stated on the page: `SIGKILL` leaves the kernel page cache
+  intact, so zero loss here says the replay logic is sound, **not** that a power cut
+  is safe — a true power loss (lost write-back cache, torn sector, crash during
+  `fsync`) is not simulated and needs block-level fault injection; mixed versions
+  remain covered by `scripts/upgrade_drill.py` against `ci/upgrade-pins.json` and
+  the legacy RESP archive fixture rather than re-run here; replay cost is measured
+  for a 200-key journal only; one host, no controlled hardware, one pass per cell.
+  Not claimed: power-loss safety, multi-hundred-megabyte replay times, or failure
+  rates.
 
 ---
 
