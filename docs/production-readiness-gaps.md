@@ -227,7 +227,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client versions, pool-under-load, cluster routing, client-side caching, RESP3
   push tracking or mutual TLS, and does not close C6.
 
-- [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
+- [x] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
   command set, but `FLUSH*` event classes remain unsupported; delivery is
   at-most-once and process-local.
@@ -282,6 +282,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   not emit. `A` excludes `n`, as in Redis. `FLUSH*`/module classes and key-miss
   coverage for other read commands remain open. Delivery is at-most-once and
   process-local.
+  **Complete (2026-11-27) for the documented matrix; `FLUSH*` events remain an explicit exclusion.**
+  `docs/notifications.md` now publishes the pinned event matrix (Redis 8.10.2 /
+  Valkey 9.1.2 from `ci/upstream/pins.json`) with the keyspace/keyevent payload
+  direction, per-mutation counts, command/argument ordering rules for compound
+  commands and `MULTI`, and the duplicate/loss/reconnect rules: one event per
+  actual change per enabled class, nothing for no-ops or rejected commands, no
+  queue for absent subscribers, no replay after reconnect, best-effort loss under
+  queue pressure, and `FLUSHDB`/`FLUSHALL` deliberately silent without
+  desynchronising the connection. Evidence: `tests/notifications_reconnect.rs`
+  pins ordered pairs for `SET`/`SET`/`DEL`, the no-op `DEL` silence, no delivery
+  for events published while nobody was subscribed, a reconnected subscriber
+  receiving only later events, and `FLUSHDB` silence followed by a delivered
+  `SET`, in the default, fixed-one and four-worker modes, alongside the existing
+  category, keymiss, new-key, compound-command and lifecycle tests.
+  Durable delivery, replay and cross-connection ordering stay explicitly out of
+  scope as the criterion allows; keyless `FLUSH*` events stay excluded.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -1282,19 +1298,45 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** repeatable controlled-hardware runs and stated SLOs exist for
   the supported deployment profile.
 
-- [ ] **P3. Tail latency is reported as batch p99 only.** [P1]
-  The harness reports whole-batch p99 and warns not to divide by pipeline length.
-  There is no per-request p50/p95/p99/p999 distribution, coordinated-omission
-  handling or client-saturation analysis.
-  **Closes when:** per-request and batch tails are measured separately and the
-  SLO uses the correct unit.
+- [x] **P3. Tail latency is reported as batch p99 only.** [P1]
+  **Complete (2026-11-27): per-request and batch tails are reported separately and
+  the SLO unit is stated where the numbers are produced.** The advisory upstream
+  report now has an explicit **Latency unit** column (`per-request` at P=1,
+  `per-batch` at P>1), a **Per-request tails** table built only from P=1 aggregates
+  (`p50`/`p95`/`p99` per workload and server), and a footnote that batch numbers are
+  never divided by the pipeline depth nor quoted as per-command latency;
+  `docs/benchmarks.md` records the same contract and states that the merge gates
+  compare throughput only, so no latency SLO is inferred from the advisory report.
+  Enforcement: `scripts/upstream/performance.py` exposes `latency_unit()` and
+  `per_request_tails()`, and `scripts/upstream/test_performance_units.py` pins that
+  P>1 values are never used as per-request tails and that a missing tail is skipped
+  rather than reported as zero. Retained limits, stated in the document: no
+  coordinated-omission correction, no per-request `p99.9`, no client-side
+  saturation/queueing model, and no mixed-workload or second-hardware-generation
+  latency claim (`P1`, `P2`, `P5`, `P6` stay open). Not claimed: an accepted latency
+  SLO — that needs controlled hardware and owner acceptance.
 
-- [ ] **P4. Durability and topology performance are unmeasured.** [P1]
-  There is no evidence for fsync policies, rewrite pauses, replication lag,
-  failover time or cluster migration. These features are largely absent, so the
-  performance gate cannot cover them.
-  **Closes when:** each supported durability/topology mode has matched
-  throughput, tail, CPU, memory and recovery measurements.
+- [x] **P4. Durability and topology performance are unmeasured.** [P1]
+  **Complete (2026-11-27) for every supported durability mode, with the excluded
+  topologies named.** [persistence-performance.md](persistence-performance.md) is a
+  matched profile produced by `scripts/durability_profile.py` against one release
+  binary: 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode, reporting
+  throughput, p50/p99/p99.9, server CPU seconds, CPU per write, RSS and
+  restart-to-ready with key recovery for `none`, `always`, `everysec` and `no`.
+  Measured: enabling the journal roughly halves the client-bound throughput
+  (3922 → 1883–2163 req/s), lifts p50 from 0.69 ms to ~2.1 ms and costs ~2.4–2.6×
+  the server CPU per write; the three fsync policies are within ~15 % of each other
+  with overlapping tails (p99 36–38 ms), RSS is flat at 18.1–18.7 MiB, and a clean
+  restart is ready in 1–2 ms with the acknowledged key recovered. Replication lag,
+  failover time and cluster migration are **not applicable**: those topologies are
+  explicit exclusions (`A1`, `A2`), so the criterion's "supported topology" is the
+  single standalone process. Retained limits, stated in the document: one
+  development host and a single-CPU Python generator that bounds the `none` row, so
+  absolute throughput is a harness ceiling and only the relative durability cost is
+  interpreted; the harness cannot resolve a difference between the three fsync
+  policies; rewrite pause under a large journal stays open in `D10`; no accepted SLO
+  follows from this table. Not claimed: controlled-hardware capacity, a latency SLO,
+  or any topology measurement.
 
 - [ ] **P5. Non-default modes are outside the protected gate.** [P1]
   The gates measure default plain-TCP Rillcache. TLS, persistence, Tokio,

@@ -18,6 +18,7 @@ project's front page.
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Handle a disk, memory, credential or journal incident | [Incident runbook](incident-runbook.md) |
+| Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
 | See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
