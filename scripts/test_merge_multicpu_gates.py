@@ -29,12 +29,17 @@ def fake_harness():
             return f"# synthetic merged gate\n\n**{wins}/{len(rows)}**\n"
 
         @staticmethod
+        def gate_passed(rows):
+            return all(not row.get("failed", False) for row in rows)
+
+        @staticmethod
         def load_cohort(root):
             manifest = M.read_json(Path(root) / "manifest.json")
             rows = []
             for workload in manifest["workloads"]:
                 for pipeline in Harness.PIPELINES:
                     rows.append({"workload": workload, "pipeline": pipeline, "passed": True,
+                                 "failed": False, "inconclusive": False, "gate": "PASS",
                                  "rillcache": {"median": 2.0}, "valkey": {"median": 1.0}})
             return rows
 
@@ -112,6 +117,8 @@ class MergeTests(unittest.TestCase):
                 for row in rows:
                     if row["workload"] == "ping":
                         row["passed"] = False
+                        row["failed"] = True
+                        row["gate"] = "FAIL"
                 return rows
 
             with mock.patch.object(self.harness, "load_cohort", side_effect=losing):
@@ -120,6 +127,29 @@ class MergeTests(unittest.TestCase):
             (root / "merged-loss" / "summary.md").write_text("fabricated pass")
             with self.assertRaises(ValueError):
                 M.check(self.harness, dirs, root / "merged-loss")
+
+    def test_an_inconclusive_row_does_not_fail_the_merged_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dirs = []
+            for index, workload in enumerate(self.harness.WORKLOADS):
+                directory = root / f"p{index}"
+                partial(directory, [workload])
+                dirs.append(str(directory))
+
+            original = self.harness.load_cohort
+
+            def inconclusive(directory):
+                rows = original(directory)
+                for row in rows:
+                    if row["workload"] == "ping":
+                        row.update(passed=False, failed=False, inconclusive=True, gate="INCONCLUSIVE")
+                return rows
+
+            with mock.patch.object(self.harness, "load_cohort", side_effect=inconclusive):
+                record, _ = M.merge(self.harness, dirs, root / "merged-inconclusive")
+            self.assertTrue(record["gate_passed"])
+            self.assertEqual("INCONCLUSIVE", next(r for r in record["rows"] if r["workload"] == "ping")["gate"])
 
     def test_merging_requires_actions_context(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, {}, clear=True), \
