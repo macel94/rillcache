@@ -2206,8 +2206,6 @@ impl ShardExecutor {
     }
 }
 
-/// Encode the final state of one key as a bounded sequence of RESP commands.
-
 /// Journal record for an append-only `XADD`, or `None` when the generic
 /// whole-key re-encode must be used.
 ///
@@ -2234,7 +2232,7 @@ fn xadd_delta(data: &Data, arguments: &[&[u8]], keys: &[Vec<u8>], now: i64) -> O
         }
     }
     // XADD key id field value ... => 3 + 2k arguments.
-    if arguments.len() % 2 == 0 {
+    if arguments.len().is_multiple_of(2) {
         return None;
     }
     let entry = data.entries.get(&keys[0])?;
@@ -2254,6 +2252,7 @@ fn xadd_delta(data: &Data, arguments: &[&[u8]], keys: &[Vec<u8>], now: i64) -> O
     Some(record)
 }
 
+/// Encode the final state of one key as a bounded sequence of RESP commands.
 fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec<u8>) {
     encode_request(&[b"DEL", key], output);
     let Some(entry) = data.entries.get(key) else {
