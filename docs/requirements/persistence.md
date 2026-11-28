@@ -191,24 +191,24 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Offline AOF backup and restore (S118)
 
-- **R426 (event-driven):** When `rillcache-backup create` is requested for an
+- **R514 (event-driven):** When `rillcache-backup create` is requested for an
   existing regular AOF, it shall acquire the journal's normal exclusive owner
   lock, replay/validate the journal under configured data/protocol limits, force
   a sync, and stream a versioned length+CRC32 archive using bounded memory. If a
   server owns the journal, validation fails, the file exceeds the 16 GiB archive
   bound, or the output exists, the utility shall fail without publishing over an
   existing path.
-- **R427 (event-driven):** When `verify` or `restore` reads an archive, it shall
+- **R515 (event-driven):** When `verify` or `restore` reads an archive, it shall
   validate the version, declared length, CRC32, absence of trailing bytes and the
   inner AOF replay before reporting success. Restore shall write and validate a
   temporary AOF, then publish only when the destination AOF and its owner lock do
   not exist; it shall never overwrite an existing journal.
-- **R428 (unwanted behavior):** If archive framing/checksum is invalid, inner AOF
+- **R516 (unwanted behavior):** If archive framing/checksum is invalid, inner AOF
   replay fails, or the destination is occupied, then restore shall return failure
   without making an invalid/partial journal visible at the destination. Archive
   mode shall not be described as cryptographic authentication, encryption, online
   backup, PITR, retention or RPO/RTO policy.
-- **R429 (ubiquitous):** End-to-end tests shall cover live-writer refusal, empty
+- **R517 (ubiquitous):** End-to-end tests shall cover live-writer refusal, empty
   and nonempty journals, archive corruption, valid outer CRC with inner AOF
   corruption, no-overwrite behavior, and restored strings, TTL and stream PEL
   across restart. Documentation shall state the required server quiescence,
@@ -257,26 +257,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Authenticated journal records (S119)
 
-- **R430 (event-driven):** When `--appendonly yes` and `--aof-hmac-key-file PATH`
+- **R518 (event-driven):** When `--appendonly yes` and `--aof-hmac-key-file PATH`
   are configured, startup shall read a 16..=1024-byte key, strip one trailing
   newline, and authenticate each newly written transaction with an HMAC-SHA256
   chain over its checksum group. An empty journal shall write an anchor on the
   first append; a rewrite shall write an authenticated snapshot and continue the
   chain for later appends.
-- **R431 (state-driven):** While a key is configured, startup shall verify the
+- **R519 (state-driven):** While a key is configured, startup shall verify the
   anchor and every completed chain link before replaying any command, and shall
   fail closed on a modified, reordered or inserted completed group before the
   final marker, a malformed marker or a different key. A trailing unauthenticated
   suffix (a crash-torn final group) shall be truncated to the last verified marker
   without dropping the preceding authenticated transaction; truncation of an
   earlier durable suffix is outside the authentication guarantee.
-- **R432 (event-driven):** If a nonempty journal has no authentication anchor,
+- **R520 (event-driven):** If a nonempty journal has no authentication anchor,
   then startup without `--aof-hmac-migrate` shall fail with an actionable error.
   With the migration flag and the server stopped, startup shall seal the existing
   checksum-verified prefix with a synced anchor before serving; later startups
   without an anchor or migration shall still fail. The flag without a key, or
   authentication without `--appendonly yes`, shall be rejected.
-- **R433 (ubiquitous):** Tests shall cover standard SHA-256/HMAC vectors,
+- **R521 (ubiquitous):** Tests shall cover standard SHA-256/HMAC vectors,
   streaming equivalence, restart, wrong key, modified chain tags, migration
   refusal and completion, authenticated rewrite plus post-rewrite appends, torn
   final markers, a partial next append, key-file bounds, server configuration and
@@ -297,23 +297,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Deleted-entry stream PEL durability (S120)
 
-- **R434 (event-driven):** When a journal snapshot or rewrite encodes a stream
+- **R522 (event-driven):** When a journal snapshot or rewrite encodes a stream
   whose consumer-group PEL references an id missing from the stream (deleted or
   trimmed), it shall emit an ascending placeholder `XADD` for that id, restore
   every referencing group's pending owner, delivery count and delivery time with
   `XCLAIM`, and then emit `XDEL` for the placeholder before the final `XSETID`.
   The placeholder shall not remain visible in `XLEN` or `XRANGE`.
-- **R435 (state-driven):** While replay is in progress, placeholder ids shall keep
+- **R523 (state-driven):** While replay is in progress, placeholder ids shall keep
   the XADD sequence strictly ascending across real entries, tombstones, and any
   sentinel; the final `XSETID` shall restore the recorded last-generated,
   entries-added and max-deleted metadata even though placeholder deletion
   temporarily raises max-deleted.
-- **R436 (unwanted behavior):** If a placeholder id equals a live entry, the
+- **R524 (unwanted behavior):** If a placeholder id equals a live entry, the
   encoder shall use the live entry once rather than duplicating it. Multiple
   groups referencing the same tombstone shall each receive its PEL metadata. An
   empty stream that has only group/consumer metadata shall be recreated with
   `XGROUP CREATE ... MKSTREAM`, not an invalid `XADD 0-0` sentinel.
-- **R437 (ubiquitous):** Tests shall cover deleted and trimmed pending ids in the
+- **R525 (ubiquitous):** Tests shall cover deleted and trimmed pending ids in the
   live journal and after rewrite, intermediate and highest ids, preserved
   owner/delivery count, `XACK` of a tombstone, empty `XRANGE`/unchanged `XLEN`,
   an all-deleted stream, an empty stream with a group/consumer, and all execution
@@ -323,21 +323,21 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Consumer activity-time durability (S121)
 
-- **R438 (event-driven):** When a journal snapshot or rewrite encodes a consumer,
+- **R526 (event-driven):** When a journal snapshot or rewrite encodes a consumer,
   it shall append namespaced RESP `ECHO` records containing binary
   length-prefixed key, group and consumer names plus the absolute millisecond
   `seen_at` and `active_at`, after the group's `CREATECONSUMER`/`XCLAIM` records
   so claims cannot overwrite the restored values.
-- **R439 (state-driven):** During replay, well-formed consumer-activity records
+- **R527 (state-driven):** During replay, well-formed consumer-activity records
   shall set the existing consumer's `seen_at` and `active_at` before serving; a
   malformed record, a missing key/group/consumer or trailing bytes shall fail
   replay closed rather than being ignored. The record shall be covered by CRC32 and optional HMAC
   authentication like every other transaction byte, and shall remain inert for
   readers that do not implement the private replay interception.
-- **R440 (unwanted behavior):** The consumer-activity record shall not be
+- **R528 (unwanted behavior):** The consumer-activity record shall not be
   accepted or acted on through the normal client command path, shall not alter
   stream entries or PEL contents, and shall clamp negative timestamps to zero.
-- **R441 (ubiquitous):** Tests shall cover binary names, both record types' framing and
+- **R529 (ubiquitous):** Tests shall cover binary names, both record types' framing and
   truncation, live-journal and rewrite restarts, consumers with and without
   pending entries, exact `idle`/`inactive` aging across restart, malformed/
   missing-target failure, and all execution modes. Documentation shall retain the
