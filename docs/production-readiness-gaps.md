@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
+| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4) |
 
 ---
 
@@ -1932,13 +1932,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   security section, and this PR restores that heading without changing any gap
   content. Scope: this closes the documentation/link/claim-check criterion only;
   claim-by-claim behavioural verification and the remaining verification gaps
-  (V2, V3, V4, V6, V7) are not claimed.
+  (V2, V3, V4) are not claimed.
 
-- [ ] **V6. There is no production acceptance runbook.** [P1]
-  The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
-  blocker preflight now define how to collect and record profile-specific
-  evidence. Independent review and execution against a release candidate are
-  still required.
+- [x] **V6. There is no production acceptance runbook.** [P1]
+  **Complete (2026-11-28) with an executed stop verdict.** The
+  [acceptance runbook](production-readiness/acceptance-runbook.md) was reviewed at
+  the published `v0.1.0` candidate and executed. The
+  [execution record](acceptance/runs/v0.1.0.md) links the exact source commit and
+  binary digests, the read-only preflight (30 open P0/P1 blockers), the passing
+  isolated restore and exact-binary upgrade/rollback drills, and the stages
+  recorded `not-run` (scope, compatibility, security, load/soak, distribution).
+  The verdict is **STOP**: no production acceptance is claimed, and the missing
+  security/performance/recovery signatures and published container evidence stay
+  open under their own checklist items.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 
@@ -1952,7 +1958,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   files, no latency or throughput figure, no durability proof, no security review,
   no SLO, no non-default mode). It also states, in one place, that no combination
   of merge gates proves production readiness, and lists the properties that have
-  no required gate and must come from the release process: `S1`, `V3`, `V6`, `P2`,
+  no required gate and must come from the release process: `S1`, `V3`, `P2`,
   `P6`, `D11`, `R6`. Enforcement: `scripts/check_gate_scope.py` fails the
   required CI graph (through `tests/documentation.rs`) when a required context is
   unmapped or mapped twice, when a row loses its "does not prove" cell, when the
