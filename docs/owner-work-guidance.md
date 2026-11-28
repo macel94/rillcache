@@ -50,6 +50,7 @@ call, which equals the owner's occupancy because one command owns the turn.
 - One development host, one client, no concurrent load, no controlled hardware
   (`P2`). Sizes above 20 000 items, `SORT` with large sources, `GEOSEARCH` and
   full-state rewrites (`BGREWRITEAOF`) are **not** measured here; the rewrite
-  pause is tracked separately by `D10`/the storage-fault drills.
+  pause is measured separately by the [durability profile](persistence-performance.md)
+  (`D10`) and the storage-fault drills.
 - No SLO is inferred. This page bounds what the operator must avoid, not what the
   server guarantees.
