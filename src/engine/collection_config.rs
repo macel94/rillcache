@@ -5,6 +5,8 @@ use std::io::Write;
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CollectionConfig {
     pub list_max_listpack_size: i64,
+    /// Accepted for compatibility; this profile stores lists uncompressed.
+    pub list_compress_depth: i64,
     pub hash_max_listpack_entries: usize,
     pub hash_max_listpack_value: usize,
     pub set_max_intset_entries: usize,
@@ -18,6 +20,7 @@ impl Default for CollectionConfig {
     fn default() -> Self {
         Self {
             list_max_listpack_size: -2,
+            list_compress_depth: 0,
             hash_max_listpack_entries: 512,
             hash_max_listpack_value: 64,
             set_max_intset_entries: 512,
@@ -32,6 +35,7 @@ impl Default for CollectionConfig {
 const CANONICAL: &[&[u8]] = &[
     b"hash-max-listpack-entries",
     b"hash-max-listpack-value",
+    b"list-compress-depth",
     b"list-max-listpack-size",
     b"set-max-intset-entries",
     b"set-max-listpack-entries",
@@ -65,6 +69,7 @@ impl CollectionConfig {
     fn value(self, name: &[u8]) -> Option<String> {
         let canonical = canonical_name(name)?;
         let value = match canonical {
+            b"list-compress-depth" => self.list_compress_depth,
             b"list-max-listpack-size" => self.list_max_listpack_size,
             b"hash-max-listpack-entries" => self.hash_max_listpack_entries as i64,
             b"hash-max-listpack-value" => self.hash_max_listpack_value as i64,
@@ -86,6 +91,9 @@ impl CollectionConfig {
             return Err(());
         };
         match canonical {
+            b"list-compress-depth" if (0..=65_535).contains(&value) => {
+                self.list_compress_depth = value;
+            }
             b"list-max-listpack-size" if i32::try_from(value).is_ok() => {
                 self.list_max_listpack_size = value;
             }
@@ -745,7 +753,42 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*56\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*58\r\n"));
+    }
+
+    #[test]
+    fn list_compress_depth_is_accepted_and_reported_but_stays_inert() {
+        let store = ShardExecutor::new(100);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"list-compress-depth"]),
+            b"*2\r\n$19\r\nlist-compress-depth\r\n$1\r\n0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"list-compress-depth", b"2"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"list-compress-depth"]),
+            b"*2\r\n$19\r\nlist-compress-depth\r\n$1\r\n2\r\n"
+        );
+        // Out-of-contract values are rejected without changing the stored value.
+        assert!(
+            run(&store, &[b"CONFIG", b"SET", b"list-compress-depth", b"-1"]).starts_with(b"-ERR")
+        );
+        assert!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"list-compress-depth", b"65536"]
+            )
+            .starts_with(b"-ERR")
+        );
+        assert!(
+            run(&store, &[b"CONFIG", b"SET", b"list-compress-depth", b"x"]).starts_with(b"-ERR")
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"list-compress-depth"]),
+            b"*2\r\n$19\r\nlist-compress-depth\r\n$1\r\n2\r\n"
+        );
     }
 
     #[test]

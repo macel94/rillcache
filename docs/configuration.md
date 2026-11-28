@@ -102,6 +102,11 @@ cgroup limit. Startup fails closed otherwise and the derived payload budget caps
 `max-data-bytes`; see
 [the memory bound](production-profile.md#resident-memory-bound-and-headroom-guidance).
 
+`list-compress-depth` is accepted at startup and through `CONFIG SET` (values
+`0..=65535`) and reported by `CONFIG GET`, but this profile always stores lists
+uncompressed, so the value is inert: it exists so Redis/Valkey tooling that tunes
+list encoding does not fail against the server.
+
 Mutability here means "changeable at runtime through `CONFIG SET`". That
 command validates every pair before publishing and the documented mutable subset
 is listed in [the profile](production-profile.md#runtime-configuration-changes);
