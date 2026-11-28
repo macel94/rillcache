@@ -73,6 +73,7 @@ fn publishing_is_separate_from_unprivileged_builds_and_anonymous_checks() {
     assert!(publish.contains("for arch in amd64 arm64"));
     assert!(promotion.contains("\"$head\" == \"$GITHUB_SHA\""));
     assert!(public.contains("DOCKER_CONFIG=\"$config\" docker image pull"));
+    assert!(public.contains("GH_TOKEN: ${{ github.token }}"));
     assert!(!public.contains("docker/login-action"));
     assert!(!public.contains("packages: write"));
     assert!(promotion.contains("needs: [publish, public-pull]"));

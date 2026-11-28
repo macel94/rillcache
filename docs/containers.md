@@ -364,7 +364,9 @@ done
 
 Use an empty Docker credential configuration when verifying a public image to
 avoid silently relying on publisher credentials. The workflow's read-only
-consumer job does this after its anonymous pull. Retain the exact index bytes,
+consumer job does this after its anonymous pull and sets `GH_TOKEN` from the
+workflow token only so `gh` can load the trusted root and repository metadata;
+that token is not used as a registry credential. Retain the exact index bytes,
 result and attestations alongside the separate native-platform evidence.
 
 ### One-time GitHub public visibility
