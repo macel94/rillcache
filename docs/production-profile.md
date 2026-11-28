@@ -241,6 +241,51 @@ four-worker modes: a non-reading subscriber is dropped and counted once its
 queue fills while the publisher and a healthy subscriber continue, and an 8×512
 KiB `MGET` is refused at the documented bound with the value intact.
 
+## Resident-memory bound and headroom guidance
+
+`--max-data-bytes` bounds logical key/value bytes, not the resident set. Operators
+who need a declared memory bound start the server with `--memory-bound-bytes N`
+and `--memory-bound-headroom-bytes H`. Startup fails closed when only one of the
+pair is given, when `H` is zero or not smaller than `N`, when `N` exceeds a
+readable cgroup limit, or when the baseline resident set measured at startup
+leaves no payload budget. The derived payload budget is
+`min(--max-data-bytes, N - H - baseline_rss)` and is enforced by the existing
+payload-admission path: a write that would cross it is refused with
+`-OOM configured payload limit exceeded` before it is applied, and the process
+keeps serving.
+
+The declared bound is a *bounded RSS target*, not a hard cap. Enforcement is on
+the payload budget; thread stacks, allocator metadata, socket buffers and
+fragmentation are covered by the declared headroom, while the operator's cgroup
+limit remains the kernel-enforced backstop. Declare the bound at or below the
+container/cgroup limit.
+
+| Reserved in the headroom | Guideline | Why |
+| --- | --- | --- |
+| I/O workers and stacks | 1 MiB per worker, minimum 32 MiB | fixed workers and TLS sessions |
+| Allocator metadata and maps | 10% of the bound | per-key and per-connection overhead |
+| Socket buffers | 4 KiB per admitted client per direction | 128 clients are about 1 MiB |
+| Fragmentation and journal staging | 15% of the bound | rewrite/backup staging and fragmentation |
+
+Recommended: `--memory-bound-bytes` equal to the container memory limit and a
+headroom of at least 25% of the bound, never below 64 MiB. `INFO memory` reports
+`rillcache_memory_bound_bytes`, `rillcache_memory_bound_headroom_bytes`,
+`rillcache_memory_bound_baseline_rss_bytes`,
+`rillcache_memory_bound_cgroup_limit_bytes`,
+`rillcache_memory_bound_payload_limit_bytes`, the explicit
+`rillcache_memory_bound_scope` (`rss_bound_derived_payload_limit_not_hard_rss_cap`)
+and `rillcache_memory_bound_enforcement`
+(`payload_admission_refuses_writes_before_the_bound`).
+
+OOM behavior is tested, not assumed. With the bound enabled the process refuses
+writes and survives an exhausted address space; without it, an exhausted address
+space aborts the process and restart either replays every acknowledged write or
+fails closed on a torn journal tail. `tests/memory_bound.rs` runs both drills
+against real child binaries bounded with `ulimit -v`, plus the in-process
+refusal and `INFO` evidence. Allocator-level accounting is excluded because it
+would require an allocator swap the dependency policy forbids, and kernel
+OOM-killer behaviour on dedicated hardware remains a controlled-hardware drill.
+
 ## Eviction and access-statistics policy
 
 The selected eviction policies are `noeviction` (default), `allkeys-lru`,
@@ -265,6 +310,23 @@ frequency-based eviction are incompatible with this profile.
 modes: both `OBJECT` exclusions, the `noeviction` default, a runtime switch to
 `allkeys-lru` reflected in `CONFIG GET` and `INFO memory`, and the rejection of
 `allkeys-lfu` with the previous policy retained.
+
+## Expiry, eviction and pause interaction matrix
+
+The supported interactions are a contract, not an accident of scheduling:
+
+| Interaction | Documented behaviour | Not claimed |
+| --- | --- | --- |
+| `CLIENT PAUSE ... WRITE` with an expiring key | Reads continue during a WRITE pause; a key that expires during the pause answers `$-1` (and `EXISTS` `:0`, `TTL` `:-2`) on the next read and is never replayed afterwards. A write issued during the pause is answered only after it ends. | Deferred writes are not acknowledged before unpause; there is no cross-client ordering. |
+| Blocked `BLPOP` with expiry and eviction elsewhere | Expiry and on-write eviction of unrelated keys do not disturb a blocked client. The waiter keeps its queue position and receives pushed elements in push order; an expired key read by another client answers nil independently. | No blocking priority between clients and no fairness guarantee. |
+| Eviction while a client is blocked | With a small `--max-data-bytes` and `allkeys-random`, writes past the budget evict instead of failing while a client is blocked; the block is reported in `INFO clients` (`blocked_clients`) and evictions in `INFO stats` (`evicted_keys`); the blocked command still returns its documented `*-1` timeout. | There is no periodic background eviction loop: eviction happens on the write path only, so an idle server does not reclaim payload on a timer. |
+| Expiry during a pause with a deferred conditional write | Expiry maintenance and the `expired` keyspace event run during the pause: the deferred `SET ... NX` observes the newly absent key and succeeds, and the event is emitted once before unpause (injected-clock coverage in `tests/inactive_pause.rs`). | No durable notification delivery; the event is at-most-once. |
+| Reply order | Replies are ordered per connection, including replies released when a finite pause expires and pipelined commands around a pause. | No global ordering across connections and no durable notification delivery. |
+
+`tests/expiry_eviction_pause.rs` runs this matrix in the default, fixed-one and
+four-worker modes and asserts the exact replies, including the expired-key
+answers, the deferred write acknowledgement, push-order delivery to a blocked
+client and the `*-1` timeout.
 
 ## Security acceptance gate for excluded features
 

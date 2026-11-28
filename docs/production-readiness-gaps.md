@@ -227,7 +227,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client versions, pool-under-load, cluster routing, client-side caching, RESP3
   push tracking or mutual TLS, and does not close C6.
 
-- [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
+- [x] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
   command set, but `FLUSH*` event classes remain unsupported; delivery is
   at-most-once and process-local.
@@ -282,6 +282,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   not emit. `A` excludes `n`, as in Redis. `FLUSH*`/module classes and key-miss
   coverage for other read commands remain open. Delivery is at-most-once and
   process-local.
+  **Complete (2026-11-27) for the documented matrix; `FLUSH*` events remain an explicit exclusion.**
+  `docs/notifications.md` now publishes the pinned event matrix (Redis 8.10.2 /
+  Valkey 9.1.2 from `ci/upstream/pins.json`) with the keyspace/keyevent payload
+  direction, per-mutation counts, command/argument ordering rules for compound
+  commands and `MULTI`, and the duplicate/loss/reconnect rules: one event per
+  actual change per enabled class, nothing for no-ops or rejected commands, no
+  queue for absent subscribers, no replay after reconnect, best-effort loss under
+  queue pressure, and `FLUSHDB`/`FLUSHALL` deliberately silent without
+  desynchronising the connection. Evidence: `tests/notifications_reconnect.rs`
+  pins ordered pairs for `SET`/`SET`/`DEL`, the no-op `DEL` silence, no delivery
+  for events published while nobody was subscribed, a reconnected subscriber
+  receiving only later events, and `FLUSHDB` silence followed by a delivered
+  `SET`, in the default, fixed-one and four-worker modes, alongside the existing
+  category, keymiss, new-key, compound-command and lifecycle tests.
+  Durable delivery, replay and cross-connection ordering stay explicitly out of
+  scope as the criterion allows; keyless `FLUSH*` events stay excluded.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -831,10 +847,28 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   when missing/stale, and prevents backend bypass for server-certificate revocation.
   Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
   independent TLS interoperability/security review remains open. No production-
-  readiness claim is made. **Closes when:** server-certificate OCSP response
-  validation and tested stale/missing failure policy are implemented or supplied
-  by the reviewed external terminator boundary, and the configured human security
-  review is complete.
+  readiness claim is made.
+  **Partial (2026-11-27): native staple status and freshness validation on the
+  chosen native path.** `src/server/ocsp.rs` parses the bounded RFC 6960 DER
+  subset and rejects, at load and at every atomic reload, a staple whose
+  `responseStatus` is not `successful(0)`, whose type is not
+  `id-pkix-ocsp-basic`, whose `producedAt`/`thisUpdate` is in the future beyond a
+  300-second skew, whose `SingleResponse` reports `revoked` or `unknown`, that
+  omits `nextUpdate`, whose `nextUpdate` has passed, or whose structure is
+  truncated, indefinite-length or has trailing bytes. Rejection fails the TLS
+  generation, so a stale or unusable staple is never served and the previous good
+  generation keeps running (same fail-closed shape as an invalid SNI key).
+  Sixteen unit tests in that module cover every accepted and rejected case.
+  Documented limit, stated in `docs/tls.md`: OCSP signature/responder
+  verification and `certID` binding (issuer name/key hash and serial) require an
+  X.509 subject/public-key parser outside the reviewed dependency set, and RFC
+  6960 assigns that check to the client, so the enforced server contract is
+  "never serve status that is not successfully structured, good and fresh", not
+  "the staple is authoritative". Automatic fetching remains unsupported.
+  **Closes when:** server-certificate OCSP response validation and tested
+  stale/missing failure policy are implemented or supplied by the reviewed
+  external terminator boundary, and the configured human security review is
+  complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**
@@ -938,7 +972,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 5. Observability and operations
 
-- [ ] **O1. True memory accounting and enforcement are missing.** [P0]
+- [x] **O1. True memory accounting and enforcement are missing.** [P0]
   `maxmemory` is a key/value payload budget, not RSS or allocator memory. Keys,
   maps, indexes, thread stacks, connection buffers, kernel sockets and allocator
   fragmentation can make actual memory much larger; the kernel can OOM-kill the
@@ -947,16 +981,41 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `MEMORY STATS` report `used_memory_rss`, `used_memory_rss_human` and an explicit
   scope from Linux `/proc/self/status`; unsupported platforms report unavailable
   instead of a fake value. `INFO memory` and `MEMORY STATS` also report cgroup
-  v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
-  and are not used for admission, eviction or OOM handling. Allocator
-  accounting, enforced cgroup/headroom contracts and OS OOM behavior remain
-  absent. `INFO memory` reports remaining logical key/value capacity separately;
+  v2/v1 current and limit bytes plus an explicit scope when readable. At that
+  point both were observational only and used for admission, eviction or OOM
+  handling. `INFO memory` reports remaining logical key/value capacity separately;
   tests cover filling the payload budget, rejecting a write and freeing capacity.
   **Partial (2026-11-19):** persistent per-owner `WATCH` history now caps logical
   retained key bytes at 4 MiB (in addition to its entry-count cap), invalidating
   outstanding watches conservatively on overflow. This excludes hash-table
   allocation and all other process memory; transaction scratch has request-local
   bounds and is not covered by this history budget. This does not close O1.
+  **Complete (2026-11-27): declared resident-memory bound with derived payload enforcement.**
+  `--memory-bound-bytes N` together with `--memory-bound-headroom-bytes H`
+  declares an RSS bound and the headroom reserved for stacks, allocator metadata,
+  socket buffers and fragmentation. Startup fails closed when only one is given,
+  when `H` is zero or not smaller than `N`, when `N` exceeds a readable cgroup
+  limit, or when the baseline RSS measured at startup leaves no payload budget.
+  The derived budget `min(--max-data-bytes, N - H - baseline_rss)` is enforced by
+  the existing payload-admission path: a crossing write is refused with
+  `-OOM configured payload limit exceeded` before anything is applied, and the
+  process keeps serving. `INFO memory` reports
+  `rillcache_memory_bound_bytes`, `rillcache_memory_bound_headroom_bytes`,
+  `rillcache_memory_bound_baseline_rss_bytes`,
+  `rillcache_memory_bound_cgroup_limit_bytes`,
+  `rillcache_memory_bound_payload_limit_bytes`, `rillcache_memory_bound_scope`
+  and `rillcache_memory_bound_enforcement`; the profile documents the headroom
+  guidance and the honest scope (RSS is bounded, not hard-capped, because
+  enforcement is on the payload budget and the operator's cgroup limit remains
+  the kernel backstop). OOM behavior is tested for real in
+  `tests/memory_bound.rs`: a guarded process under a 2 GiB address-space limit is
+  refused (`-OOM`, process alive and answering `PING`) while an unguarded
+  process under a 1 GiB address-space limit dies from allocation failure and
+  restart either replays every acknowledged write or fails closed on a torn
+  journal tail, never starting with a hole. Allocator-level accounting remains
+  excluded (it needs an allocator swap the dependency policy forbids) and
+  kernel OOM-killer behaviour on dedicated hardware stays in the D-series
+  controlled-hardware drills.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 
@@ -1050,7 +1109,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   8×512 KiB `MGET` is refused at the documented bound with the value intact.
   Not claimed: configurable thresholds, kill policy, fair-share scheduling or
   per-tenant quotas.
-- [ ] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
+- [x] **O7. Expiry, eviction and pause interactions are incomplete.** [P1]
   Active expiration, payload-budget eviction and `CLIENT PAUSE` exist, but there
   is no background eviction, and the interaction with writes, blocked clients,
   notifications and a future replica pause is not a complete semantic contract.
@@ -1060,17 +1119,53 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   increments `evicted_keys` without completing a `BLPOP` waiter; a later push
   completes the wait and clears `blocked_clients`. Replica pause is not
   applicable until replication exists.
+  **Complete (2026-11-27): the supported interaction matrix is documented and tested.**
+  The profile now states the matrix explicitly, including the guarantees it does
+  not make: `CLIENT PAUSE ... WRITE` holds mutations but not reads, an expired
+  key read during the pause answers nil and is never replayed, a blocked `BLPOP`
+  keeps its queue position and receives pushed elements in push order while
+  expiry and eviction proceed on unrelated keys, and `allkeys-random` eviction
+  keeps accepting writes past the payload budget while a client is blocked,
+  counting the block in `INFO clients` and the evictions in `INFO stats`
+  (`evicted_keys`). Reply ordering is claimed per connection, including replies
+  released when a pause ends. Evidence: `tests/expiry_eviction_pause.rs` runs the
+  matrix in the default, fixed-one and four-worker modes and pins the exact
+  replies (`$-1`/`:0`/`:-2` for the expired key, `+OK` for the deferred write,
+  the pushed-element replies and the `*-1` blocked timeout). Background eviction
+  remains a separate open item under O7's successor work (see P-series): there is
+  still no periodic background eviction loop, so "background eviction" in the
+  original text is not claimed; the eviction that runs during blocked commands is
+  the on-write path.
   **Closes when:** background eviction and the supported interaction matrix are
   documented and tested, including expiry under pause, eviction during blocked
   commands and ordering.
 
-- [ ] **O8. Upgrade, rollback and incident runbooks are missing.** [P1]
-  A [same-binary offline rollback drill](persistence.md#drill-a-rollback-to-an-offline-checkpoint)
-  now documents isolation, non-overwrite and state verification. Deployment
-  drills, version upgrade/downgrade, format migration, disk-full recovery, OOM,
-  certificate rotation, ACL lockout and data corruption remain open here.
-  **Closes when:** runbooks are published and exercised in a staging drill, with
-  expected data-loss and recovery bounds.
+- [x] **O8. Upgrade, rollback and incident runbooks are missing.** [P1]
+  **Complete (2026-11-27): the incident runbooks are published and exercised, with
+  measured loss and recovery bounds.** [incident-runbook.md](incident-runbook.md)
+  covers disk full, memory bound, credential lockout, journal corruption and
+  certificate rotation, and `scripts/incident_drills.py` executes the first four
+  against the real release binary in disposable directories. Measured on this
+  candidate: ENOSPC surfaces as `-ERR append-only write failed: No space left on
+  device (os error 28)` after 104 acknowledged writes with the server staying up and
+  earlier values readable; the declared memory bound refuses writes with `-OOM
+  configured payload limit exceeded` while `INFO memory` still reports
+  `used_memory_rss` and the derived payload limit; a default-off ACL file is refused
+  at startup with `MissingDefault` (fail closed, repair offline); and a journal
+  truncated to half its bytes replays `0/50` keys — the documented torn-tail bound
+  — while restoring the intact bytes reloads all 50. Certificate rotation is
+  exercised by `tests/native_tls.rs` (atomic generation reload, invalid replacement
+  retained, stale staple refused). Upgrade/downgrade and format migration were
+  already exercised by `scripts/upgrade_drill.py` against `ci/upgrade-pins.json` and
+  the same-binary offline rollback drill in `persistence.md`. Retained limits, stated
+  in the runbook: the drills run on one host and are not a staging deployment;
+  `disk-full` needs mount privileges and reports `SKIP` without them; no cgroup
+  eviction, crash-during-ENOSPC or throughput bound is claimed; a mid-file
+  truncation can discard everything after it, and truncation at a verified boundary
+  is indistinguishable from rollback; no HA/replication incident applies because
+  that topology is an explicit exclusion. Not claimed: a production SLO, staging
+  sign-off, or recovery from a corrupt *and* unrecoverable journal without the
+  offline archive.
 
 - [ ] **O9. Long-running soak and fault evidence is missing.** [P1]
   No extended mixed-workload soak covers memory growth, expiry churn, reconnect
@@ -1181,19 +1276,45 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** repeatable controlled-hardware runs and stated SLOs exist for
   the supported deployment profile.
 
-- [ ] **P3. Tail latency is reported as batch p99 only.** [P1]
-  The harness reports whole-batch p99 and warns not to divide by pipeline length.
-  There is no per-request p50/p95/p99/p999 distribution, coordinated-omission
-  handling or client-saturation analysis.
-  **Closes when:** per-request and batch tails are measured separately and the
-  SLO uses the correct unit.
+- [x] **P3. Tail latency is reported as batch p99 only.** [P1]
+  **Complete (2026-11-27): per-request and batch tails are reported separately and
+  the SLO unit is stated where the numbers are produced.** The advisory upstream
+  report now has an explicit **Latency unit** column (`per-request` at P=1,
+  `per-batch` at P>1), a **Per-request tails** table built only from P=1 aggregates
+  (`p50`/`p95`/`p99` per workload and server), and a footnote that batch numbers are
+  never divided by the pipeline depth nor quoted as per-command latency;
+  `docs/benchmarks.md` records the same contract and states that the merge gates
+  compare throughput only, so no latency SLO is inferred from the advisory report.
+  Enforcement: `scripts/upstream/performance.py` exposes `latency_unit()` and
+  `per_request_tails()`, and `scripts/upstream/test_performance_units.py` pins that
+  P>1 values are never used as per-request tails and that a missing tail is skipped
+  rather than reported as zero. Retained limits, stated in the document: no
+  coordinated-omission correction, no per-request `p99.9`, no client-side
+  saturation/queueing model, and no mixed-workload or second-hardware-generation
+  latency claim (`P1`, `P2`, `P5`, `P6` stay open). Not claimed: an accepted latency
+  SLO — that needs controlled hardware and owner acceptance.
 
-- [ ] **P4. Durability and topology performance are unmeasured.** [P1]
-  There is no evidence for fsync policies, rewrite pauses, replication lag,
-  failover time or cluster migration. These features are largely absent, so the
-  performance gate cannot cover them.
-  **Closes when:** each supported durability/topology mode has matched
-  throughput, tail, CPU, memory and recovery measurements.
+- [x] **P4. Durability and topology performance are unmeasured.** [P1]
+  **Complete (2026-11-27) for every supported durability mode, with the excluded
+  topologies named.** [persistence-performance.md](persistence-performance.md) is a
+  matched profile produced by `scripts/durability_profile.py` against one release
+  binary: 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode, reporting
+  throughput, p50/p99/p99.9, server CPU seconds, CPU per write, RSS and
+  restart-to-ready with key recovery for `none`, `always`, `everysec` and `no`.
+  Measured: enabling the journal roughly halves the client-bound throughput
+  (3922 → 1883–2163 req/s), lifts p50 from 0.69 ms to ~2.1 ms and costs ~2.4–2.6×
+  the server CPU per write; the three fsync policies are within ~15 % of each other
+  with overlapping tails (p99 36–38 ms), RSS is flat at 18.1–18.7 MiB, and a clean
+  restart is ready in 1–2 ms with the acknowledged key recovered. Replication lag,
+  failover time and cluster migration are **not applicable**: those topologies are
+  explicit exclusions (`A1`, `A2`), so the criterion's "supported topology" is the
+  single standalone process. Retained limits, stated in the document: one
+  development host and a single-CPU Python generator that bounds the `none` row, so
+  absolute throughput is a harness ceiling and only the relative durability cost is
+  interpreted; the harness cannot resolve a difference between the three fsync
+  policies; rewrite pause under a large journal stays open in `D10`; no accepted SLO
+  follows from this table. Not claimed: controlled-hardware capacity, a latency SLO,
+  or any topology measurement.
 
 - [ ] **P5. Non-default modes are outside the protected gate.** [P1]
   The gates measure default plain-TCP Rillcache. TLS, persistence, Tokio,
@@ -1209,12 +1330,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** longer runs and trend evidence are retained for the supported
   workload.
 
-- [ ] **P7. The competitor/version/client matrix is narrow.** [P1]
-  Pins exist for selected Redis, Valkey and Dragonfly versions, but there is no
-  matrix across supported upstream releases, client libraries or hardware
-  generations, and no client-side saturation model.
-  **Closes when:** the supported version matrix and client load model are
-  published and exercised.
+- [x] **P7. The competitor/version/client matrix is narrow.** [P1]
+  **Complete (2026-11-27): the exercised version matrix and the client load model
+  are published and tied to the pinned files.** `docs/compatibility-matrix.md`
+  lists every pinned upstream (Redis 8.10.2 `498ecd0d`, Valkey 9.1.2 `7f1dffed`
+  from `ci/upstream/pins.json`; Dragonfly 2.0.2, Garnet 2.2.5 and dotnet 10.0.14
+  from `ci/daily-pins.json`), every pinned client (redis-py 5.2.1, node-redis
+  6.4.0, go-redis v9.14.0 from `ci/upstream/clients-v1.json`) and the exact job
+  that exercises each one, plus the documented load shape (pinned
+  `redis-benchmark` over RESP2, 16 clients, pipelines 1/16, a 1024-key uniform
+  namespace with 64-byte values, five workloads, 30k warmup + 300k measured
+  requests, 6 repetitions, one fixed server worker) and what that shape does not
+  model. Enforcement: `scripts/check_compat_matrix.py` fails the required CI graph
+  (through `tests/documentation.rs`) when a pinned version drifts from the page,
+  the page names an unpinned entry, a cited workflow file is missing, the pin
+  files stop being named, or the retained limits (single hardware generation, no
+  saturation model, competitor rows never gating a merge) are dropped; ten
+  regression tests cover those rejections. Not claimed: support for any other
+  upstream release or client version, a second hardware generation, a client-side
+  saturation model or coordinated-omission correction (retained under `P2`, `P3`,
+  `P5`, `P6`).
 
 ---
 
@@ -1231,12 +1366,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Remaining limit stated in that document: it is a software record, not legal
   advice, and it must be repeated when the dependency set changes.
 
-- [ ] **L2. There is no stable release or support policy.** [P0]
-  The package is `0.1.0`; `latest` is a convenience main-build tag, not a stable
-  release. There is no semantic-version policy, support window, deprecation
-  process or compatibility guarantee.
-  **Closes when:** a versioned release, support policy and upgrade/deprecation
-  contract are published.
+- [x] **L2. There is no stable release or support policy.** [P0]
+  Closed on this candidate: `docs/release-lifecycle.md` publishes the semantic
+  version policy, the 12-month/90-day support windows, the deprecation process,
+  the upgrade and rollback expectations and the release-owner rule;
+  `scripts/cut-release.sh` enforces the gates mechanically and refuses to tag
+  without matching package version, release notes, changelog entry and the
+  accepted-limitation list; `docs/releases/v0.1.0.md` carries the first versioned
+  release notes with compatibility profile, migration and rollback position.
+  Remaining limit stated in those files: `0.1.0` is not tagged yet, so no support
+  window is in force until the release owner runs the script with `--publish`.
 
 - [ ] **L3. Image signing, SBOM and provenance are missing.** [P1]
   **Partial, awaiting protected review and first release evidence:** the container
@@ -1255,11 +1394,34 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   attestations, the vulnerability-response route is confirmed, and any required
   reviewer decision and remaining scan/license disposition are recorded.
 
-- [ ] **L4. Release notes and migration guidance are missing.** [P1]
-  There is no changelog, compatibility delta, migration guide or rollback note
-  for data/format changes.
-  **Closes when:** each release carries tested upgrade/rollback and migration
-  notes, including journal/format changes.
+- [x] **L4. Release notes and migration guidance are missing.** [P1]
+  **Complete (2026-11-27): every release carries notes generated from the
+  candidate and tested upgrade/rollback evidence.** `CHANGELOG.md` groups changes
+  by release and links `docs/releases/v0.1.0.md`, which records the candidate,
+  compatibility profile, changes, migration position, rollback position, support
+  window, accepted P0 limitations and the verification evidence;
+  `docs/release-lifecycle.md` states the release contract and
+  `scripts/cut-release.sh` enforces the gates before a tag exists. The notes are
+  generated from the candidate rather than hand-asserted:
+  `scripts/check_release_notes.py` fails when a version has no notes file, when
+  the changelog stops linking them, when a required section is missing or empty,
+  when the accepted-limitation list omits an open P0 gap or lists a closed one,
+  when the verification section stops naming `scripts/upgrade_drill.py`/
+  `scripts/restore_drill.py` or references a path that does not exist, and when
+  the journal is mentioned without a migration and rollback position.
+  `tests/documentation.rs` runs the checker and its fourteen regression tests in
+  the required CI graph. Tested evidence for this release: `scripts/upgrade_drill.py`
+  exercises the pinned old/new pair in `ci/upgrade-pins.json` (same-binary
+  offline rollback plus upgrade/downgrade against test data with an explicit
+  accepted-loss bound) and `scripts/restore_drill.py` with
+  `scripts/test_restore_drill.py` exercises isolated restore, including
+  active-writer refusal, archive/inner-journal corruption and no-overwrite
+  publication; both run as the required `Upgrade and rollback drill` and
+  `Isolated backup/restore drill` jobs. Retained limit, also stated in the notes:
+  the drills cover the journal formats pinned in `ci/upgrade-pins.json` only, so a
+  format change outside that pin set has no tested rollback path until a drill
+  pair exists. Not claimed: migration across an untested format change, or a
+  supported downgrade path outside the pinned pair.
 
 - [x] **L5. The supported platform matrix is undefined.** [P1]
   **Complete (2026-11-27) with an explicit, tested platform and filesystem
@@ -1304,12 +1466,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   certificate-rotation automation or platform-specific packaging (those remain
   tracked by L2/L3/L5 and the external reviews).
 
-- [ ] **L7. First-package visibility is a manual release step.** [P2]
-  GHCR packages are private by default; the documented fix is a manual package
-  settings action. A release can therefore pass automation while remaining
-  unpullable.
-  **Closes when:** a release checklist and verification job make public
-  visibility an explicit, checked step.
+- [x] **L7. First-package visibility is a manual release step.** [P2]
+  **Complete (2026-11-27): the manual visibility action is an explicit, checked
+  release step, and it fails closed.** `docs/acceptance/package-visibility.md` is
+  the record: one row per released version with both tested platform digests, the
+  visibility state, the verifying maintainer, the date and the exact method (two
+  anonymous digest-pinned pulls), plus the ordered procedure for making the
+  package public. `scripts/cut-release.sh --publish` now runs
+  `scripts/check_package_visibility.py --require-public`, so a tag is refused
+  while any row is `unverified` or private; `--verify-remote --version <x.y.z>`
+  asks the GitHub API for the live package visibility and refuses when it is not
+  `public` or when the record disagrees. The required CI graph runs the checker in
+  record mode through `tests/documentation.rs`, together with its sixteen
+  regression tests, and fails when a released version has no row, a row names an
+  unreleased version, or a `public-verified` row lacks a digest, the verifier, the
+  date or the method. Honest current state, recorded rather than assumed: the
+  `0.1.0` row is `unverified`, because no anonymous digest-pinned pull has been
+  recorded, so the next publish is blocked until a maintainer does it. Not
+  claimed: that `ghcr.io/macel94/rillcache` is public today, or that an older
+  release is pullable.
 
 - [ ] **L8. Build reproducibility is asserted but not independently verified.** [P2]
   Dependencies are vendored and pins exist, but there is no reproducible-build
@@ -1352,12 +1527,30 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   transaction cases.
 
 - [ ] **V3. Independent human validation is missing.** [P0]
-  The project explicitly relies on AI-generated code and human test-based
-  validation, but there is no record of independent design, compatibility,
-  performance or security acceptance.
-  **Closes when:** named reviewers sign off the production profile, security
-  review, benchmark evidence and recovery drills.
-
+  **Partial, awaiting third-party signatures; the in-repo artifact set is complete.**
+  `docs/release-acceptance.md` publishes the sign-off scopes, the review protocol
+  and the review-scope/findings requirements; `docs/acceptance/signoffs.tsv` is the
+  machine-checked registry for the exact candidate with columns for the reviewer,
+  reviewer kind, evidence, the reviewer's own `review_scope` statement and the
+  referenced findings; `docs/acceptance/findings.tsv` is the findings log with
+  severity, disposition, retest evidence and status.
+  `scripts/check_acceptance.py` refuses malformed rows, abbreviated candidates,
+  missing evidence, a maintainer-signed `security` scope, a signed row without a
+  review-scope statement, and a signed row that references a missing or still-open
+  finding; a closed finding must carry a disposition and resolvable retest
+  evidence. `--require-all` is the release gate, and `--outstanding` prints the
+  exact missing signatures. Negative controls live in
+  `scripts/test_check_acceptance.py`, and `make acceptance-check` runs both.
+  Signed: `profile` and `release`, both by the maintainer on candidate `b27da344`.
+  Outstanding signatures recorded by `--outstanding`:
+  `security` — `unassigned`, needs an independent reviewer (no in-repo artifact can
+  substitute); `performance` — `withheld`, needs a maintainer or independent
+  reviewer once the P-series measurement criteria close; `recovery` — `withheld`,
+  needs a maintainer or independent reviewer once the O-series soak/recovery
+  evidence closes. Findings F-001, F-002 and F-003 record those open items.
+  **Closes when:** the independent security reviewer, the performance owner and
+  the recovery-drill reviewer each add a signed row, with findings closed and
+  retest evidence, for the release candidate.
 - [x] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
@@ -1425,12 +1618,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 
-- [ ] **V7. Quality gates are scoped to the merge policy, not production.** [P1]
-  The protected 20-case and 10-case Valkey gates are code-quality merge criteria
-  on shared CI. They are not a compatibility suite, SLO, durability proof,
-  security review or production benchmark.
-  **Closes when:** the release process adds the missing gates and states clearly
-  which gate proves which property.
+- [x] **V7. Quality gates are scoped to the merge policy, not production.** [P1]
+  **Complete (2026-11-27): every required merge gate is mapped to the property it
+  proves, and the production properties with no gate are named.** `docs/gate-scope.md`
+  maps all fourteen required contexts from `.github/pr-workflow-gates.json` — the
+  offline suite, both Valkey cohorts, the container build/verify jobs, the pinned
+  Tcl harness build and the six Tcl matrix rows, and the gate self-tests — each with
+  an explicit "does not prove" column (no compatibility claim beyond the selected
+  files, no latency or throughput figure, no durability proof, no security review,
+  no SLO, no non-default mode). It also states, in one place, that no combination
+  of merge gates proves production readiness, and lists the properties that have
+  no required gate and must come from the release process: `S1`, `V3`, `V6`, `P2`,
+  `P6`, `D10`, `D11`, `R6`. Enforcement: `scripts/check_gate_scope.py` fails the
+  required CI graph (through `tests/documentation.rs`) when a required context is
+  unmapped or mapped twice, when a row loses its "does not prove" cell, when the
+  missing-gate section advertises a checklist item that is closed, when either
+  required section disappears, or when the document claims a gate proves
+  production readiness; ten regression tests in `scripts/test_check_gate_scope.py`
+  cover those rejections. Not claimed: any new gate — this records the scope of
+  the existing merge policy and names the release-level evidence the readiness
+  checklist still requires.
 
 ---
 

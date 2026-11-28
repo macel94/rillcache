@@ -162,6 +162,31 @@ def aggregate(samples):
     return tables
 
 
+def latency_unit(pipeline):
+    """Upstream generator latency unit for a pipeline depth.
+
+    At P=1 the generator times one request per measurement, so the reported
+    percentiles are per-request. At P>1 it times the whole pipeline, so the same
+    numbers are per-batch and MUST NOT be divided by the pipeline depth or quoted
+    as per-command latency.
+    """
+    return "per-request" if pipeline == 1 else "per-batch"
+
+
+def per_request_tails(rows, percentile="p99_latency_ms"):
+    """Per-request tails taken only from P=1 aggregates, one value per workload.
+
+    This is the unit an SLO may be stated in: batch tails at P>1 are a different
+    quantity and are reported separately instead of being converted.
+    """
+    tails = {}
+    for row in rows:
+        if row.get("pipeline") != 1 or percentile not in row:
+            continue
+        tails.setdefault(row["workload"], row[percentile])
+    return tails
+
+
 def report(samples, metadata, error=None):
     rows = aggregate(samples)
     save(DIRECTORY / "results.json", {"metadata": metadata, "samples": samples, "aggregates": rows, "error": error})
@@ -171,15 +196,39 @@ def report(samples, metadata, error=None):
     text += f"Valid samples: **{valid}/{expected}**; invalid/missing: **{expected - valid}**. Six repetitions; rotated server order; one runner/job.\n\n"
     if error:
         text += f"Infrastructure interruption: `{error}`\n\n"
-    text += "| Workload | P | Server | n | Median req/s | CV % | Mean / p50 / p95 / p99 ms² | Server CPU % | RSS / peak KiB³ | Errors |\n|---|---:|---|---:|---:|---:|---|---:|---|---|\n"
+    text += "| Workload | P | Latency unit | Server | n | Median req/s | CV % | Mean / p50 / p95 / p99 ms² | Server CPU % | RSS / peak KiB³ | Errors |\n|---||---:|---|---:|---:|---:|---|---:|---|---|\n"
     for row in rows:
-        text += f"| {row['workload']} | {row['pipeline']} | {row['server']} | {row['valid_samples']} | "
+        text += f"| {row['workload']} | {row['pipeline']} | {latency_unit(row['pipeline'])} | {row['server']} | {row['valid_samples']} | "
         if "rps_median" not in row:
-            text += "n/a | n/a | n/a | n/a | n/a | unknown |\n"
+            text += "n/a | n/a | n/a | n/a | n/a | n/a | unknown |\n"
             continue
         latencies = " / ".join(f"{row[k + '_median']:.3f}" for k in ("avg_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms"))
         errors = "0" if row["matched_cohort_valid"] else "unknown; INVALID cohort"
         text += f"{row['rps_median']:.0f} | {row['rps_cv_percent']:.2f} | {latencies} | {row['server_cpu_percent_one_core_median']:.1f} | {row['server_rss_kib_median']:.0f} / {row['server_peak_rss_kib_median']:.0f} | {errors} |\n"
+    text += "\n### Per-request tails (P=1 only; the unit an SLO may use)\n\n"
+    text += "| Workload | Server | p50 ms | p95 ms | p99 ms |\n|---|---|---:|---:|---:|\n"
+    for workload in CONFIG["workloads"]:
+        for server in SERVERS:
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if candidate["workload"] == workload
+                    and candidate["pipeline"] == 1
+                    and candidate["server"] == server
+                ),
+                None,
+            )
+            if row is None or "p50_latency_ms" not in row:
+                text += f"| {workload} | {server} | n/a | n/a | n/a |\n"
+                continue
+            text += (
+                f"| {workload} | {server} | {row['p50_latency_ms']:.3f} | "
+                f"{row['p95_latency_ms']:.3f} | {row['p99_latency_ms']:.3f} |\n"
+            )
+    text += ("\nBatch tails at P>1 are a different quantity: they are the latency of "
+             "one pipeline round trip, are never divided by the pipeline depth, and are "
+             "not converted into per-request numbers.\n")
     text += "\n### Matched throughput deltas (Rillcache vs reference)\n\n"
     for workload, pipeline in itertools.product(CONFIG["workloads"], CONFIG["pipelines"]):
         cohort = [row for row in rows if row["workload"] == workload and row["pipeline"] == pipeline]
@@ -192,7 +241,11 @@ def report(samples, metadata, error=None):
             threshold = max(CONFIG["advisory_difference_percent"], 2 * candidate["rps_cv_percent"], 2 * reference["rps_cv_percent"])
             label = "within advisory/noise band; inconclusive" if abs(delta) <= threshold else "descriptive difference only; NOT statistical significance"
             text += f"- {workload} P={pipeline} vs {reference['server']}: {delta:+.2f}% — {label}.\n"
-    text += "\n² Medians of upstream per-run latency summaries, not pooled percentiles. At P>1 the generator measures pipeline latency; not a per-command latency claim. "
+    text += ("\n² Medians of upstream per-run latency summaries, not pooled percentiles. "
+             "The Latency unit column states the quantity: per-request at P=1, per-batch at "
+             "P>1. Batch numbers are never divided by the pipeline depth and never quoted as "
+             "per-command latency; coordinated omission is not corrected and client "
+             "saturation is not modelled, so no SLO is inferred from this advisory report. ")
     text += "³ RSS after measured load; peak is the fresh server lifetime including preload/warmup, read from /proc. Server CPU delta excludes preload/warmup; CPU% uses outer generator wall time. "
     text += "Generator CPU seconds/peak RSS, throughput min/max, samples, commands, exit statuses and source/environment metadata are in JSON/log artifacts. "
     text += "A failed generator exits at first error: its total error count is unknown, never zero. A known CONFIG metadata-probe warning is retained separately, not counted as a workload error.\n\n"

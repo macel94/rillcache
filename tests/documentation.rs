@@ -123,3 +123,276 @@ fn public_entry_points_link_the_canonical_checklist_and_keep_the_not_ready_statu
         );
     }
 }
+
+/// L2: the release contract is published and mechanically enforced, and every
+/// still-open P0 checklist item is accepted in the release notes rather than
+/// disappearing between the checklist and the notes.
+#[test]
+fn release_lifecycle_contract_is_published_and_enforced() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lifecycle = std::fs::read_to_string(manifest.join("docs/release-lifecycle.md"))
+        .expect("published release contract");
+    for section in [
+        "Semantic Versioning",
+        "Support window",
+        "Deprecation process",
+        "Upgrade expectations",
+        "Release gates",
+    ] {
+        assert!(
+            lifecycle.contains(section),
+            "release contract is missing {section}"
+        );
+    }
+
+    let script = manifest.join("scripts/cut-release.sh");
+    let contents = std::fs::read_to_string(&script).expect("release gate script");
+    assert!(
+        contents.contains("refusing to release") && contents.contains("--publish"),
+        "cut-release.sh must refuse failed gates and require an explicit publish flag"
+    );
+
+    let notes = std::fs::read_to_string(manifest.join("docs/releases/v0.1.0.md"))
+        .expect("versioned release notes");
+    for section in [
+        "Candidate",
+        "Compatibility profile",
+        "Migration",
+        "Rollback",
+        "Support window",
+    ] {
+        assert!(
+            notes.contains(section),
+            "release notes are missing {section}"
+        );
+    }
+
+    let checklist = std::fs::read_to_string(manifest.join("docs/production-readiness-gaps.md"))
+        .expect("canonical checklist");
+    let mut open_p0 = Vec::new();
+    for line in checklist.lines() {
+        if !line.starts_with("- [ ] **") || !line.contains("[P0]") {
+            continue;
+        }
+        let rest = line.trim_start_matches("- [ ] **");
+        if let Some((id, _)) = rest.split_once('.') {
+            open_p0.push(id.to_string());
+        }
+    }
+    assert!(
+        !open_p0.is_empty(),
+        "expected open P0 items while the project is not production ready"
+    );
+    for id in &open_p0 {
+        assert!(
+            notes.contains(&format!("`{id}`")),
+            "open P0 item {id} is not accepted in the release notes"
+        );
+    }
+}
+
+/// V3: the acceptance registry parses, its controls pass, and the checker refuses
+/// a maintainer-signed security scope or an incomplete candidate.
+#[test]
+fn production_acceptance_registry_is_machine_checked() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("python3")
+        .arg("scripts/test_check_acceptance.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the acceptance-registry controls");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let registry = std::fs::read_to_string(manifest.join("docs/acceptance/signoffs.tsv"))
+        .expect("acceptance registry");
+    let header = registry.lines().next().unwrap_or_default();
+    assert_eq!(
+        header,
+        "candidate\tscope\treviewer\treviewer_kind\tevidence\treview_scope\tfindings\tsigned_at\tstate",
+        "registry header changed"
+    );
+    for scope in ["profile", "security", "performance", "recovery", "release"] {
+        assert!(
+            registry
+                .lines()
+                .any(|line| line.split('\t').nth(1) == Some(scope)),
+            "registry has no row for scope {scope}"
+        );
+    }
+    let doc = std::fs::read_to_string(manifest.join("docs/release-acceptance.md"))
+        .expect("acceptance process documentation");
+    assert!(
+        doc.contains("independent reviewer only"),
+        "security scope must stay independent"
+    );
+}
+
+/// V7: every required merge gate is mapped to the property it proves, and the map
+/// explicitly states the production properties no merge gate covers. The checker
+/// and its regression suite run here, so the mapping cannot silently drift from
+/// `.github/pr-workflow-gates.json` or start claiming a production pass.
+#[test]
+fn merge_gates_are_mapped_to_the_properties_they_prove() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_gate_scope.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline gate-scope check");
+    assert!(
+        check.status.success(),
+        "gate scope check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Gate scope valid"),
+        "unexpected gate scope output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_gate_scope"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the gate-scope regression tests");
+    assert!(
+        unit.status.success(),
+        "gate scope regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// L4: release notes are checked against the candidate's real state, so they
+/// cannot drift from the open P0 inventory, stop naming the exercised drills, or
+/// reference evidence paths that do not exist. The checker's own regression suite
+/// runs here too, otherwise a broken checker could pass itself.
+#[test]
+fn release_notes_track_the_candidate_and_its_exercised_drills() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_release_notes.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline release-notes check");
+    assert!(
+        check.status.success(),
+        "release notes check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Release notes valid"),
+        "unexpected release notes output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_release_notes"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the release-notes regression tests");
+    assert!(
+        unit.status.success(),
+        "release notes regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// L7: GHCR packages start private, so publishing must fail closed until a
+/// maintainer records an anonymous, digest-pinned pull for both tested platforms.
+/// The record cross-links the released versions, and the same checker runs in the
+/// release gate with `--require-public`.
+#[test]
+fn package_visibility_is_recorded_and_gated_before_publish() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .args(["scripts/check_package_visibility.py", "--check"])
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline package-visibility check");
+    assert!(
+        check.status.success(),
+        "package visibility check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Package visibility record valid"),
+        "unexpected package visibility output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let release = std::fs::read_to_string(manifest.join("scripts/cut-release.sh"))
+        .expect("release gate script");
+    assert!(
+        release.contains("check_package_visibility.py") && release.contains("--require-public"),
+        "cut-release.sh must fail closed on unverified package visibility"
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_package_visibility"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the package-visibility regression tests");
+    assert!(
+        unit.status.success(),
+        "package visibility regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// P7: the published version matrix and load model are tied to the pinned files.
+/// The checker fails when a pinned upstream or client version drifts, when the page
+/// names an unpinned entry, when an exercising workflow is missing, or when the
+/// retained limits (single hardware generation, no saturation model, competitors
+/// are not gates) are dropped.
+#[test]
+fn published_version_matrix_matches_the_pinned_files() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_compat_matrix.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline compatibility-matrix check");
+    assert!(
+        check.status.success(),
+        "compatibility matrix check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("Compatibility matrix valid"),
+        "unexpected compatibility matrix output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_check_compat_matrix"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the compatibility-matrix regression tests");
+    assert!(
+        unit.status.success(),
+        "compatibility matrix regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
