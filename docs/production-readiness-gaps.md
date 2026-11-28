@@ -1532,12 +1532,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   throughput or latency SLO. Not claimed: controlled-hardware capacity, a latency
   SLO, or any topology measurement.
 
-- [ ] **P5. Non-default modes are outside the protected gate.** [P1]
-  The gates measure default plain-TCP Rillcache. TLS, persistence, Tokio,
-  multi-owner, fixed workers and container modes are not required to win or even
-  stay within a regression budget.
-  **Closes when:** the profile's production modes have their own regression
-  budgets and evidence, or they are explicitly non-production experiments.
+- [x] **P5. Non-default modes are outside the protected gate.** [P1]
+  **Complete (2026-11-27) by the criterion's exclusion branch: every non-default
+  mode is explicitly declared ungated or experimental in the profile.**
+  `docs/production-profile.md` gains a "Non-production experiment modes" table that
+  names each mode with its exact flag and states its real status: the TLS listener
+  (`--tls-bind`) is supported for connectivity with **no regression budget**, the
+  journal under load (`--appendonly`/`--appendfsync`) has **no performance gate**
+  (fsync behaviour is tracked by `D10`), `--io-mode tokio` remains the R2 opt-in
+  experiment outside the profile, `--storage-owners N` is an opt-in experiment below
+  the one-owner path with no gate (`R1`), `--threads N` has a documented tradeoff
+  but **no latency SLO**, and the container/Compose/Kubernetes manifests are
+  deployment artifacts only. `docs/gate-scope.md` already states that only the
+  default configuration is gated. Enforcement: `tests/declared_modes.rs` runs in the
+  required CI graph and fails if the table loses a flag or one of its "no regression
+  budget / no performance gate / no latency SLO / Opt-in experiment" statements, if
+  `.github/pr-workflow-gates.json` starts gating one of those modes without this
+  table changing, if `docs/gate-scope.md` stops stating that non-default modes are
+  outside the gates, or if this checklist entry stops recording the exclusion
+  branch. Not claimed: any regression budget, throughput, latency or scaling
+  evidence for a non-default mode — adding one requires the matching required
+  evidence, not an edit to this table.
 
 - [x] **P6. Long-running performance and regression budgets are missing.** [P1]
   **Complete (2026-11-28): longer runs and per-round trend evidence are retained
