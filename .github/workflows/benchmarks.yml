@@ -11,6 +11,10 @@ on:
         description: 'Also run the O9 mixed-workload soak for this many seconds (0 skips)'
         required: false
         default: '0'
+      soak_rewrite_every:
+        description: 'Trigger the journal rewrite every N soak samples (default 12)'
+        required: false
+        default: '12'
 
 permissions:
   contents: read
@@ -48,7 +52,7 @@ jobs:
           python3 scripts/soak.py \
             --binary target/release/rillcache \
             --duration "${{ inputs.soak_seconds }}" \
-            --clients 8 --interval 10 --rewrite-every 12 \
+            --clients 8 --interval 10 --rewrite-every "${{ inputs.soak_rewrite_every }}" \
             --json target/soak/report.json \
             | tee target/soak/summary.md
       - name: Preserve soak and recovery evidence even on failure
