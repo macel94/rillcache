@@ -1758,8 +1758,17 @@ impl ShardExecutor {
                         .max_frame_bytes
                         .saturating_sub(4096)
                         .clamp(1024, CHUNK_BUDGET);
-                    for key in &keys {
-                        encode_key(&data, key, now, budget, &mut records);
+                    // A plain stream append journals only the new entry. Rewriting
+                    // the whole key (DEL + every entry) for each XADD makes the
+                    // journal grow with the square of the stream length; replay is
+                    // command-based, so an explicit-ID XADD restores the same state.
+                    match xadd_delta(&data, arguments, &keys, now) {
+                        Some(delta) => records.extend_from_slice(&delta),
+                        None => {
+                            for key in &keys {
+                                encode_key(&data, key, now, budget, &mut records);
+                            }
+                        }
                     }
                     records
                 } else {
@@ -2195,6 +2204,52 @@ impl ShardExecutor {
         };
         journal.sync_all()
     }
+}
+
+/// Journal record for an append-only `XADD`, or `None` when the generic
+/// whole-key re-encode must be used.
+///
+/// Only the plain form `XADD key id field value [field value ...]` (auto or
+/// explicit id, no NOMKSTREAM/MAXLEN/MINID/LIMIT) qualifies: the command then
+/// appends exactly one entry and replaying it reproduces the same stream state
+/// (new id, fields, `entries_added`, `last_id`) without rewriting history.
+fn xadd_delta(data: &Data, arguments: &[&[u8]], keys: &[Vec<u8>], now: i64) -> Option<Vec<u8>> {
+    if arguments.len() < 5 || !arguments[0].eq_ignore_ascii_case(b"XADD") {
+        return None;
+    }
+    if keys.len() != 1 || keys[0] != arguments[1] {
+        return None;
+    }
+    for token in &arguments[2..] {
+        if token.eq_ignore_ascii_case(b"NOMKSTREAM")
+            || token.eq_ignore_ascii_case(b"MAXLEN")
+            || token.eq_ignore_ascii_case(b"MINID")
+            || token.eq_ignore_ascii_case(b"LIMIT")
+            || *token == b"~"
+            || *token == b"="
+        {
+            return None;
+        }
+    }
+    // XADD key id field value ... => 3 + 2k arguments.
+    if arguments.len().is_multiple_of(2) {
+        return None;
+    }
+    let entry = data.entries.get(&keys[0])?;
+    if !entry.alive(now) {
+        return None;
+    }
+    let stream = entry.stream.as_ref()?;
+    let (id, appended) = stream.entries.iter().next_back()?;
+    let id = id_text(*id);
+    let mut argv: Vec<&[u8]> = vec![b"XADD", &keys[0], &id];
+    for (field, value) in &appended.fields {
+        argv.push(field);
+        argv.push(value);
+    }
+    let mut record = Vec::new();
+    encode_request(&argv, &mut record);
+    Some(record)
 }
 
 /// Encode the final state of one key as a bounded sequence of RESP commands.
