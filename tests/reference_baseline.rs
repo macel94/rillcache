@@ -579,6 +579,171 @@ fn run_command_surface_corpus(client: &mut Client, suffix: &[u8]) {
     );
     assert_command(client, &[b"DECR", &counter], Resp::Integer(4));
 }
+/// Collection and generic surface cases (V2): set algebra with stores/cards,
+/// sorted-set range/removal/algebra families, and the remaining string and
+/// generic commands. Exact replies only; nondeterministic commands (SCAN/KEYS
+/// ordering, RANDOMKEY, ZRANDMEMBER) are deliberately excluded.
+fn run_collection_surface_corpus(client: &mut Client, suffix: &[u8]) {
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let array = |items: Vec<Resp>| Resp::Array(Some(items));
+
+    let s1 = key(b"rillcache:baseline:cs-s1:", suffix);
+    let s2 = key(b"rillcache:baseline:cs-s2:", suffix);
+    let dst = key(b"rillcache:baseline:cs-dst:", suffix);
+    assert_command(client, &[b"SADD", &s1, b"a", b"b"], Resp::Integer(2));
+    assert_command(client, &[b"SADD", &s2, b"b", b"c"], Resp::Integer(2));
+    assert_command(client, &[b"SDIFFSTORE", &dst, &s1, &s2], Resp::Integer(1));
+    assert_command(client, &[b"SISMEMBER", &dst, b"a"], Resp::Integer(1));
+    assert_command(client, &[b"SDIFFCARD", b"2", &s1, &s2], Resp::Integer(1));
+    assert_command(client, &[b"SINTERSTORE", &dst, &s1, &s2], Resp::Integer(1));
+    assert_command(client, &[b"SISMEMBER", &dst, b"b"], Resp::Integer(1));
+    assert_command(client, &[b"SINTERCARD", b"2", &s1, &s2], Resp::Integer(1));
+    assert_command(client, &[b"SUNIONSTORE", &dst, &s1, &s2], Resp::Integer(3));
+    assert_command(client, &[b"SCARD", &dst], Resp::Integer(3));
+    assert_command(client, &[b"SUNIONCARD", b"2", &s1, &s2], Resp::Integer(3));
+    assert_command(client, &[b"SMOVE", &s1, &s2, b"a"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"SMISMEMBER", &s2, b"a"],
+        array(vec![Resp::Integer(1)]),
+    );
+
+    let z = key(b"rillcache:baseline:cs-z:", suffix);
+    assert_command(
+        client,
+        &[b"ZADD", &z, b"1", b"a", b"2", b"b", b"3", b"c"],
+        Resp::Integer(3),
+    );
+    assert_command(
+        client,
+        &[b"ZRANGEBYSCORE", &z, b"-inf", b"+inf"],
+        array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c")]),
+    );
+    assert_command(
+        client,
+        &[b"ZRANGEBYSCORE", &z, b"2", b"3"],
+        array(vec![bulk(b"b"), bulk(b"c")]),
+    );
+    assert_command(
+        client,
+        &[b"ZREVRANGEBYSCORE", &z, b"+inf", b"-inf"],
+        array(vec![bulk(b"c"), bulk(b"b"), bulk(b"a")]),
+    );
+    assert_command(
+        client,
+        &[b"ZREVRANGEBYSCORE", &z, b"3", b"2"],
+        array(vec![bulk(b"c"), bulk(b"b")]),
+    );
+
+    let zlex = key(b"rillcache:baseline:cs-zlex:", suffix);
+    assert_command(
+        client,
+        &[b"ZADD", &zlex, b"0", b"a", b"0", b"b", b"0", b"c"],
+        Resp::Integer(3),
+    );
+    assert_command(
+        client,
+        &[b"ZRANGEBYLEX", &zlex, b"-", b"+"],
+        array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c")]),
+    );
+    assert_command(
+        client,
+        &[b"ZREVRANGEBYLEX", &zlex, b"+", b"-"],
+        array(vec![bulk(b"c"), bulk(b"b"), bulk(b"a")]),
+    );
+    assert_command(client, &[b"ZLEXCOUNT", &zlex, b"-", b"+"], Resp::Integer(3));
+    assert_command(
+        client,
+        &[b"ZREMRANGEBYLEX", &zlex, b"(a", b"(c"],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"ZCARD", &zlex], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"ZREMRANGEBYRANK", &z, b"0", b"0"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"ZREMRANGEBYSCORE", &z, b"3", b"3"],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"ZCARD", &z], Resp::Integer(1));
+
+    let za = key(b"rillcache:baseline:cs-za:", suffix);
+    let zb = key(b"rillcache:baseline:cs-zb:", suffix);
+    assert_command(
+        client,
+        &[b"ZADD", &za, b"1", b"a", b"2", b"b"],
+        Resp::Integer(2),
+    );
+    assert_command(client, &[b"ZADD", &zb, b"3", b"b"], Resp::Integer(1));
+    assert_command(client, &[b"ZDIFF", b"2", &za, &zb], array(vec![bulk(b"a")]));
+    assert_command(
+        client,
+        &[b"ZINTER", b"2", &za, &zb],
+        array(vec![bulk(b"b")]),
+    );
+    assert_command(
+        client,
+        &[b"ZUNION", b"2", &za, &zb],
+        array(vec![bulk(b"a"), bulk(b"b")]),
+    );
+    assert_command(
+        client,
+        &[b"ZDIFFSTORE", &dst, b"2", &za, &zb],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"ZINTERSTORE", &dst, b"2", &za, &zb],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"ZUNIONSTORE", &dst, b"2", &za, &zb],
+        Resp::Integer(2),
+    );
+    assert_command(client, &[b"ZINTERCARD", b"2", &za, &zb], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"ZMPOP", b"1", &za, b"MIN"],
+        array(vec![
+            bulk(&za),
+            array(vec![array(vec![bulk(b"a"), bulk(b"1")])]),
+        ]),
+    );
+
+    let k1 = key(b"rillcache:baseline:cs-k1:", suffix);
+    let k2 = key(b"rillcache:baseline:cs-k2:", suffix);
+    assert_command(
+        client,
+        &[b"MSET", &k1, b"abc", &k2, b"abd"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"SUBSTR", &k1, b"0", b"0"], bulk(b"a"));
+    assert_command(client, &[b"LCS", &k1, &k2, b"LEN"], Resp::Integer(2));
+    assert_command(client, &[b"EXPIRE", &k1, b"100"], Resp::Integer(1));
+    assert_command(client, &[b"PERSIST", &k1], Resp::Integer(1));
+    assert_command(client, &[b"PERSIST", &k1], Resp::Integer(0));
+    assert_command(client, &[b"TOUCH", &k2], Resp::Integer(1));
+    assert_command(client, &[b"TOUCH", &k1], Resp::Integer(1));
+    assert_command(client, &[b"RENAMENX", &k1, &k2], Resp::Integer(0));
+    assert_command(client, &[b"RENAME", &k1, &k1], Resp::Simple(b"OK".to_vec()));
+    assert_command(client, &[b"UNLINK", &k1, &k2], Resp::Integer(2));
+
+    let h = key(b"rillcache:baseline:cs-hash:", suffix);
+    assert_command(
+        client,
+        &[b"HMSET", &h, b"f", b"v"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[b"HSCAN", &h, b"0"],
+        array(vec![bulk(b"0"), array(vec![bulk(b"f"), bulk(b"v")])]),
+    );
+}
 fn assert_deadline(client: &mut Client, key: &[u8], deadline: i64) {
     assert_command(client, &[b"PEXPIRETIME", key], Resp::Integer(deadline));
     assert_command(
@@ -1021,6 +1186,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_transaction_corpus(address, suffix);
     run_stream_trim_read_corpus(&mut client, suffix);
     run_command_surface_corpus(&mut client, suffix);
+    run_collection_surface_corpus(&mut client, suffix);
 
     assert_command(
         &mut client,
