@@ -134,6 +134,9 @@ impl Session {
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        // One relaxed store per command feeds the documented per-client `idle`
+        // sampling: seconds since the last accepted command.
+        store.touch_client(self.id);
         self.execute_on(store, arguments, output)
     }
 
