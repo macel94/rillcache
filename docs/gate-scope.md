@@ -37,7 +37,7 @@ column, or if this document claims a production pass.
   from shared GitHub runners (`P2`, `P5`, `P6`).
 - It does not cover compatibility beyond the selected Tcl files, the differential
   corpus, the language-client matrix and the declared profile exclusions
-  (`V1`, `V2`, `C7`).
+  (`V2`, `C7`).
 - It does not prove durability: fsync policy behaviour, fault injection and recovery
   bounds are covered by `D10`, `D11` and the drill jobs, not by the merge gate.
 - It does not exercise the non-default modes (TLS, persistence, Tokio, multi-owner)

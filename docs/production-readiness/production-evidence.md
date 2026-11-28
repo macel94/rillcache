@@ -7,4 +7,4 @@ the capability row so independent feature increments edit only their own area.
 
 | Capability | Current boundary / evidence required before closing |
 | --- | --- |
-| Production evidence | See the canonical [production readiness gaps](../production-readiness-gaps.md): C1, V1–V3, D4–D5, O9 and P1–P7 define the required profile, upstream/differential suite, crash/fault/security/soak tests, controlled-hardware comparisons, SLOs, backups and independent validation. |
+| Production evidence | See the canonical [production readiness gaps](../production-readiness-gaps.md): C1, V2–V3, D4–D5, O9 and P1–P7 define the required profile, upstream/differential suite, crash/fault/security/soak tests, controlled-hardware comparisons, SLOs, backups and independent validation. |

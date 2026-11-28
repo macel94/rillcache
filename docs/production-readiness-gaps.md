@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Pinned Tcl coverage (V1), differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
+| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
 
 ---
 
@@ -1672,7 +1672,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   security section, and this PR restores that heading without changing any gap
   content. Scope: this closes the documentation/link/claim-check criterion only;
   claim-by-claim behavioural verification and the remaining verification gaps
-  (V1, V2, V3, V4, V6, V7) are not claimed.
+  (V2, V3, V4, V6, V7) are not claimed.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
   The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
@@ -1719,7 +1719,7 @@ declared deployment. The sequence should be:
 4. Close the security review and hardening path (S1-S5, S9).
 5. Add memory/observability/configuration operations (O1-O9, R1-R6).
 6. Produce realistic controlled-hardware performance and acceptance evidence
-   (P1-P7, V1-V7).
+   (P1-P7, V2-V7).
 7. Re-run this entire list against the release candidate; do not reuse a prior
    pass for a changed head.
 
