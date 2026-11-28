@@ -1,0 +1,4 @@
+id	scope	summary	severity	disposition	retest_evidence	status
+F-001	security	No independent third-party review of the release profile has been performed; the scoped threat model and review brief exist, but no external findings log or retest evidence has been produced.	high	-	-	open
+F-002	performance	The P-series controlled-hardware measurement criteria (workload mix, durability modes, long-duration regression budgets) remain open, so performance acceptance cannot be signed.	medium	-	-	open
+F-003	recovery	Soak, failure and recovery evidence retention (O9) and the staging upgrade/rollback drills (O8) remain open, so recovery acceptance cannot be signed.	medium	-	-	open

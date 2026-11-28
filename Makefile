@@ -99,6 +99,7 @@ run:
 
 acceptance-check:
 	python3 scripts/check_acceptance.py
+	python3 scripts/check_acceptance.py --outstanding
 	python3 scripts/test_check_acceptance.py
 
 metadata:
