@@ -19,8 +19,6 @@ pub(super) fn is_session_command(command: &[u8]) -> bool {
     [
         b"ACL".as_slice(),
         b"AUTH",
-        b"BLPOP",
-        b"BRPOP",
         b"CLIENT",
         b"HELLO",
         b"PSUBSCRIBE",

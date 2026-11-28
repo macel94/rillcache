@@ -132,10 +132,7 @@ impl ShardExecutor {
         let mut action = super::Action::Continue;
         for command in commands {
             let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
-            let marks = self.journal_marks();
-            let command_start = output.len();
-            action = self.execute_command(&arguments, output);
-            self.commit_journal(marks, &arguments, output, command_start);
+            action = self.execute_queued(&arguments, output);
             if action == super::Action::Close {
                 break;
             }
@@ -156,14 +153,129 @@ impl ShardExecutor {
         let mut action = super::Action::Continue;
         for command in commands {
             let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
-            let marks = self.journal_marks();
-            let command_start = output.len();
-            action = self.execute_command(&arguments, output);
-            self.commit_journal(marks, &arguments, output, command_start);
+            action = self.execute_queued(&arguments, output);
             if action == super::Action::Close {
                 break;
             }
         }
         action
     }
+
+    /// Execute one queued command. Blocking commands are queued and executed by
+    /// their non-blocking equivalent, as Redis does inside `MULTI`: they never
+    /// wait, they return the immediate reply (nil when nothing is available),
+    /// and the journal records the effective mutation, never the blocking form.
+    fn execute_queued(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> super::Action {
+        let Some(name) = arguments.first() else {
+            return super::Action::Continue;
+        };
+        if name.eq_ignore_ascii_case(b"BLPOP") || name.eq_ignore_ascii_case(b"BRPOP") {
+            return self.queued_blocking_pop(arguments, output);
+        }
+        if let Some(effective) = rewrite_blocking(arguments) {
+            let marks = self.journal_marks();
+            let start = output.len();
+            let action = self.execute_command(&effective, output);
+            self.commit_journal(marks, &effective, output, start);
+            return action;
+        }
+        let marks = self.journal_marks();
+        let start = output.len();
+        let action = self.execute_command(arguments, output);
+        self.commit_journal(marks, arguments, output, start);
+        action
+    }
+
+    fn queued_blocking_pop(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> super::Action {
+        let left = arguments[0].eq_ignore_ascii_case(b"BLPOP");
+        if arguments.len() < 3 {
+            super::arity("blpop", output);
+            return super::Action::Continue;
+        }
+        let (timeout, keys) = arguments[1..].split_last().expect("nonempty");
+        if let Err(reply) = queued_timeout(timeout) {
+            output.extend_from_slice(reply);
+            return super::Action::Continue;
+        }
+        let command: &[u8] = if left { b"LPOP" } else { b"RPOP" };
+        for key in keys {
+            let effective = [command, *key];
+            let marks = self.journal_marks();
+            let mut scratch = Vec::new();
+            let action = self.execute_command(&effective, &mut scratch);
+            self.commit_journal(marks, &effective, &mut scratch, 0);
+            if action != super::Action::Continue {
+                output.extend_from_slice(&scratch);
+                return action;
+            }
+            if scratch.starts_with(b"$-1") || scratch.starts_with(b"*-1") {
+                continue;
+            }
+            if !scratch.starts_with(b"$") {
+                output.extend_from_slice(&scratch);
+                return super::Action::Continue;
+            }
+            let _ = std::io::Write::write_fmt(output, format_args!("*2\r\n${}\r\n", key.len()));
+            output.extend_from_slice(key);
+            output.extend_from_slice(b"\r\n");
+            output.extend_from_slice(&scratch);
+            return super::Action::Continue;
+        }
+        output.extend_from_slice(b"*-1\r\n");
+        super::Action::Continue
+    }
+}
+
+/// The documented timeout rejection classes shared by the blocking commands.
+fn queued_timeout(raw: &[u8]) -> Result<f64, &'static [u8]> {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return Err(b"-ERR timeout is not a float or out of range\r\n");
+    };
+    let Ok(value) = text.parse::<f64>() else {
+        return Err(b"-ERR timeout is not a float or out of range\r\n");
+    };
+    if value < 0.0 {
+        return Err(b"-ERR timeout is negative\r\n");
+    }
+    if !value.is_finite() || std::time::Duration::try_from_secs_f64(value).is_err() {
+        return Err(b"-ERR timeout is out of range\r\n");
+    }
+    Ok(value)
+}
+
+/// Rewrite a blocking command to its non-blocking equivalent. The timeout is
+/// dropped and the effective command is what the journal records.
+fn rewrite_blocking<'a>(arguments: &[&'a [u8]]) -> Option<Vec<&'a [u8]>> {
+    let name = *arguments.first()?;
+    let rewritten = if name.eq_ignore_ascii_case(b"BLMPOP") {
+        // BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
+        if arguments.len() < 4 {
+            return None;
+        }
+        let mut args = Vec::with_capacity(arguments.len() - 1);
+        args.push(b"LMPOP".as_slice());
+        args.extend_from_slice(&arguments[2..]);
+        args
+    } else if name.eq_ignore_ascii_case(b"BLMOVE") {
+        // BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout
+        if arguments.len() != 6 {
+            return None;
+        }
+        let mut args = Vec::with_capacity(5);
+        args.push(b"LMOVE".as_slice());
+        args.extend_from_slice(&arguments[1..5]);
+        args
+    } else if name.eq_ignore_ascii_case(b"BRPOPLPUSH") {
+        // BRPOPLPUSH source destination timeout
+        if arguments.len() != 4 {
+            return None;
+        }
+        let mut args = Vec::with_capacity(3);
+        args.push(b"RPOPLPUSH".as_slice());
+        args.extend_from_slice(&arguments[1..3]);
+        args
+    } else {
+        return None;
+    };
+    Some(rewritten)
 }
