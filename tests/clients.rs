@@ -445,3 +445,55 @@ fn client_kill_skipme_no_can_kill_the_caller_and_absent_types_are_empty() {
     send(&mut victim, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
+
+/// O3: the documented per-client resource fields. `fd` is the server-side
+/// socket descriptor and `idle` is seconds since that client's last command,
+/// sampled once per accepted command; a non-negative `fd` is required on Unix
+/// and the field stays present (with -1) where the platform cannot report one.
+#[test]
+fn client_info_and_list_report_fd_and_idle_with_documented_units() {
+    let server = start();
+    let mut observer = connect(&server);
+    let mut worker = connect(&server);
+    send(&mut worker, &[b"PING"], b"+PONG\r\n");
+
+    let listed = client_list(&mut observer, &[]);
+    let worker_id = client_id(&mut worker);
+    let mut found = None;
+    for line in listed.lines() {
+        let fields: std::collections::HashMap<&str, &str> = line
+            .split(' ')
+            .filter_map(|field| field.split_once('='))
+            .collect();
+        if fields.get("id").and_then(|id| id.parse::<u64>().ok()) == Some(worker_id) {
+            found = Some(fields);
+        }
+    }
+    let fields = found.expect("CLIENT LIST must contain the worker");
+    let fd: i64 = fields.get("fd").expect("fd field").parse().unwrap();
+    let idle: u64 = fields.get("idle").expect("idle field").parse().unwrap();
+    if cfg!(unix) {
+        assert!(fd >= 0, "unix should report a real descriptor, got {fd}");
+    }
+    assert!(
+        idle < 60,
+        "a just-active client must report small idle, got {idle}"
+    );
+
+    // CLIENT INFO (self) reports the same documented fields.
+    let mut self_info = connect(&server);
+    send(&mut self_info, &[b"CLIENT", b"INFO"], b"");
+    let info = String::from_utf8(bulk(&mut self_info)).unwrap();
+    assert!(info.contains(" fd="), "CLIENT INFO must report fd:\n{info}");
+    assert!(
+        info.contains(" idle="),
+        "CLIENT INFO must report idle:\n{info}"
+    );
+
+    // `idle` is a sampled second-granularity value bounded by `age`; both are
+    // reported from the same snapshot, so a just-active client never reports
+    // idle greater than its age.
+    let age: u64 = fields.get("age").expect("age field").parse().unwrap();
+    assert!(idle <= age, "idle ({idle}) cannot exceed age ({age})");
+    server.shutdown().unwrap();
+}

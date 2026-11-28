@@ -1109,6 +1109,9 @@ impl Store {
     pub fn blocked_clients(&self) -> usize {
         self.services.blocked_clients()
     }
+    pub fn touch_client(&self, id: u64) {
+        self.services.touch_client(id)
+    }
     pub fn client_snapshot(&self, id: u64) -> Option<ClientSnapshot> {
         self.services.client_snapshot(id)
     }
