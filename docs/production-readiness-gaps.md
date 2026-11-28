@@ -1616,6 +1616,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   wrong types and preserved absolute deadlines. Broader Pub/Sub behavior,
   ACL, TLS, persistence, exhaustive transaction/error cases
   and full command coverage remain open.
+  **Partial (2026-11-28): machine-checked coverage accounting.** The corpus in
+  `tests/reference_baseline.rs` now has a committed coverage record,
+  `ci/differential/coverage.json`, generated and validated by
+  `scripts/check_corpus_coverage.py` against the advertised surface in
+  `docs/production-readiness/command-matrix.md`: 54 of 247 advertised names carry
+  at least one corpus assertion and the 193 uncovered names are listed explicitly.
+  The check fails on drift, a missing file, a wrong schema or a corpus command the
+  matrix does not advertise, its negative controls run in
+  `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`, and
+  `docs/reference-conformance.md` documents the accounting. This makes the
+  remaining corpus work measurable; it does not close the criterion.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
