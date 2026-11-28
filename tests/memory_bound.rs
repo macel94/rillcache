@@ -337,16 +337,26 @@ mod process {
         listener.local_addr().unwrap().to_string()
     }
 
+    const SPAWN_ATTEMPTS: usize = 8;
+
     struct ChildServer {
         child: Child,
+        addr: String,
     }
 
-    fn spawn(
+    fn read_startup_line(child: &mut Child) -> String {
+        let mut startup = BufReader::new(child.stderr.take().unwrap());
+        let mut line = String::new();
+        startup.read_line(&mut line).unwrap();
+        line
+    }
+
+    fn spawn_at(
         dir: &Path,
         addr: &str,
         address_space_kib: Option<u64>,
         bound: Option<(u64, u64)>,
-    ) -> ChildServer {
+    ) -> Result<ChildServer, String> {
         let binary = env!("CARGO_BIN_EXE_rillcache");
         let mut command = match address_space_kib {
             // `ulimit -v` bounds the address space so an allocation failure is
@@ -391,11 +401,72 @@ mod process {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut startup = BufReader::new(child.stderr.take().unwrap());
-        let mut line = String::new();
-        startup.read_line(&mut line).unwrap();
-        assert!(line.contains(" listening on "), "startup: {line}");
-        ChildServer { child }
+        let line = read_startup_line(&mut child);
+        if line.contains(" listening on ") {
+            return Ok(ChildServer {
+                child,
+                addr: addr.to_owned(),
+            });
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(line)
+    }
+
+    /// `free_addr` releases its probe listener before the child binds, so a
+    /// concurrent test can win the port. Retry with a fresh reservation and
+    /// report the address the child actually bound.
+    fn spawn(dir: &Path, address_space_kib: Option<u64>, bound: Option<(u64, u64)>) -> ChildServer {
+        for _ in 0..SPAWN_ATTEMPTS {
+            match spawn_at(dir, &free_addr(), address_space_kib, bound) {
+                Ok(server) => return server,
+                Err(line) if line.contains("Address already in use") => continue,
+                Err(line) => panic!("startup: {line}"),
+            }
+        }
+        panic!("could not start a private loopback server after {SPAWN_ATTEMPTS} attempts");
+    }
+
+    #[test]
+    fn a_forced_port_collision_is_reported_for_the_retry_loop() {
+        let dir = temp_dir("collision");
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = occupied.local_addr().unwrap().to_string();
+        let line = match spawn_at(&dir, &addr, Some(1024 * 1024), None) {
+            Ok(_) => panic!("a child must not bind an already occupied address"),
+            Err(line) => line,
+        };
+        assert!(
+            line.contains("Address already in use"),
+            "expected a retryable port error, got: {line}"
+        );
+        drop(occupied);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Restart the same journal while distinguishing a port collision from the
+    /// expected torn-tail journal diagnostic.
+    fn spawn_restart(dir: &Path) -> Result<(Child, String), String> {
+        for _ in 0..SPAWN_ATTEMPTS {
+            let addr = free_addr();
+            let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+            command
+                .args(["--bind", &addr, "--appendonly", "yes", "--dir"])
+                .arg(dir)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            let mut child = command.spawn().unwrap();
+            let line = read_startup_line(&mut child);
+            if line.contains(" listening on ") {
+                return Ok((child, addr));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            if !line.contains("Address already in use") {
+                return Err(line);
+            }
+        }
+        panic!("could not restart a private loopback server after {SPAWN_ATTEMPTS} attempts");
     }
 
     fn connect(addr: &str) -> Option<TcpStream> {
@@ -441,9 +512,8 @@ mod process {
     #[test]
     fn an_unbounded_process_reports_allocation_failure_without_silent_loss() {
         let dir = temp_dir("unbounded");
-        let addr = free_addr();
-        let mut server = spawn(&dir, &addr, Some(384 * 1024), None);
-        let mut stream = connect(&addr).expect("connect");
+        let mut server = spawn(&dir, Some(384 * 1024), None);
+        let mut stream = connect(&server.addr).expect("connect");
         let value = vec![b'v'; 4 * 1024 * 1024];
         let mut acknowledged: Vec<Vec<u8>> = Vec::new();
         for index in 0..200u32 {
@@ -470,27 +540,17 @@ mod process {
 
         // Either the journal replays every acknowledged write, or startup fails
         // closed on the torn tail; it must never start with a hole.
-        let restart_addr = free_addr();
-        let mut restart_command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
-        restart_command
-            .args(["--bind", &restart_addr, "--appendonly", "yes", "--dir"])
-            .arg(&dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let mut child = restart_command.spawn().unwrap();
-        let mut stdout_stderr = BufReader::new(child.stderr.take().unwrap());
-        let mut line = String::new();
-        stdout_stderr.read_line(&mut line).unwrap();
-        if !line.contains(" listening on ") {
-            let diagnostic = line.to_lowercase();
-            assert!(
-                diagnostic.contains("journal") || diagnostic.contains("aof"),
-                "startup neither recovered nor named the journal: {line}"
-            );
-            let _ = child.kill();
-            let _ = child.wait();
-            return;
-        }
+        let (mut child, restart_addr) = match spawn_restart(&dir) {
+            Ok(pair) => pair,
+            Err(line) => {
+                let diagnostic = line.to_lowercase();
+                assert!(
+                    diagnostic.contains("journal") || diagnostic.contains("aof"),
+                    "startup neither recovered nor named the journal: {line}"
+                );
+                return;
+            }
+        };
         let mut stream = connect(&restart_addr).expect("connect after restart");
         for key in &acknowledged {
             let reply = command(&mut stream, &[b"GET", key]);
@@ -509,13 +569,12 @@ mod process {
     #[test]
     fn a_bounded_process_refuses_writes_and_survives_the_address_space_limit() {
         let dir = temp_dir("bounded");
-        let addr = free_addr();
         // A small derived budget keeps the drill short while still proving
         // that the refusal comes from the declared bound.
         let bound = 128 * 1024 * 1024;
         let headroom = 96 * 1024 * 1024;
-        let mut server = spawn(&dir, &addr, Some(1024 * 1024), Some((bound, headroom)));
-        let mut stream = connect(&addr).expect("connect");
+        let mut server = spawn(&dir, Some(1024 * 1024), Some((bound, headroom)));
+        let mut stream = connect(&server.addr).expect("connect");
         let value = vec![b'b'; 4 * 1024 * 1024];
         let mut refused = false;
         for index in 0..64u32 {
