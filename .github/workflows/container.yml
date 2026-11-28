@@ -21,7 +21,12 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # `make ci` runs the full offline suite plus the release benchmark smoke. A
+    # 10-minute budget cancelled this required job mid-run under normal runner
+    # load (PR #702 cancelled at 10m16s), which hides a real result behind an
+    # infrastructure cancellation. Keep it above the parallel `Tests and offline
+    # CI` job's budget so a failure, not a timeout, is what fails the check.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
