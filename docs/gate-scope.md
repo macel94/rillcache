@@ -54,7 +54,6 @@ item, and the checker fails if one is closed here without being closed there:
 
 - `S1` — independent security review of the release profile.
 - `V3` — independent acceptance sign-offs for profile, security, performance and recovery.
-- `V6` — acceptance runbook executed against a release candidate.
 - `D10` — measured fsync-policy behaviour per durability mode.
 - `R6` — persistence contention measured against an accepted SLO.
 
