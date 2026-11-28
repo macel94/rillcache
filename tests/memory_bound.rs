@@ -332,21 +332,22 @@ mod process {
         path
     }
 
-    fn free_addr() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().to_string()
-    }
-
     struct ChildServer {
         child: Child,
     }
 
+    /// Start the child on an ephemeral port and return the address it bound.
+    ///
+    /// The address comes from the child's own startup line instead of a
+    /// pre-bound probe socket. Probing with `TcpListener::bind("127.0.0.1:0")`
+    /// and dropping the listener leaves a window in which another test can take
+    /// the port, and the child then exits with `EADDRINUSE`; that race was
+    /// observed as a flaky required-CI failure in #732.
     fn spawn(
         dir: &Path,
-        addr: &str,
         address_space_kib: Option<u64>,
         bound: Option<(u64, u64)>,
-    ) -> ChildServer {
+    ) -> (ChildServer, String) {
         let binary = env!("CARGO_BIN_EXE_rillcache");
         let mut command = match address_space_kib {
             // `ulimit -v` bounds the address space so an allocation failure is
@@ -363,7 +364,7 @@ mod process {
         };
         command.args([
             "--bind",
-            addr,
+            "127.0.0.1:0",
             "--appendonly",
             "yes",
             "--appendfsync",
@@ -394,8 +395,12 @@ mod process {
         let mut startup = BufReader::new(child.stderr.take().unwrap());
         let mut line = String::new();
         startup.read_line(&mut line).unwrap();
-        assert!(line.contains(" listening on "), "startup: {line}");
-        ChildServer { child }
+        let addr = line
+            .split(" listening on ")
+            .nth(1)
+            .map(|address| address.trim().to_string())
+            .unwrap_or_else(|| panic!("startup: {line}"));
+        (ChildServer { child }, addr)
     }
 
     fn connect(addr: &str) -> Option<TcpStream> {
@@ -441,8 +446,7 @@ mod process {
     #[test]
     fn an_unbounded_process_reports_allocation_failure_without_silent_loss() {
         let dir = temp_dir("unbounded");
-        let addr = free_addr();
-        let mut server = spawn(&dir, &addr, Some(384 * 1024), None);
+        let (mut server, addr) = spawn(&dir, Some(384 * 1024), None);
         let mut stream = connect(&addr).expect("connect");
         let value = vec![b'v'; 4 * 1024 * 1024];
         let mut acknowledged: Vec<Vec<u8>> = Vec::new();
@@ -470,10 +474,9 @@ mod process {
 
         // Either the journal replays every acknowledged write, or startup fails
         // closed on the torn tail; it must never start with a hole.
-        let restart_addr = free_addr();
         let mut restart_command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
         restart_command
-            .args(["--bind", &restart_addr, "--appendonly", "yes", "--dir"])
+            .args(["--bind", "127.0.0.1:0", "--appendonly", "yes", "--dir"])
             .arg(&dir)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -481,7 +484,11 @@ mod process {
         let mut stdout_stderr = BufReader::new(child.stderr.take().unwrap());
         let mut line = String::new();
         stdout_stderr.read_line(&mut line).unwrap();
-        if !line.contains(" listening on ") {
+        let restart_addr = line
+            .split(" listening on ")
+            .nth(1)
+            .map(|address| address.trim().to_string());
+        let Some(restart_addr) = restart_addr else {
             let diagnostic = line.to_lowercase();
             assert!(
                 diagnostic.contains("journal") || diagnostic.contains("aof"),
@@ -490,7 +497,7 @@ mod process {
             let _ = child.kill();
             let _ = child.wait();
             return;
-        }
+        };
         let mut stream = connect(&restart_addr).expect("connect after restart");
         for key in &acknowledged {
             let reply = command(&mut stream, &[b"GET", key]);
@@ -509,12 +516,11 @@ mod process {
     #[test]
     fn a_bounded_process_refuses_writes_and_survives_the_address_space_limit() {
         let dir = temp_dir("bounded");
-        let addr = free_addr();
         // A small derived budget keeps the drill short while still proving
         // that the refusal comes from the declared bound.
         let bound = 128 * 1024 * 1024;
         let headroom = 96 * 1024 * 1024;
-        let mut server = spawn(&dir, &addr, Some(1024 * 1024), Some((bound, headroom)));
+        let (mut server, addr) = spawn(&dir, Some(1024 * 1024), Some((bound, headroom)));
         let mut stream = connect(&addr).expect("connect");
         let value = vec![b'b'; 4 * 1024 * 1024];
         let mut refused = false;
