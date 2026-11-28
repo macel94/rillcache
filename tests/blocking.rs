@@ -152,16 +152,11 @@ fn resp3_blocking_timeout_is_a_null_and_blocking_commands_are_rejected_in_multi(
 
     // RESP3 still supports normal commands and MULTI validation.
     send(&mut waiter, &[b"MULTI"], b"+OK\r\n");
-    send(
-        &mut waiter,
-        &[b"BLPOP", b"q", b"0"],
-        b"-ERR session commands are not supported inside MULTI\r\n",
-    );
-    send(
-        &mut waiter,
-        &[b"EXEC"],
-        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
-    );
+    // Blocking commands are supported inside MULTI: they queue and EXEC runs the
+    // non-blocking equivalent, returning the immediate nil reply instead of waiting.
+    send(&mut waiter, &[b"BLPOP", b"q", b"0"], b"+QUEUED\r\n");
+    send(&mut waiter, &[b"EXEC"], b"*1\r\n_\r\n");
+    send(&mut waiter, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
 
