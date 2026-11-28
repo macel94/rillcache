@@ -627,6 +627,22 @@ references, so an excluded capability cannot silently start succeeding.
   attributes/push tracking and `LATENCY GRAPH` (C5, C6, O2, O3). `LATENCY
   HISTOGRAM` exists only as the documented bounded 32-bucket approximation.
 - Redis-compatible HyperLogLog payload interchange and diagnostics (C10).
+- Stream metadata fields that depend on Redis-only operations (C9). `XNACK`,
+  `XACKDEL` and `XIDMPRECORD` are absent, so `XINFO GROUPS` therefore omits the
+  `nacked-count` field entirely instead of reporting a value, and no unowned-NACK
+  state exists; owned pending records are counted by the existing `pending` field, and the
+  emitted group fields are `name`, `consumers`, `pending`, `last-delivered-id`,
+  `entries-read` and `lag`. `XINFO STREAM`/`XINFO GROUPS`
+  report the documented fields but not Redis internal radix-node statistics or
+  newer Redis-only extended fields, and `XINFO STREAM FULL` is the supported
+  inspection form. Approximate trimming (`XTRIM ... MAXLEN|MINID ~` and
+  `XADD ... MAXLEN ~|MINID ~`) uses an exact-entry rule up to the LIMIT/default
+  bound instead of Redis listpack-node granularity: it never leaves more entries
+  than the bound but may remove fewer than a native approximate trim. Exact
+  trimming, `XDEL`, range reads, group cursors, `entries-read` and `lag` follow
+  the documented semantics and are covered by the pinned differential corpus
+  (`ci/upstream/differential-v1.json`, case `stream-trim-exact`) together with
+  `tests/streams.rs` and `tests/reference_baseline.rs`.
 - Redis 8 vector-set commands (`VADD`, `VCARD`, `VDIM`, `VEMB`, `VGETATTR`,
   `VINFO`, `VISMEMBER`, `VLINKS`, `VRANDMEMBER`, `VRANGE`, `VREM`, `VSETATTR`,
   `VSIM`), Redis 8 array commands (`ar*`) and the Valkey 9 `BACKUP`,

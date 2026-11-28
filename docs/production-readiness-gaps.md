@@ -317,8 +317,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `ENTRIESREAD -1` or an unknown counter. Consumer `idle` now uses last
   attempted interaction and `inactive` uses last successful delivery/claim,
   with both timestamps persisted across rewrite/replay.
-  **Closes when:** metadata fields match the declared version or are explicitly
-  excluded, and trim/read semantics pass a differential corpus.
+  **Complete (2026-11-28) by the criterion's exclusion branch plus a pinned
+  trim/read corpus.** `docs/production-profile.md` now declares the stream
+  divergences explicitly: `XNACK`/`XACKDEL`/`XIDMPRECORD` are absent, so
+  `XINFO GROUPS` **omits** `nacked-count` rather than reporting a value and the
+  emitted fields are exactly `name`, `consumers`, `pending`, `last-delivered-id`,
+  `entries-read`, `lag`; `XINFO STREAM FULL` is the supported inspection form and
+  Redis radix-node statistics/newer Redis-only extended fields are excluded;
+  approximate trimming (`XTRIM ... MAXLEN|MINID ~`, `XADD ... MAXLEN ~`) uses an
+  exact-entry rule up to the LIMIT/default bound, never leaving more than the bound
+  but possibly removing fewer entries than a native approximate trim. Trim/read
+  semantics are pinned by the hosted differential corpus case `stream-trim-exact`
+  in `ci/upstream/differential-v1.json` (explicit IDs, exact `XTRIM MAXLEN 2`,
+  `XLEN`, `XRANGE` compared across the pinned references), alongside the existing
+  stream cases in `tests/reference_baseline.rs`. `tests/stream_divergences.rs` runs
+  in the required CI graph in default, one-worker and four-worker modes and fails if
+  the profile stops declaring `nacked-count`/`XTRIM`/`stream-trim-exact`, if the
+  corpus loses the exact-trim case, if exact `XTRIM` stops removing exactly the
+  requested count, or if `XINFO GROUPS` starts reporting `nacked-count` or stops
+  reporting `entries-read`/`lag`. **Closes when:** metadata fields match the
+  declared version or are explicitly excluded, and trim/read semantics pass a
+  differential corpus.
 
 - [x] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   **Complete (2026-11-27) by the criterion's exclusion branch: HLL
