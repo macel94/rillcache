@@ -57,6 +57,8 @@ pub(crate) struct TlsSettings<'a> {
     pub(crate) services: Arc<crate::engine::ServerServices>,
     pub(crate) handshake_timeout: Duration,
     pub(crate) idle_timeout: Duration,
+    /// Slow-reader write-stall deadline; `None` keeps the idle timeout.
+    pub(crate) write_stall_timeout: Option<Duration>,
 }
 
 pub(crate) struct TlsAcceptor {
@@ -75,6 +77,7 @@ pub(crate) struct TlsAcceptor {
     reload_error_logged: AtomicBool,
     handshake_timeout: Duration,
     idle_timeout: Duration,
+    write_stall_timeout: Option<Duration>,
 }
 
 impl TlsAcceptor {
@@ -107,6 +110,7 @@ impl TlsAcceptor {
             reload_error_logged: AtomicBool::new(false),
             handshake_timeout: settings.handshake_timeout,
             idle_timeout: settings.idle_timeout,
+            write_stall_timeout: settings.write_stall_timeout,
         })
     }
 
@@ -322,12 +326,15 @@ impl TlsAcceptor {
             }
         };
         sock.baseline_read_timeout = Some(self.idle_timeout);
-        sock.baseline_write_timeout = Some(self.idle_timeout);
+        let write_stall_timeout = self
+            .write_stall_timeout
+            .map_or(self.idle_timeout, |stall| stall.min(self.idle_timeout));
+        sock.baseline_write_timeout = Some(write_stall_timeout);
         sock.handshake_deadline = None;
         sock.plaintext_idle_timeout = Some(self.idle_timeout);
         sock.reset_plaintext_idle_deadline();
         sock.stream.set_read_timeout(Some(self.idle_timeout))?;
-        sock.stream.set_write_timeout(Some(self.idle_timeout))?;
+        sock.stream.set_write_timeout(Some(write_stall_timeout))?;
         Ok((
             Connection::Tls(Box::new(StreamOwned::new(conn, sock))),
             client_user,
@@ -535,6 +542,50 @@ impl Connection {
                 stream.conn.send_close_notify();
                 let _ = stream.conn.write_tls(&mut stream.sock);
                 stream.sock.shutdown(how)
+            }
+        }
+    }
+
+    /// Write one reply with a bounded rustls send buffer. `StreamOwned::write`
+    /// silently accepts plaintext faster than the socket drains it, so a TLS
+    /// slow reader would otherwise buffer a whole reply in memory and outlive
+    /// the write-stall deadline. This drains TLS output after every bounded
+    /// chunk and treats a socket write timeout (SO_SNDTIMEO already waited the
+    /// configured stall deadline) as no progress.
+    pub(crate) fn write_all_bounded(&mut self, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.write_all(bytes),
+            Self::Tls(stream) => {
+                let mut rest = bytes;
+                while !rest.is_empty() {
+                    let chunk = &rest[..rest.len().min(8 * 1024)];
+                    let written = stream.conn.writer().write(chunk)?;
+                    if written == 0 {
+                        return Err(io::ErrorKind::WriteZero.into());
+                    }
+                    rest = &rest[written..];
+                    while stream.conn.wants_write() {
+                        match stream.conn.write_tls(&mut stream.sock) {
+                            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                            Ok(_) => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock
+                                        | io::ErrorKind::TimedOut
+                                        | io::ErrorKind::Interrupted
+                                ) =>
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "client write stall",
+                                ));
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+                Ok(())
             }
         }
     }

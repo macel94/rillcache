@@ -46,6 +46,9 @@ fn documented_defaults_match_the_binary_defaults() {
         "| `max-frame-bytes` | `2097152` (2 MiB) |",
         "| `idle-timeout-ms` | `30000` |",
         "| `frame-assembly-timeout-ms` | `60000` |",
+        "| `write-stall-timeout-ms` | `30000` |",
+        "| `global-command-budget` | `0` (off) |",
+        "| `user-command-budget` | `0` (off) |",
         "| `shutdown-deadline-ms` | `25000` |",
         "| `auth-failure-limit` | `10` |",
         "| `auth-source-limit` | `0` (off) |",
@@ -68,6 +71,9 @@ fn documented_defaults_match_the_binary_defaults() {
         declared.frame_assembly_timeout,
         Some(Duration::from_secs(60))
     );
+    assert_eq!(declared.write_stall_timeout, Some(Duration::from_secs(30)));
+    assert_eq!(declared.global_command_budget, 0);
+    assert_eq!(declared.user_command_budget, 0);
     assert_eq!(declared.shutdown_deadline, Duration::from_secs(25));
     assert_eq!(declared.auth_failure_limit, 10);
     assert_eq!(declared.auth_source_limit, 0);

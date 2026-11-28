@@ -45,6 +45,7 @@ remains `unsafe_code = "forbid"`.
 | `--tls-sni-ocsp-file NAME=PATH` | Optional DER response for that exact SNI identity |
 | `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
 | `--frame-assembly-timeout-ms N` | Deadline after incomplete RESP plaintext reaches the parser (default 60000; `0` disables) |
+| `--write-stall-timeout-ms N` | Pending-reply write-stall deadline; TLS sockets close a non-draining reader after the same bound (default 30000; `0` disables) |
 
 Example:
 

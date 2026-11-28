@@ -177,6 +177,7 @@ impl Session {
                     && !observers.commandstats
                     && !observers.paused
                     && !observers.monitor
+                    && !observers.budget
             }
             && !self.command_paused(store, arguments)
     }
@@ -190,8 +191,11 @@ impl Session {
         let start = output.len();
         let reply_mode_before = self.reply_mode;
         // Bare PING in a plain RESP session is the hottest command. Keep the
-        // exact authorization, pause, monitor and observer behavior, but skip
-        // the generic command dispatcher and its connection-control probes.
+        // exact authorization, pause, monitor, budget and observer behavior,
+        // but skip the generic dispatcher and its connection-control probes.
+        // Budget presence is part of the same security-word load; an enabled
+        // budget sends PING through the generic path below, where the already
+        // loaded observer word gates admission without a second load.
         if arguments.len() == 1
             && arguments[0].eq_ignore_ascii_case(b"PING")
             && self.reply_mode == ReplyMode::On
@@ -200,7 +204,7 @@ impl Session {
             && !self.monitoring
             && !self.is_blocked()
             && !self.is_paused()
-            && store.security() == (false, false)
+            && store.hot_path_clear()
             && !self.command_paused(store, arguments)
         {
             store.record_command(self.id);
@@ -233,6 +237,34 @@ impl Session {
         // commands after the normal authorization and subscriber checks.
         // One load covers every hot-path gate: pause, collectors and monitor.
         let observers = store.observers();
+        // Overload admission precedes execution: a rejected command is not
+        // executed, recorded or observed, and the client may retry in the next
+        // window. Reply suppression still applies so CLIENT REPLY OFF/SKIP
+        // callers see an unchanged stream. AUTH/HELLO/QUIT are exempt so an
+        // exhausted budget can never lock a client out of its handshake.
+        if observers.budget {
+            let handshake = arguments.first().is_some_and(|name| {
+                name.eq_ignore_ascii_case(b"AUTH")
+                    || name.eq_ignore_ascii_case(b"HELLO")
+                    || name.eq_ignore_ascii_case(b"QUIT")
+            });
+            let admission = if handshake {
+                crate::engine::CommandAdmission::Allowed
+            } else {
+                store.admit_command(self.authenticated_user.as_deref())
+            };
+            if admission != crate::engine::CommandAdmission::Allowed {
+                store.record_command_budget_rejection();
+                output.extend_from_slice(match admission {
+                    crate::engine::CommandAdmission::UserExceeded => {
+                        b"-ERR overload: user command budget exhausted\r\n"
+                    }
+                    _ => b"-ERR overload: global command budget exhausted\r\n",
+                });
+                self.suppress_reply_at(output, start, reply_mode_before, arguments);
+                return Action::Continue;
+            }
+        }
         if observers.paused && self.pause_command(store, arguments) {
             return Action::Continue;
         }
