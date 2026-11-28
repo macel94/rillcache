@@ -1395,6 +1395,15 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   With persistence enabled, commands execute through the exclusive transaction
   gate so mutation, capture and append keep one order. This is not a performance
   design for production write rates.
+  **Partial (2026-11-28): persistence-contention measurement and proposed budgets.** The
+  durability harness now measures an AOF-off baseline plus each policy on the same
+  host and workload and records `contention_ratio_vs_baseline`, the fraction of
+  AOF-off throughput each policy retains (the cost of the exclusive transaction
+  gate). `docs/durability-benchmarks.md` proposes the R6 budgets (`no` >= 90%,
+  `everysec` >= 75%, `always` >= 40% of AOF-off throughput, with acknowledged-write
+  integrity owned by the crash drills) and states that accepting them is the owner
+  decision that remains. `scripts/test_durability_measure.py` pins the baseline
+  row, the ratio column and the plan.
   **Closes when:** durability and throughput are measured for the supported
   profile and an accepted SLO, or a concurrent/ordered design is implemented.
 
