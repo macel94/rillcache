@@ -265,6 +265,13 @@ def evaluate(samples):
     return rows
 
 
+def gate_passed(rows):
+    """Dragonfly is the diagnostic comparison: a row passes only when Rillcache
+    is strictly faster. The merge script requires this attribute on every
+    harness so it can build the merged manifest."""
+    return all(row["passed"] for row in rows)
+
+
 def summary(rows):
     wins = sum(row["passed"] for row in rows)
     text = ["# Rillcache vs Dragonfly: four-CPU PR gate", "",
