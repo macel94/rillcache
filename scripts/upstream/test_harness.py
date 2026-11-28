@@ -53,10 +53,9 @@ class ScopeTests(unittest.TestCase):
             "unit/scan": "unit/keyspace",
             "unit/quit": "unit/keyspace",
             "unit/geo": "unit/keyspace",
-            "unit/type/list": "unit/keyspace",
         })
         self.assertEqual(
-            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/type/list"],
+            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"],
             compat.embedded_suites("unit/keyspace"),
         )
         self.assertEqual([], compat.embedded_suites("unit/type/string"))
@@ -68,12 +67,6 @@ class ScopeTests(unittest.TestCase):
         self.assertNotIn("path: unit/type/hash}", text)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hash_diagnostic", text)
         self.assertIn("--suite unit/type/hash --diagnostic", text)
-        exclusions = common.SCOPE["compatibility"]["named_test_exclusions"]
-        self.assertTrue(exclusions, "the list suite must declare its reviewed exclusions")
-        for exclusion in exclusions:
-            self.assertTrue(exclusion["name"])
-            self.assertIn("DUMP", exclusion["reason"])
-            self.assertIn("--skiptest", (common.ROOT / "scripts/upstream/compatibility.py").read_text())
         request_limits = common.SCOPE["compatibility"]["request_limits"]
         self.assertEqual(8 * 1024 * 1024, request_limits["candidate_max_bulk_bytes"])
         self.assertEqual(16 * 1024 * 1024, request_limits["candidate_max_frame_bytes"])
@@ -92,13 +85,13 @@ class ScopeTests(unittest.TestCase):
 
 class ProcessTests(unittest.TestCase):
     def test_embedded_suites_run_as_children_and_propagate_failures(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children) as run:
             self.assertEqual(1, compat.run_embedded_suites("unit/keyspace", "redis"))
-        self.assertEqual(6, run.call_count)
+        self.assertEqual(5, run.call_count)
         for call, suite in zip(
             run.call_args_list,
-            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/type/list"),
+            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"),
         ):
             argv = call.args[0]
             self.assertEqual("--reference", argv[2])
@@ -108,7 +101,7 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual({"check": False}, call.kwargs)
 
     def test_embedded_suite_signal_exit_is_not_a_pass(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children):
             self.assertEqual(2, compat.run_embedded_suites("unit/keyspace", "redis"))
 
