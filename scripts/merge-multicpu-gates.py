@@ -49,6 +49,12 @@ def save(path, value):
         stream.write("\n")
 
 
+def gate_passed(harness, rows):
+    """Use the new resolved-loss rule when the harness has it."""
+    checker = getattr(harness, "gate_passed", None)
+    return checker(rows) if checker else all(row["passed"] for row in rows)
+
+
 def identity_fields(first):
     """Fields that must match across the partial cohorts of one server."""
     reference = "dragonfly_version" if "dragonfly_version" in first else "valkey_version"
@@ -73,7 +79,7 @@ def gather(harness, partials):
             "reference_version": manifest.get("valkey_version") or manifest.get("dragonfly_version"),
             "binary_sha256": manifest["binary_sha256"],
             "evidence_sha256": manifest.get("evidence_sha256", {}),
-            "gate_passed": harness.gate_passed(partial_rows),
+            "gate_passed": gate_passed(harness, partial_rows),
         })
         rows.extend(partial_rows)
 
@@ -101,7 +107,7 @@ def gather(harness, partials):
     record = {
         "schema_version": 1,
         "complete": True,
-        "gate_passed": harness.gate_passed(merged),
+        "gate_passed": gate_passed(harness, merged),
         "base_source": first["base_source"],
         "head_source": first["head_source"],
         "candidate_source": first["candidate_source"],
