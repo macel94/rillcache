@@ -21,6 +21,7 @@ class SoakTests(unittest.TestCase):
         plan = buffer.getvalue()
         self.assertIn("duration=10s", plan)
         self.assertIn("clients=", plan)
+        self.assertIn("sleep_ms=", plan)
 
     def test_missing_binary_fails_closed(self):
         buffer = io.StringIO()

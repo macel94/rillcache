@@ -134,7 +134,7 @@ def proc_stats(pid: int) -> tuple[int, int]:
     return rss, int(cpu_seconds)
 
 
-def worker(addr: str, deadline: float, errors: list[str], counter: int) -> None:
+def worker(addr: str, deadline: float, errors: list[str], counter: int, pause: float) -> None:
     try:
         client = Client(addr)
         index = 0
@@ -158,6 +158,8 @@ def worker(addr: str, deadline: float, errors: list[str], counter: int) -> None:
                 client.call(b"HSET", b"soak:hash", key, b"v")
             else:
                 client.call(b"HGET", b"soak:hash", key)
+            if pause:
+                time.sleep(pause)
         client.close()
     except Exception as error:  # noqa: BLE001 - collected and reported
         errors.append(f"worker {counter}: {error}")
@@ -193,7 +195,11 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
         deadline = time.monotonic() + options.duration
         stop = threading.Event()
         threads = [
-            threading.Thread(target=worker, args=(addr, deadline, errors, index), daemon=True)
+            threading.Thread(
+                target=worker,
+                args=(addr, deadline, errors, index, options.sleep_ms / 1000.0),
+                daemon=True,
+            )
             for index in range(options.clients)
         ]
         threads.append(threading.Thread(target=churn, args=(addr, deadline, errors), daemon=True))
@@ -295,12 +301,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--clients", type=int, default=8)
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--rewrite-every", type=int, default=12)
+    parser.add_argument(
+        "--sleep-ms",
+        type=float,
+        default=2.0,
+        help="Per-operation client pause; bounds the write rate so the journal and "
+        "the runner disk stay within budget during a long soak",
+    )
     parser.add_argument("--json", default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.dry_run:
         print(f"soak plan: duration={args.duration}s clients={args.clients} "
-              f"interval={args.interval}s rewrite_every={args.rewrite_every}")
+              f"interval={args.interval}s rewrite_every={args.rewrite_every} "
+              f"sleep_ms={args.sleep_ms}")
         print(f"binary: {args.binary}")
         return 0
     binary = Path(args.binary)

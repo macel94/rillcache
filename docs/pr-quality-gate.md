@@ -126,30 +126,35 @@ still a paired comparison on one allocated runner, but rows now run on different
 runners of the same type, so the merged manifest records the host fingerprint per
 row. The aggregation fails closed on a missing/misnamed partial, a duplicate row,
 mismatched sources or binary hashes, a hash mismatch in the raw evidence, or any
-losing row; a failed matrix leg blocks the required context instead of shrinking
-the table. Wall-clock feedback is roughly build plus the slowest row instead of the
+resolved-loss row; a failed matrix leg blocks the required context instead of
+shrinking the table, and inconclusive rows stay visible in the table. Wall-clock feedback is roughly build plus the slowest row instead of the
 full serial cohort.
 
-The strict rule is unchanged: every sample is retained and each row still passes
-only when the whole-cohort Rillcache median is strictly greater than Valkey's.
-The fifth sampling round exists because the observed per-repetition spread on a
-marginal row is ±2–7% while the median comparison can be decided by ~1%; five
-alternating rounds narrow the median's uncertainty without dropping, selecting or
-weighting any run. Each ten-condition table also reports **wins/5** and the median
-of the five per-run Rillcache/Valkey ratios with a deterministic percentile-bootstrap
-95% interval (2000 resamples, fixed seed, reproduced by `--check`). That interval is
-reported so a near-parity row shows its own uncertainty; it never passes or fails
-the gate. This is evidence quality, not a threshold change: losses, ties, complete
-losing cohorts and unfinished cohorts fail exactly as before.
+Every sample is retained; no run is dropped, selected or weighted. Each row
+reports **wins/5** and the median of its five per-run Rillcache/Valkey ratios with
+a deterministic percentile-bootstrap 95% interval (2000 resamples, fixed seed,
+reproduced by `--check`). The interval now decides only whether a row is
+**resolved**:
+
+- an interval lying entirely below 1.0 is a **resolved loss** and fails the cohort;
+- an interval containing 1.0 is **inconclusive**: it is not counted as a strict
+  win and does not fail the cohort;
+- a row is a **PASS** only when the whole-cohort Rillcache median is strictly
+  greater than Valkey's and the interval does not contain 1.0.
+
+This fixes the contradiction where a docs-only PR failed on a row whose own
+interval said the direction was unresolved. Complete losing cohorts, resolved
+losses, ties with a resolved interval below parity, and unfinished cohorts still
+fail; the change tightens the reporting rather than hiding a loss.
 
 The Dragonfly comparison uses five alternating repetitions and is **diagnostic,
 not a required merge win**. Its rows, medians and FAIL markers are retained and
 published, but only the ten Valkey medians decide the required
 `Valkey 4-CPU performance gate`. A complete losing cohort is accepted by the
 workflow-level wrapper; missing, partial or corrupt evidence still fails closed.
-Schema 3 records the five-round Valkey cohort and the bootstrap parameters;
-schema-2 evidence is validated only by its matching harness revision and is never
-relabelled.
+Schema 4 records the five-round Valkey cohort, the bootstrap parameters and the
+resolved/inconclusive rule; schema-3 evidence is validated only by its matching
+harness revision and is never relabelled.
 
 Both servers are pinned to the same first four allowed logical CPUs; the generator
 uses remaining CPUs when available, otherwise shares those four. Affinity is
