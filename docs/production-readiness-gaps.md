@@ -1285,6 +1285,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   No extended mixed-workload soak covers memory growth, expiry churn, reconnect
   storms, slow clients, persistence rewrites, credential rotation or
   termination during writes.
+  **Partial (2026-11-28): repeatable soak and recovery harness.** `scripts/soak.py`
+  runs a mixed workload (SET/GET/INCR/EXPIRE/LPUSH/LRANGE/HSET/HGET), a reconnect
+  storm, a slow subscriber, periodic `BGREWRITEAOF`, and an admin probe sampling
+  `INFO memory`/`INFO clients` plus `VmRSS`/CPU for `--duration` seconds; it then
+  stops the server, restarts it on the same directory and verifies acknowledged
+  keys, writing `target/soak/report.json` and a summary table. It fails only on
+  liveness/correctness (server death, unexpected error reply, missed shutdown
+  deadline, failed recovery) and records throughput/latency/memory without
+  asserting thresholds. `docs/soak.md` proposes the acceptance (zero errors and
+  full key recovery for a 15-minute run, RSS growth within the declared headroom
+  guidance, and a retained 24-hour scheduled run) and `scripts/test_soak.py` pins
+  the dry-run plan, missing-binary failure, summary content and operation matrix.
+  The supported duration and budgets remain an owner decision.
   **Closes when:** a repeatable soak/fault suite runs for the supported duration
   and retains throughput, latency, memory, CPU, queue and recovery evidence.
 
