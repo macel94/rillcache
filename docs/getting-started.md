@@ -71,6 +71,8 @@ and checksum are also available under **Artifacts** in successful
 | Request argument / frame bound | 1 MiB / 2 MiB | `--max-bulk-bytes` / `--max-frame-bytes` |
 | Socket inactivity timeout | 30 seconds | `--idle-timeout-ms` |
 | Incomplete plaintext request assembly deadline | 60 seconds (`0` disables) | `--frame-assembly-timeout-ms` |
+| Pending-reply write-stall deadline | 30 seconds (`0` disables) | `--write-stall-timeout-ms` |
+| Global / per-user command budget | Off (commands per second) | `--global-command-budget` / `--user-command-budget` |
 | Signal-shutdown grace period before forced exit | 25 seconds | `--shutdown-deadline-ms` |
 | Authentication / persistence | Off | [Security](security.md) / [persistence](persistence.md) |
 
@@ -81,7 +83,9 @@ including plaintext read through an established TLS connection; it does not boun
 a TLS peer that trickles encrypted records without producing plaintext. Complete
 buffered requests are not timed out while command work is paused or backpressured.
 Set the assembly deadline to `0` only when another layer supplies an equivalent
-bound.
+bound. The write-stall deadline bounds a peer that stops draining a pending
+reply; a slow reader that keeps making progress survives it. Command budgets are
+opt-in overload shedding. See the [overload policy](overload-policy.md).
 
 `--shutdown-deadline-ms` bounds how long a `SIGTERM`/`SIGINT` shutdown may wait to
 join workers before logging `forced termination: shutdown deadline exceeded` and
