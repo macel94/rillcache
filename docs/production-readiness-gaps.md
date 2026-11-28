@@ -1294,12 +1294,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   latency claim (`P1`, `P2`, `P5`, `P6` stay open). Not claimed: an accepted latency
   SLO — that needs controlled hardware and owner acceptance.
 
-- [ ] **P4. Durability and topology performance are unmeasured.** [P1]
-  There is no evidence for fsync policies, rewrite pauses, replication lag,
-  failover time or cluster migration. These features are largely absent, so the
-  performance gate cannot cover them.
-  **Closes when:** each supported durability/topology mode has matched
-  throughput, tail, CPU, memory and recovery measurements.
+- [x] **P4. Durability and topology performance are unmeasured.** [P1]
+  **Complete (2026-11-27) for every supported durability mode, with the excluded
+  topologies named.** [persistence-performance.md](persistence-performance.md) is a
+  matched profile produced by `scripts/durability_profile.py` against one release
+  binary: 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode, reporting
+  throughput, p50/p99/p99.9, server CPU seconds, CPU per write, RSS and
+  restart-to-ready with key recovery for `none`, `always`, `everysec` and `no`.
+  Measured: enabling the journal roughly halves the client-bound throughput
+  (3922 → 1883–2163 req/s), lifts p50 from 0.69 ms to ~2.1 ms and costs ~2.4–2.6×
+  the server CPU per write; the three fsync policies are within ~15 % of each other
+  with overlapping tails (p99 36–38 ms), RSS is flat at 18.1–18.7 MiB, and a clean
+  restart is ready in 1–2 ms with the acknowledged key recovered. Replication lag,
+  failover time and cluster migration are **not applicable**: those topologies are
+  explicit exclusions (`A1`, `A2`), so the criterion's "supported topology" is the
+  single standalone process. Retained limits, stated in the document: one
+  development host and a single-CPU Python generator that bounds the `none` row, so
+  absolute throughput is a harness ceiling and only the relative durability cost is
+  interpreted; the harness cannot resolve a difference between the three fsync
+  policies; rewrite pause under a large journal stays open in `D10`; no accepted SLO
+  follows from this table. Not claimed: controlled-hardware capacity, a latency SLO,
+  or any topology measurement.
 
 - [ ] **P5. Non-default modes are outside the protected gate.** [P1]
   The gates measure default plain-TCP Rillcache. TLS, persistence, Tokio,
