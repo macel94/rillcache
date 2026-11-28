@@ -24,6 +24,7 @@ errors are not command replies and are not counted.
 | `total_connections_received` | TCP sockets accepted by the listener, including a socket rejected because `max_clients` was already full |
 | `total_commands_processed` | Client command dispatches admitted to `Session::execute`; includes session/pub-sub/admin commands and `INFO` itself |
 | `rejected_connections` | Accepted sockets closed with `ERR max number of clients reached` |
+| `command_budget_rejections` | Commands refused by an enabled global/per-user command budget; the command was not executed or recorded |
 | `expired_keys` | Live keys removed by lazy expiration or the bounded maintenance reaper |
 | `expired_subkeys` | Hash fields removed by lazy per-field TTL expiry (Redis 7.4 `expired_subkeys`) |
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
@@ -35,6 +36,13 @@ errors are not command replies and are not counted.
 milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 (the number of live hash keys with at least one field deadline). `expired_subkeys` resets with
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
+
+The [overload policy](overload-policy.md) lists the enforced admission,
+frame-assembly, write-stall and command-budget thresholds. A connection shed by
+the write-stall deadline disappears from `connected_clients` and its admission
+slot becomes reusable; the shedding itself is silent at the protocol level and
+has no dedicated counter. `command_budget_rejections` counts only refused
+commands, and resets with `CONFIG RESETSTAT` like the other counters.
 
 `INFO clients` reports `connected_clients` (the process-local registry size),
 `cluster_connections:0` and `maxclients` (the live connection limit, changeable
@@ -334,8 +342,11 @@ measured.
 ## Deliberate gaps
 
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
-- No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
-  or cross-process client view. `INFO clients` intentionally omits those fields.
+- Per-client `fd` (server-side descriptor, `-1` where unavailable) and `idle`
+  (seconds since the last accepted command, sampled per command) are reported by
+  `CLIENT INFO`/`CLIENT LIST`. Last command name, input/output buffer bytes,
+  allocator/memory, network-byte totals and a cross-process client view remain
+  absent; `INFO clients` reports only the aggregate counters listed above.
 - `INFO latencystats` uses a bounded 32-bucket logarithmic approximation, not an
   HDR histogram or exact percentile contract. There is no CPU accounting,
   network-byte counter or per-database stats. `LATENCY` exposes only the two

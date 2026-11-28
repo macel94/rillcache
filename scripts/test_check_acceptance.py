@@ -19,7 +19,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_acceptance.py"
 CANDIDATE = "d19c37cc9b0bb5398b8356d05576f78a73fdbc3c"
-HEADER = "candidate\tscope\treviewer\treviewer_kind\tevidence\tsigned_at\tstate\n"
+HEADER = ("candidate\tscope\treviewer\treviewer_kind\tevidence\t"
+          "review_scope\tfindings\tsigned_at\tstate\n")
 
 
 def load_checker():
@@ -30,19 +31,36 @@ def load_checker():
     return module
 
 
-def run(rows: str, require_all: bool = False) -> list[str]:
+FINDINGS_HEADER = ("id\tscope\tsummary\tseverity\tdisposition\t"
+                   "retest_evidence\tstatus\n")
+FINDINGS = (
+    "F-001\tsecurity\topen security review\thigh\t-\t-\topen\n"
+    "F-002\trecovery\tclosed retest\tmedium\tFixed in the parser.\t"
+    "docs/persistence.md\tclosed\n"
+)
+DARROW = "-"
+
+
+def run(rows: str, require_all: bool = False, findings: str = FINDINGS) -> list[str]:
     module = load_checker()
-    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as handle:
+    directory = tempfile.mkdtemp()
+    path = os.path.join(directory, "signoffs.tsv")
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write(HEADER + rows)
-        path = handle.name
+    with open(os.path.join(directory, "findings.tsv"), "w", encoding="utf-8") as handle:
+        handle.write(FINDINGS_HEADER + findings)
     try:
         return module.check(path, str(ROOT), require_all)
     finally:
-        os.unlink(path)
+        import shutil
+        shutil.rmtree(directory)
 
 
-def row(scope: str, reviewer: str, kind: str, evidence: str, date: str, state: str) -> str:
-    return f"{CANDIDATE}\t{scope}\t{reviewer}\t{kind}\t{evidence}\t{date}\t{state}\n"
+def row(scope: str, reviewer: str, kind: str, evidence: str, date: str, state: str,
+        review_scope: str = "Reviewed the declared scope at this candidate.",
+        findings: str = DARROW) -> str:
+    return (f"{CANDIDATE}\t{scope}\t{reviewer}\t{kind}\t{evidence}\t"
+            f"{review_scope}\t{findings}\t{date}\t{state}\n")
 
 
 def case(name: str, rows: str, expected_problems: int, require_all: bool = False) -> None:
@@ -79,7 +97,7 @@ def main() -> int:
 
     bad_candidate = base.replace(
         row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed"),
-        "abc123\tprofile\tReviewer A\tmaintainer\tdocs/compatibility.md\t2026-11-27\tsigned\n",
+        "abc123\tprofile\tReviewer A\tmaintainer\tdocs/compatibility.md\tReviewed scope.\t-\t2026-11-27\tsigned\n",
     )
     case("abbreviated candidate SHA is rejected", bad_candidate, 1)
 
@@ -100,6 +118,41 @@ def main() -> int:
     )
     # Two independent problems: the missing scope row, plus the still-open scopes.
     case("release mode rejects a registry without a scope row", missing_scope, 2, require_all=True)
+
+    blank_scope = base.replace(
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed"),
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed",
+            review_scope="-"),
+    )
+    case("signed row without a review scope is rejected", blank_scope, 1)
+
+    open_finding = base.replace(
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed"),
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed",
+            findings="F-001"),
+    )
+    case("signed row referencing an open finding is rejected", open_finding, 1)
+
+    unknown_finding = base.replace(
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed"),
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed",
+            findings="F-999"),
+    )
+    case("signed row referencing an unknown finding is rejected", unknown_finding, 1)
+
+    closed_without_retest = base.replace(
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed"),
+        row("profile", "Reviewer A", "maintainer", "docs/compatibility.md", "2026-11-27", "signed",
+            findings="F-002"),
+    )
+    case("closed finding with retest evidence is accepted", closed_without_retest, 0)
+
+    bad_retest = base
+    problems = run(bad_retest, findings=FINDINGS.replace("docs/persistence.md", "docs/missing.md"))
+    if len(problems) != 1:
+        print(f"FAIL closed finding with missing retest evidence: {problems}")
+        raise SystemExit(1)
+    print("PASS closed finding with missing retest evidence (1 problem(s))")
 
     print("all acceptance-registry controls passed")
     return 0

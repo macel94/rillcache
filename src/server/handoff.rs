@@ -266,6 +266,7 @@ impl Sharing {
                 shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                stall_since: None,
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: None,
                 shutdown_on_drop: false,

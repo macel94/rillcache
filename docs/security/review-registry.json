@@ -1,0 +1,299 @@
+{
+  "schema": 1,
+  "review": {
+    "profile": "rillcache-standalone-0.1-draft",
+    "threat_model": "docs/security/threat-model.md",
+    "scope_document": "docs/security/independent-review.md",
+    "scope_defined": "2026-11-27",
+    "candidate_policy": "The reviewer records the exact candidate commit and must not reuse a prior sign-off for a changed head.",
+    "status": "scope-published-awaiting-independent-review",
+    "external_signature": "outstanding: an appointed independent reviewer must run the published scope against a recorded candidate and replace signoff SO-2 with a signed record (reviewer, date, signature reference). Project-authored tests do not substitute for that signature."
+  },
+  "threats": [
+    {
+      "id": "T1",
+      "surface": "client listener: authentication and session admission",
+      "description": "An unauthenticated or brute-forcing peer reaches command dispatch, guesses credentials or consumes unauthenticated session capacity.",
+      "controls": [
+        "--requirepass / --requirepass-file with a regular file and no group/other bits; inline secrets shorter than 16 bytes are refused",
+        "AUTH failure budget and per-source failure limiting",
+        "AUTH is required before any non-authentication command when a password or ACL file is configured"
+      ],
+      "evidence": [
+        "docs/security.md",
+        "tests/auth.rs",
+        "tests/auth_failure_budget.rs",
+        "tests/auth_source_limit.rs"
+      ],
+      "residual_risk": "An unconfigured process serves the implicit Redis no-password user, and unauthenticated-session admission is not capped (F-01 / R5).",
+      "status": "open"
+    },
+    {
+      "id": "T2",
+      "surface": "multi-user authorization: ACL users, keys, channels, categories",
+      "description": "An authenticated user escalates to commands, keys or channels outside its grant, or an operator misconfigures the default user.",
+      "controls": [
+        "Versioned allow/deny ACL matrix executed against both pinned references and the candidate",
+        "A file whose default user is off is rejected instead of silently permissive",
+        "ACL keyspace safety and category-selector audits"
+      ],
+      "evidence": [
+        "docs/security.md",
+        "ci/upstream/acl-v1.json",
+        "scripts/upstream/acl_matrix.py",
+        "tests/acl.rs",
+        "tests/acl_keyspace_safety.rs",
+        "tests/acl_category_selector_audit.rs"
+      ],
+      "residual_risk": "Not full Redis ACL semantics (S2) and no per-user command or memory quota (R5).",
+      "status": "open"
+    },
+    {
+      "id": "T3",
+      "surface": "transport: TLS listener, probe trust and SNI selection",
+      "description": "A network attacker downgrades, intercepts or impersonates the endpoint, or slips past certificate selection.",
+      "controls": [
+        "TLS 1.3 only via the reviewed rustls stack, no plaintext or insecure fallback",
+        "Probe clients require an explicit CA bundle and verify chain plus DNS/IP identity before AUTH",
+        "One invalid SNI key rejects the whole configuration generation"
+      ],
+      "evidence": ["docs/tls.md", "tests/native_tls.rs"],
+      "residual_risk": "Certificate status (OCSP/CRL) checking and terminator anti-bypass attestation are absent (F-04 / S5).",
+      "status": "open"
+    },
+    {
+      "id": "T4",
+      "surface": "protocol parsing: RESP frames, inline requests, pipelining",
+      "description": "A malformed or adversarial frame desynchronizes the parser, executes unintended commands or allocates unbounded buffers.",
+      "controls": [
+        "Finite bulk (8 MiB) and frame (16 MiB) bounds with explicit errors",
+        "Seeded fragmentation, random-byte and pipeline-consumption properties",
+        "Boundary and error-dialect tests over the same limits"
+      ],
+      "evidence": [
+        "tests/protocol_fuzz.rs",
+        "tests/boundaries.rs",
+        "docs/unsupported.md"
+      ],
+      "residual_risk": "No external fuzzing campaign and no sustained adversarial corpus in CI (V4).",
+      "status": "open"
+    },
+    {
+      "id": "T5",
+      "surface": "request service: slow readers, blocked clients, queue growth",
+      "description": "A client that stops reading, or a fan-out workload, grows output queues and starves other clients.",
+      "controls": [
+        "Bounded per-connection frames and a finite client count",
+        "Blocked-client accounting and CLIENT PAUSE interaction",
+        "Backpressure on output rather than unbounded buffering"
+      ],
+      "evidence": [
+        "tests/clients.rs",
+        "tests/blocked_clients.rs",
+        "tests/client_pause.rs"
+      ],
+      "residual_risk": "No configurable slow-client threshold, kill policy or fair share for large replies (F-03 / O6).",
+      "status": "open"
+    },
+    {
+      "id": "T6",
+      "surface": "host resources: process memory and kernel OOM",
+      "description": "Keyspace, indexes, buffers and fragmentation exceed the budget and the kernel OOM-kills the process.",
+      "controls": [
+        "Logical key/value payload budget with rejection and capacity reporting",
+        "RSS and cgroup v1/v2 current/limit observation with an explicit scope",
+        "Persistent WATCH-history byte cap"
+      ],
+      "evidence": [
+        "docs/eviction.md",
+        "tests/eviction.rs",
+        "tests/memory_stats.rs"
+      ],
+      "residual_risk": "Observation is not enforcement: no RSS/cgroup bound, headroom contract or tested OOM behavior (F-02 / O1).",
+      "status": "open"
+    },
+    {
+      "id": "T7",
+      "surface": "persistence: journal frames, anchor file, offline archive",
+      "description": "An attacker or corruption event alters the journal, anchor or archive so recovery loads unauthenticated or truncated state.",
+      "controls": [
+        "Optional CRC32/HMAC framing validated on replay",
+        "Rollback anchor recorded outside the journal",
+        "Offline rillcache-backup archive with verification and no live-path dependency"
+      ],
+      "evidence": [
+        "docs/persistence.md",
+        "tests/durability_faults.rs",
+        "tests/aof_backup.rs",
+        "tests/aof_anchor.rs"
+      ],
+      "residual_risk": "HMAC is optional, and archive encryption at rest is an explicit exclusion (F-06).",
+      "status": "accepted"
+    },
+    {
+      "id": "T8",
+      "surface": "audit custody: audit log, keyring, syslog delivery",
+      "description": "An attacker edits or forges audit records, or credentials leak through logs.",
+      "controls": [
+        "HMAC-framed audit records with keyring rotation",
+        "Bounded redaction of credential-bearing diagnostics",
+        "Syslog delivery tests"
+      ],
+      "evidence": [
+        "tests/audit_hmac.rs",
+        "tests/audit_keyring.rs",
+        "tests/audit_syslog.rs",
+        "docs/security.md"
+      ],
+      "residual_risk": "Custody depends on the operator's external syslog storage; the process cannot prevent deletion by a host-level attacker.",
+      "status": "mitigated"
+    },
+    {
+      "id": "T9",
+      "surface": "build and dependency supply chain",
+      "description": "A compromised or unexpected dependency, toolchain or upstream archive injects code into the release.",
+      "controls": [
+        "Vendored, locked dependencies with pinned upstream archives re-validated on every use",
+        "No application-level unsafe Rust; only the reviewed rustls/Tokio/CPU-affinity exceptions and their required transitives",
+        "Pinned reference versions for every differential and benchmark comparison"
+      ],
+      "evidence": [
+        "Cargo.lock",
+        "docs/requirements.md",
+        "ci/upstream/pins.json"
+      ],
+      "residual_risk": "No SBOM, image signature, provenance attestation or reproducible-build comparison yet (L3 / L8).",
+      "status": "open"
+    },
+    {
+      "id": "T10",
+      "surface": "absent subsystems: scripting, modules, cluster, replication",
+      "description": "A partially present sandbox or topology surface gives the illusion of support and is trusted with credentials or data.",
+      "controls": [
+        "Absent commands return explicit unsupported errors rather than generic failures",
+        "The declared profile lists the exclusions, and the compile/test surface has no scripting or cluster path",
+        "Adding any such feature requires its own threat model before it is claimed secure"
+      ],
+      "evidence": [
+        "docs/unsupported.md",
+        "docs/production-profile.md",
+        "tests/error_dialect.rs"
+      ],
+      "residual_risk": "Any future addition must not inherit this model (S10).",
+      "status": "mitigated"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-01",
+      "threat": "T1",
+      "title": "Implicit no-password default user with unbounded unauthenticated sessions",
+      "severity": "high",
+      "status": "open",
+      "owner": "readiness R5",
+      "tracking": "R5 admission limits for unauthenticated sessions",
+      "detail": "Without --requirepass or an ACL file the process serves the implicit no-password user, and no cap isolates unauthenticated session capacity."
+    },
+    {
+      "id": "F-02",
+      "threat": "T6",
+      "title": "No enforced RSS/cgroup memory bound and no tested OOM behavior",
+      "severity": "high",
+      "status": "open",
+      "owner": "readiness O1",
+      "tracking": "O1 memory accounting and enforcement",
+      "detail": "maxmemory bounds key/value payload only; RSS and cgroup values are observational, so the kernel can still OOM-kill the process."
+    },
+    {
+      "id": "F-03",
+      "threat": "T5",
+      "title": "No configurable slow-client threshold or kill policy",
+      "severity": "medium",
+      "status": "open",
+      "owner": "readiness O6 / S9",
+      "tracking": "O6 slow-client and queue policy",
+      "detail": "Backpressure and connection limits exist, but operators cannot set a stall threshold, kill a stalled client or reserve a fair share for large replies."
+    },
+    {
+      "id": "F-04",
+      "threat": "T3",
+      "title": "No certificate status validation or terminator anti-bypass attestation",
+      "severity": "medium",
+      "status": "open",
+      "owner": "readiness S5",
+      "tracking": "S5 certificate status and anti-bypass",
+      "detail": "TLS 1.3 with chain and identity verification is enforced, but OCSP/CRL status and a terminator attestation that cannot be bypassed are absent."
+    },
+    {
+      "id": "F-05",
+      "threat": "T8",
+      "title": "Audit records are HMAC-framed and rotate through a keyring",
+      "severity": "low",
+      "status": "closed",
+      "owner": "security area",
+      "detail": "Forged or edited audit records fail verification, and rotation keeps old keys verifiable without weakening new records.",
+      "closure_evidence": ["docs/security.md", "tests/audit_hmac.rs"],
+      "retest_evidence": ["tests/audit_keyring.rs", "tests/audit_syslog.rs"]
+    },
+    {
+      "id": "F-06",
+      "threat": "T7",
+      "title": "Journal integrity without HMAC is CRC-detectable only; archive encryption at rest is excluded",
+      "severity": "medium",
+      "status": "risk-accepted",
+      "owner": "readiness D3",
+      "risk_note": "Accepted for the draft profile: HMAC framing is optional and documented, archives are created by the operator-controlled offline tool, and encryption at rest is an explicit exclusion rather than a silent gap. Revisit before any release claim.",
+      "detail": "A party able to rewrite journal bytes can produce a CRC-consistent but semantically altered history when HMAC framing is not enabled."
+    },
+    {
+      "id": "F-07",
+      "threat": "T4",
+      "title": "Inline (non-RESP) requests are accepted and must stay inside the frame contract",
+      "severity": "low",
+      "status": "closed",
+      "owner": "protocol area",
+      "detail": "Inline requests are parsed with the same finite frame bound, and seeded random-inline properties assert no desynchronization or unbounded growth.",
+      "closure_evidence": ["tests/protocol_fuzz.rs"],
+      "retest_evidence": ["tests/boundaries.rs"]
+    },
+    {
+      "id": "F-08",
+      "threat": "T10",
+      "title": "Absent scripting/module/cluster surfaces fail closed with explicit errors",
+      "severity": "low",
+      "status": "closed",
+      "owner": "compatibility area",
+      "detail": "Unsupported commands return explicit errors from a documented list rather than partial behavior, so no unsandboxed execution path exists.",
+      "closure_evidence": ["docs/unsupported.md"],
+      "retest_evidence": ["tests/error_dialect.rs", "docs/production-profile.md"]
+    }
+  ],
+  "signoffs": [
+    {
+      "id": "SO-1",
+      "kind": "project",
+      "status": "signed",
+      "reviewer": "rillcache maintainers",
+      "date": "2026-11-27",
+      "scope": [
+        "threat model",
+        "scope document",
+        "tracked findings and retest evidence"
+      ],
+      "evidence": ["docs/security/threat-model.md", "docs/security/independent-review.md"]
+    },
+    {
+      "id": "SO-2",
+      "kind": "independent",
+      "status": "outstanding",
+      "reviewer": null,
+      "date": null,
+      "scope": [
+        "published scope in docs/security/independent-review.md",
+        "one recorded candidate commit",
+        "penetration test cases listed in the scope"
+      ],
+      "blocking_note": "No independent reviewer has been appointed. Everything the criterion names except the external signature exists in this repository; the signature must come from a party outside the project."
+    }
+  ]
+}

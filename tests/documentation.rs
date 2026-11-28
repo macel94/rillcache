@@ -213,7 +213,8 @@ fn production_acceptance_registry_is_machine_checked() {
         .expect("acceptance registry");
     let header = registry.lines().next().unwrap_or_default();
     assert_eq!(
-        header, "candidate\tscope\treviewer\treviewer_kind\tevidence\tsigned_at\tstate",
+        header,
+        "candidate\tscope\treviewer\treviewer_kind\tevidence\treview_scope\tfindings\tsigned_at\tstate",
         "registry header changed"
     );
     for scope in ["profile", "security", "performance", "recovery", "release"] {
@@ -391,6 +392,78 @@ fn published_version_matrix_matches_the_pinned_files() {
     assert!(
         unit.status.success(),
         "compatibility matrix regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// S1: the threat model, review scope, findings log and sign-off registry are
+/// machine-checked in the required CI graph.
+#[test]
+fn security_review_registry_scope_and_signoff_are_checked_in_ci() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .args(["scripts/security_review.py", "--check"])
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the offline security review check");
+    assert!(
+        check.status.success(),
+        "security review registry check failed:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let output = String::from_utf8_lossy(&check.stdout);
+    assert!(
+        output.contains("Security review registry valid"),
+        "unexpected security review output: {output}"
+    );
+
+    // The regression suite must run here as well, otherwise a broken checker
+    // could pass itself and the registry would silently become an attestation.
+    let unit = Command::new("python3")
+        .args(["-m", "unittest", "test_security_review"])
+        .current_dir(manifest.join("scripts"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the security review regression tests");
+    assert!(
+        unit.status.success(),
+        "security review regression tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&unit.stdout),
+        String::from_utf8_lossy(&unit.stderr)
+    );
+}
+
+/// V2: the differential corpus must carry machine-checked coverage accounting
+/// against the advertised command surface. The script fails closed on drift, a
+/// missing file or a corpus command that the matrix does not advertise, and its
+/// own controls run here so the accounting cannot silently rot.
+#[test]
+fn differential_corpus_coverage_is_machine_checked() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let check = Command::new("python3")
+        .arg("scripts/check_corpus_coverage.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the differential-coverage check");
+    assert!(
+        check.status.success(),
+        "differential corpus coverage drifted:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let unit = Command::new("python3")
+        .arg("scripts/test_check_corpus_coverage.py")
+        .current_dir(manifest)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("Python 3 is required by the differential-coverage controls");
+    assert!(
+        unit.status.success(),
+        "differential coverage controls failed:\n{}\n{}",
         String::from_utf8_lossy(&unit.stdout),
         String::from_utf8_lossy(&unit.stderr)
     );

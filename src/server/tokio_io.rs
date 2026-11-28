@@ -119,10 +119,15 @@ impl Context {
     }
 
     fn reply_timeout(&self) -> Duration {
+        let stalled = self
+            .config
+            .write_stall_timeout
+            .unwrap_or(self.config.idle_timeout)
+            .min(self.config.idle_timeout);
         if self.stopped() {
-            self.config.idle_timeout.min(CLIENT_DRAIN_TIMEOUT)
+            stalled.min(CLIENT_DRAIN_TIMEOUT)
         } else {
-            self.config.idle_timeout
+            stalled
         }
     }
 
@@ -632,17 +637,25 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
 }
 
 async fn write_reply(stream: &mut TokioStream, reply: &[u8], timeout: Duration) -> io::Result<()> {
-    tokio::time::timeout(timeout, async {
-        for (index, chunk) in reply.chunks(OUTPUT_QUANTUM).enumerate() {
-            if index > 0 {
-                tokio::task::yield_now().await;
-            }
-            stream.write_all(chunk).await?;
+    // The deadline is per write-progress step, not per reply: a slow but
+    // continuously draining reader must survive arbitrarily long replies, while
+    // a peer that stops draining is shed after one full timeout without any
+    // progress. Each cancelled write is terminal (the connection is dropped).
+    let mut rest = reply;
+    while !rest.is_empty() {
+        let chunk = &rest[..rest.len().min(OUTPUT_QUANTUM)];
+        let written = tokio::time::timeout(timeout, stream.write(chunk))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "client write timeout"))??;
+        if written == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
         }
-        Ok(())
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "client write timeout"))?
+        rest = &rest[written..];
+        if !rest.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    }
+    Ok(())
 }
 
 async fn close_after_reply(

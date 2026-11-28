@@ -18,6 +18,10 @@ project's front page.
 | Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Handle a disk, memory, credential or journal incident | [Incident runbook](incident-runbook.md) |
+| Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
+| See a representative mixed workload, separate from the merge gate | [Mixed workload report](mixed-workload.md) |
+| Check a repeated-round performance trend | [Performance trend](performance-trends.md) |
+| See how long O(N) commands hold the owner | [Owner work guidance](owner-work-guidance.md) |
 | See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
@@ -29,6 +33,8 @@ project's front page.
 - [Docker, Compose and Kubernetes](containers.md): images, resource isolation, networking and lifecycle.
 - [Startup configuration](configuration.md): CLI flags and the bounded `--config` startup file.
 - [Security](security.md) and [TLS](tls.md): passwords, ACLs, audit tooling and encrypted listeners.
+- [Overload and slow-reader policy](overload-policy.md): enforced thresholds and what clients see when they cross one.
+- [Security threat model](security/threat-model.md) and the [independent review scope](security/independent-review.md): scoped threats, findings, retest evidence and the sign-off registry for the draft profile.
 - [Persistence](persistence.md): the optional journal, replay, compaction and durability boundaries.
 - [Eviction](eviction.md): payload budgets and memory policies.
 - [Observability](observability.md) and [runtime introspection](introspection.md): counters, logs, latency and logical memory reporting.

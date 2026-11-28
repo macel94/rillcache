@@ -183,6 +183,42 @@ normally. Signing, keyring verification and collector failure reporting are
 covered by `tests/audit_hmac.rs`, `tests/audit_keyring.rs` and
 `tests/audit_collector.rs`.
 
+## Admission and quota policy
+
+Admission is explicit, observable and deliberately incomplete for sharing:
+
+- **Global:** `--max-clients` bounds every admitted connection, authenticated or
+  not (default 128); the next connection receives `ERR max number of clients
+  reached` and is closed. `--max-data-bytes` bounds logical payload,
+  `--max-bulk-bytes`/`--max-frame-bytes` bound requests, and `MGET` replies are
+  capped at 2 MiB.
+- **Per authenticated user:** an ACL `maxconnections=N` rule caps concurrent
+  sessions for that user; admission and release are atomic, and the over-limit
+  attempt receives `ERR max connections reached for user`.
+- **Authentication budgets:** `--auth-failure-limit` closes a connection after
+  consecutive failures, and the opt-in per-source/global budgets lock out a peer
+  or the process for the configured window.
+- **Unauthenticated sessions:** they are admitted and count against
+  `--max-clients` exactly like authenticated ones; there is **no separate
+  unauthenticated cap**. Such a session may only run the auth-exempt commands
+  (`AUTH`, `HELLO`, `QUIT`, `RESET`); anything else returns `NOAUTH
+  Authentication required.` and a failed AUTH budget closes it.
+- **Observability:** `INFO clients` reports `connected_clients`,
+  `blocked_clients`, `maxclients` and the configured auth limits; `INFO stats`
+  reports `rejected_connections`.
+
+Absent by design: per-user command or memory quotas, CPU fairness, slow-client
+share and per-tenant quotas. Admission is per process, so shared or multi-tenant
+deployments must add an external limiter (see the tenant and rate-limit
+boundaries). A single admitted user can therefore consume its share of owner CPU
+and the global payload budget.
+
+`tests/admission_policy.rs` pins the boundaries: unauthenticated sessions are
+admitted, receive `NOAUTH` for data commands, and are refused beyond
+`max_clients` with the global refusal; releasing a session frees the slot; and an
+ACL `maxconnections=1` user is refused a second concurrent session with the
+per-user error until the first disconnects. `INFO clients` exposes the limits.
+
 ## Fixed-worker scheduling and latency
 
 The default Unix mode is readiness-based (Mio, owner-local reactor). Opting into
@@ -665,6 +701,22 @@ default configuration, and `tests/declared_modes.rs` fails if this table, the ga
 scope or the checklist drift apart. Adding a regression budget for any row above
 means adding the matching required evidence, not editing this table to say
 "measured".
+
+## O(N) commands and the latency contract
+
+The single owner executes one command at a time and there is **no per-command
+deadline, cancellation or CPU quota**. Whole-keyspace and full-collection commands
+therefore hold the execution turn for their entire duration and are **excluded from
+any latency contract in this profile**: `KEYS`, `SORT`, `SCAN`'s snapshot work,
+`GEOSEARCH`, `HGETALL`/ranges and other large-collection reads, and full-state
+rewrites. Measured on one development host at 20 000 items
+([owner-work-guidance.md](owner-work-guidance.md)): `KEYS *` 352 ms, full `SCAN`
+165 ms, `ZRANGEBYSCORE` 332 ms, `ZRANGE 0 -1` 394 ms, `HGETALL` with 20 000 fields
+812 ms — against a ~1 ms per-command cost for the measured workload. Keep these
+commands at or below ~1 000 items when single-digit-millisecond turns matter.
+`CLIENT KILL` closes the connection but does not interrupt a command already
+running, and no timeout aborts one. `tests/owner_work_contract.rs` fails if this
+statement, the guidance page or the measured table disappears.
 
 ## Persistence contract
 

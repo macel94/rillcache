@@ -67,7 +67,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Pinned Tcl coverage (V1), differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
+| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
 
 ---
 
@@ -227,7 +227,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client versions, pool-under-load, cluster routing, client-side caching, RESP3
   push tracking or mutual TLS, and does not close C6.
 
-- [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
+- [x] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
   command set, but `FLUSH*` event classes remain unsupported; delivery is
   at-most-once and process-local.
@@ -282,11 +282,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   not emit. `A` excludes `n`, as in Redis. `FLUSH*`/module classes and key-miss
   coverage for other read commands remain open. Delivery is at-most-once and
   process-local.
+  **Complete (2026-11-27) for the documented matrix; `FLUSH*` events remain an explicit exclusion.**
+  `docs/notifications.md` now publishes the pinned event matrix (Redis 8.10.2 /
+  Valkey 9.1.2 from `ci/upstream/pins.json`) with the keyspace/keyevent payload
+  direction, per-mutation counts, command/argument ordering rules for compound
+  commands and `MULTI`, and the duplicate/loss/reconnect rules: one event per
+  actual change per enabled class, nothing for no-ops or rejected commands, no
+  queue for absent subscribers, no replay after reconnect, best-effort loss under
+  queue pressure, and `FLUSHDB`/`FLUSHALL` deliberately silent without
+  desynchronising the connection. Evidence: `tests/notifications_reconnect.rs`
+  pins ordered pairs for `SET`/`SET`/`DEL`, the no-op `DEL` silence, no delivery
+  for events published while nobody was subscribed, a reconnected subscriber
+  receiving only later events, and `FLUSHDB` silence followed by a delivered
+  `SET`, in the default, fixed-one and four-worker modes, alongside the existing
+  category, keymiss, new-key, compound-command and lifecycle tests.
+  Durable delivery, replay and cross-connection ordering stay explicitly out of
+  scope as the criterion allows; keyless `FLUSH*` events stay excluded.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
 
-- [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
+- [x] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
   Entries, last IDs, group cursors, consumers and pending records survive restart
   (D6 complete), but `XINFO` still diverges (`nacked-count` is zero), and
   approximate `XTRIM` follows a different granularity.
@@ -301,6 +317,24 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `ENTRIESREAD -1` or an unknown counter. Consumer `idle` now uses last
   attempted interaction and `inactive` uses last successful delivery/claim,
   with both timestamps persisted across rewrite/replay.
+  **Complete (2026-11-28): field matrix documented and trim/read semantics in the differential corpus.**
+  `docs/streams.md` publishes the metadata matrix for `XINFO STREAM`,
+  `XINFO STREAM FULL`, `XINFO GROUPS` and `XINFO CONSUMERS` with the fields
+  emitted and the declared differences: `nacked-count` fixed at `0` (no
+  XNACK/unowned pending entries), `entries-read` undercount when history was
+  trimmed without an explicit counter, `lag` null for an unknown counter, no
+  radix-tree internals or `recorded-first-entry-id`, and bounded
+  `pending`/`consumers` bodies. Trim/read semantics are in the differential
+  corpus: `tests/reference_baseline.rs::run_stream_trim_read_corpus` asserts exact
+  `XTRIM ... MAXLEN =`/`MINID =` removal counts, contiguous post-trim ranges,
+  `XRANGE`/`XREVRANGE` with `COUNT`, `XREAD` at `0`/mid/`latest` (null), the
+  basic `XGROUP CREATE` -> `XREADGROUP` -> `XACK` flow with a repeated `XACK`
+  returning `0`, and the declared `~` granularity (bounded batch removal of at
+  most `LIMIT`, default 10000, entries) is documented instead of being claimed as
+  reference-identical. Machine-checked coverage accounting
+  (`ci/differential/coverage.json`) now includes the stream commands, and the
+  existing engine tests retain the `entries-read`/`lag`/consumer-time fields
+  across journal rewrite and replay.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 
@@ -744,6 +778,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a written threat model and an independent review/penetration
   test are completed, findings are tracked to closure, and the review scope and
   date are published.
+  **Partial (2026-11-27): the scoped review package and its machine-checked
+  registry are published.** `docs/security/threat-model.md` covers ten threat
+  surfaces (T1-T10) with assets, trust boundaries, controls, evidence paths and
+  residual risk; `docs/security/independent-review.md` publishes the scope, the
+  definition date (2026-11-27), the candidate-record policy and a fourteen-case
+  penetration-test catalogue (P-01 to P-14) with expected observables. Findings
+  F-01 to F-08 are tracked in `docs/security/review-registry.json`: closed
+  findings require both closure and retest evidence paths that must exist, open
+  findings must name their tracking checklist item, and an independent sign-off
+  can only be `signed` with a reviewer, a date and a signature reference.
+  `scripts/security_review.py --check` and its twenty-six regression tests run in
+  the required CI graph through `tests/documentation.rs`, so a claim cannot
+  silently degrade into an attestation. The remaining item is external: an
+  appointed independent reviewer must execute the published scope against a
+  recorded candidate and replace sign-off record `SO-2` (status `outstanding`).
+  Project-authored tests are control evidence, never independent sign-off, so this
+  does not close S1.
 
 - [x] **S2. ACL support is not full Redis ACL.** [P0]
   **Complete (2026-11-27) for an explicitly versioned, differentially tested
@@ -907,32 +958,54 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   secret-manager integration, owner-identity or entropy verification, automatic
   audit of every deployment's permissions, or protection against an exposed ACL
   file being brute-forced.
-- [ ] **S9. Denial-of-service and slow-client hardening is incomplete.** [P0]
-  There are client/payload/frame limits and bounded output backpressure, but no
-  slow-client thresholds, global connection/command budgets, per-user quotas or
-  adversarial protocol fuzzing. O(N) commands can occupy the owner.
-  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
-  `tests/protocol_fuzz.rs` now drives generated binary frames through every
-  fragmentation boundary, random byte streams under tight frame/bulk/argument
-  limits, random inline input, and multi-command pipelines. It asserts bounded
-  consumption, at-most-once execution, argument/limit bounds and no panic; every
-  case is reproducible from its seed. A configurable monotonic per-incomplete-
-  plaintext-frame assembly deadline (60-second default, zero disables) now
-  complements socket inactivity timeouts across synchronous workers, readiness,
-  Tokio and TLS plaintext parsing. **Partial (2026-11-18):** complete requests no
-  longer arm phantom assembly timers on their empty parser suffixes; direct
-  owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
-  reactors, fixed workers and Tokio. Partial suffixes retain their original
-  deadline. It does not bound TLS records that produce no plaintext.
-  The native TLS pipeline case in V4 checks reply progress with an incomplete
-  request, not steady-state slow-client limits or overload shedding. D7 also
-  covers abandonment of an unread native TLS reply during shutdown; that is
-  not evidence of overload shedding during normal service.
-  Slow-client length/rate thresholds, global/user budgets, CPU quotas
-  and a general overload shedding contract remain open.
+- [x] **S9. Bounded overload and slow-client shedding policy is enforced and tested.** [P0]
+  **Complete (2026-11-27).** The enforced policy is specified in the
+  [overload and slow-client contract](overload-policy.md), which lists every
+  threshold, what the client sees, and which limits are delegated to the OS.
+  - Deterministic RESP fuzz/property corpus (2026-11-14):
+    `tests/protocol_fuzz.rs` drives generated binary frames through every
+    fragmentation boundary, random byte streams under tight frame/bulk/argument
+    limits, random inline input and multi-command pipelines, asserting bounded
+    consumption, at-most-once execution, argument/limit bounds and no panic,
+    reproducible from each seed. A configurable monotonic incomplete-plaintext-
+    frame assembly deadline (60 s default, 0 disables) complements socket
+    inactivity timeouts across synchronous workers, readiness, Tokio and TLS
+    plaintext parsing; complete requests no longer arm phantom timers on their
+    empty parser suffixes (2026-11-18).
+  - Slow-client write-stall deadline (2026-11-27): `--write-stall-timeout-ms`
+    (30 s default, 0 disables) tracks time since the last **write progress** on
+    pending reply bytes, independent of read idleness. A non-reading client is
+    shed after the deadline with a bounded close, without waiting for a socket
+    event, and the freed `max-clients` slot serves new clients; a slow reader
+    that keeps draining the reply is not shed. The shorter of the idle and stall
+    deadlines is applied to the readiness reactor, shared reactors, fixed I/O
+    lanes, the managed blocking/TLS fallback and the opt-in Tokio transport
+    (per-write-progress deadline, not per-reply total).
+  - Command budgets (2026-11-27): `--global-command-budget` and
+    `--user-command-budget` (commands per fixed wall-clock second, off by
+    default, validated `0..=1000000`) refuse excess dispatches with
+    `-ERR overload: ...`, execute nothing for the refused command, keep the
+    connection open for a later window, exempt `AUTH`/`HELLO`/`QUIT`, honor
+    `CLIENT REPLY OFF/SKIP` suppression and count refusals in
+    `command_budget_rejections`. Unauthenticated commands are accounted to the
+    `default` identity.
+  - CPU scope decision: no in-process CPU quota is claimed. CPU is bounded by
+    the per-connection command quantum, the cooperative run budget and the
+    optional global command budget; hard ceilings are delegated to the
+    OS/container CPU controller (for example cgroup `cpu.max` or Kubernetes
+    `limits.cpu`) and recorded in the contract rather than presented as server
+    enforcement.
+  Evidence: `tests/overload_policy.rs` (readiness reactor, Tokio transport and
+  fixed lanes 1/4: budget shedding/recovery, rejected command not executed,
+  non-reading client shed with slot reclaimed, progressing reader survives,
+  disabled deadline retained), `src/engine/admission_tests.rs` (fixed-window
+  accounting, per-user isolation, global/user precedence, `CONFIG RESETSTAT`),
+  `src/server/pool.rs` stall-clock unit tests, `tests/tls_write_stall.rs` TLS
+  shed/progress cases, and the retained `tests/protocol_fuzz.rs` corpus. These are functional enforcement tests, not
+  capacity/SLO evidence, which P1–P7 still track.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
-  shedding behavior exists.
+  shedding behavior exists. All three are met by the evidence above.
 
 - [x] **S10. Script, replication and cluster security do not exist.** [P1]
   **Complete (2026-11-27) as a security gate over the excluded features.** No
@@ -1019,7 +1092,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `INFO memory`, and the rejection of `allkeys-lfu` with the previous policy
   retained, in default, fixed-one and four-worker modes. Not claimed: LFU,
   read-idle tracking, exact LRU or frequency-based eviction.
-- [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
+- [x] **O3. Latency distribution and per-client observability are missing.** [P1]
   `INFO` has aggregate command stats but no exact histograms, complete
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH` is unsupported and
@@ -1038,6 +1111,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   in microseconds. This is an approximation, not HDR or an exact percentile
   contract. The dispatcher takes no timer or histogram update while the
   collector is disabled.
+  **Complete (2026-11-28): documented per-client resource/queue state with units and sampling limits.**
+  `CLIENT INFO` and `CLIENT LIST` now report the server-side socket descriptor
+  `fd` (`-1` where the platform cannot report it) and `idle` in seconds since the
+  client's last accepted command, alongside the existing `age`, `blocked`
+  participation, live `sub`/`psub`/`ssub` subscription state and WATCH count.
+  `idle` is sampled once per accepted command (one relaxed store), so it has
+  one-second granularity and does not advance while the client is blocked inside
+  a command; `age` is measured from connection acceptance. `INFO latencystats`
+  keeps the documented 32-bucket logarithmic per-command latency distribution
+  (bucket upper bounds in microseconds, p50/p99/p99.9 reported from buckets, not
+  exact HDR percentiles). Evidence: `tests/clients.rs`
+  (`client_info_and_list_report_fd_and_idle_with_documented_units`) asserts the
+  fields in all worker modes, a non-negative Unix descriptor, small idle for a
+  just-active client and idle advancing after a second without commands.
+  Explicitly not reported, and not invented: last command name, input/output
+  buffer (`qbuf`/`obl`) bytes, allocator bytes, network-byte totals and a
+  cross-process client view. Transport buffer bytes would need a counter on every
+  read/write cycle in all three transports; that trade-off is recorded here
+  instead of silently claiming parity with Redis's `CLIENT LIST` column set.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
@@ -1216,23 +1308,50 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   SLO, real-time deadlines, fair-share or preemption; idle/contended CPU remains a
   benchmark-study measurement.
 
-- [ ] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
-  `KEYS`, `SORT`, `SCAN` snapshots, geospatial searches, large collection
-  operations and full-state rewrites can hold the execution turn for a long time.
-  There is no per-command deadline, cancellation or CPU quota.
-  **Closes when:** bounded-work limits and cancellation/timeout behavior are
-  defined for the profile, or operators have tested capacity guidance that keeps
-  these commands within the SLO.
+- [x] **R4. O(N) commands can occupy the owner without a CPU budget.** [P1]
+  **Complete (2026-11-28) by the criterion's definition branch: the bounded-work
+  position and the absence of cancellation are now defined for the profile, with
+  measured occupancy instead of an assertion.** `docs/production-profile.md` states
+  that there is **no per-command deadline, cancellation or CPU quota**, that
+  whole-keyspace and full-collection commands (`KEYS`, `SORT`, `SCAN` snapshot work,
+  `GEOSEARCH`, `HGETALL`/ranges and large-collection reads, full-state rewrites) are
+  **excluded from any latency contract**, that `CLIENT KILL` closes the connection
+  but does not interrupt a running command, and that a future deadline/quota must
+  arrive with its own evidence. `docs/owner-work-guidance.md` publishes the measured
+  occupancy from `scripts/owner_work_profile.py` at 20 000 items on one development
+  host: `KEYS *` 352 ms, full `SCAN` 165 ms, `ZRANGEBYSCORE` all 332 ms,
+  `ZRANGE 0 -1` 394 ms, `HGETALL` with 20 000 fields 812 ms, `SORT` on a small
+  source 1.09 ms — against the ~1 ms per-command cost of the measured workload — and
+  derives the guidance (keep these commands at or below ~1 000 items for
+  single-digit-millisecond turns). `tests/owner_work_contract.rs` runs in the
+  required CI graph in default, one-worker and four-worker modes and fails if the
+  profile statement, the guidance page or its measured rows disappear, or if a small
+  keyspace command stops working. Retained limits, stated on the page: one
+  development host, no concurrent load, no controlled hardware (`P2`); sizes above
+  20 000, large-source `SORT`, `GEOSEARCH` and rewrite pause are not measured here
+  (the rewrite pause is tracked by `D10` and the storage-fault drills); no SLO is
+  inferred. Not claimed: an implemented per-command deadline, cancellation or CPU
+  quota — that remains absent and is what a future measurement would have to prove.
 
-- [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist. Authenticated ACL users
-  now have an optional `maxconnections` cap, but there is no per-user command or
-  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
-  sessions using an implicit no-password default. **Partial:** S122 implements
-  atomic authenticated-session admission and release; it does not isolate shared
-  resource use. **Closes when:** the supported admission policy is explicit,
-  observable and tested under overload and multi-tenant use, including the remaining
-  resource and unauthenticated-session boundaries.
+- [x] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
+  **Complete (2026-11-27): the supported admission policy is explicit,
+  observable and tested under overload and multi-user use, including the
+  remaining resource and unauthenticated-session boundaries.** The profile
+  documents the global bounds (`max-clients` for every admitted connection,
+  payload/frame/argument limits, the 2 MiB `MGET` cap), the atomic per-user ACL
+  `maxconnections` cap with its `max connections reached for user` refusal, the
+  per-connection/source/global auth budgets, and the unauthenticated boundary:
+  those sessions consume global slots with no separate cap and may only run
+  `AUTH`/`HELLO`/`QUIT`/`RESET`, otherwise `NOAUTH Authentication required.`.
+  Observability is `INFO clients` (`connected_clients`, `blocked_clients`,
+  `maxclients`, auth limits) and `INFO stats` (`rejected_connections`). Absent
+  by design and documented: per-user command/memory quotas, CPU fairness,
+  slow-client share and per-tenant quotas, so shared deployments need an
+  external limiter. Evidence: `tests/admission_policy.rs` proves
+  unauthenticated admission and `NOAUTH` behaviour, the global refusal beyond
+  `max-clients` and slot release, and the per-user `maxconnections=1` refusal and
+  release, with `INFO clients` limits. Not claimed: per-user quotas, CPU
+  fairness or a separate unauthenticated cap.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction
@@ -1245,13 +1364,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 7. Performance evidence
 
-- [ ] **P1. The benchmark scope is not representative.** [P1]
-  The protected gates use PING, SET, GET, NX-existing and XX-existing with
-  64-byte values, 1024 cyclic keys, 8 clients and pipelines 1/16. There are no
-  mixed read/write, TTL churn, collection, stream, pub/sub, large-value,
-  persistence, TLS or multi-owner production workloads.
-  **Closes when:** a realistic workload suite covers the declared profile and is
-  reported separately from the narrow merge gate.
+- [x] **P1. The benchmark scope is not representative.** [P1]
+  **Complete (2026-11-27): a representative mixed workload exists and is reported
+  separately from the merge gate.** `scripts/mixed_workload.py` drives one sampled
+  mix covering the declared profile — `GET` hit/miss over a 512-key working set,
+  `SET`, `HSET`/`HGET`, `LPUSH`/`LRANGE`, `SADD`, `ZADD`, `PEXPIRE` TTL churn,
+  `XADD`, and a 4 KiB large-value write — in two phases (default and journal with
+  `--appendfsync everysec`), reporting ops/s, p50/p95/p99, per-op counts, errors and
+  RSS. [mixed-workload.md](mixed-workload.md) publishes a 15 s run per phase:
+  3907 ops/s default vs 2078 with `everysec`, p99 15.1 → 33.8 ms, zero protocol
+  errors, with the per-op counts recorded. Retained limits, stated on the page: one
+  development host with a Python client, so throughput is a harness ceiling; not
+  matched against a competitor; TLS, Pub/Sub fan-out, multi-owner, large
+  collections under memory pressure and controlled hardware are **not** covered and
+  stay open under `P2`, `P5`, `P6`, `R6`, `O9`; no required gate runs this suite and
+  no SLO follows from it. Not claimed: representative coverage of TLS, pub/sub,
+  multi-owner or large-value workloads, or any production capacity figure.
 
 - [ ] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
   Most comparisons run on shared GitHub runners. The policy itself says this is
@@ -1278,12 +1406,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   latency claim (`P1`, `P2`, `P5`, `P6` stay open). Not claimed: an accepted latency
   SLO — that needs controlled hardware and owner acceptance.
 
-- [ ] **P4. Durability and topology performance are unmeasured.** [P1]
-  There is no evidence for fsync policies, rewrite pauses, replication lag,
-  failover time or cluster migration. These features are largely absent, so the
-  performance gate cannot cover them.
-  **Closes when:** each supported durability/topology mode has matched
-  throughput, tail, CPU, memory and recovery measurements.
+- [x] **P4. Durability and topology performance are unmeasured.** [P1]
+  **Complete (2026-11-27) for every supported durability mode, with the excluded
+  topologies named.** [persistence-performance.md](persistence-performance.md) is a
+  matched profile produced by `scripts/durability_profile.py` against one release
+  binary: 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode, reporting
+  throughput, p50/p99/p99.9, server CPU seconds, CPU per write, RSS and
+  restart-to-ready with key recovery for `none`, `always`, `everysec` and `no`.
+  Measured: enabling the journal roughly halves the client-bound throughput
+  (3922 → 1883–2163 req/s), lifts p50 from 0.69 ms to ~2.1 ms and costs ~2.4–2.6×
+  the server CPU per write; the three fsync policies are within ~15 % of each other
+  with overlapping tails (p99 36–38 ms), RSS is flat at 18.1–18.7 MiB, and a clean
+  restart is ready in 1–2 ms with the acknowledged key recovered. Replication lag,
+  failover time and cluster migration are **not applicable**: those topologies are
+  explicit exclusions (`A1`, `A2`), so the criterion's "supported topology" is the
+  single standalone process. Retained limits, stated in the document: one
+  development host and a single-CPU Python generator that bounds the `none` row, so
+  absolute throughput is a harness ceiling and only the relative durability cost is
+  interpreted; the harness cannot resolve a difference between the three fsync
+  policies; rewrite pause under a large journal stays open in `D10`; no accepted SLO
+  follows from this table. Not claimed: controlled-hardware capacity, a latency SLO,
+  or any topology measurement.
 
 - [x] **P5. Non-default modes are outside the protected gate.** [P1]
   **Complete (2026-11-27) by the criterion's exclusion branch: every non-default
@@ -1307,12 +1450,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   evidence for a non-default mode — adding one requires the matching required
   evidence, not an edit to this table.
 
-- [ ] **P6. Long-running performance and regression budgets are missing.** [P1]
-  Three short repetitions per condition are not a soak or a distribution. There
-  is no memory-leak trend, multi-hour stability or regression budget outside the
-  merge gate.
-  **Closes when:** longer runs and trend evidence are retained for the supported
-  workload.
+- [x] **P6. Long-running performance and regression budgets are missing.** [P1]
+  **Complete (2026-11-28): longer runs and per-round trend evidence are retained
+  for the supported workload.** `scripts/performance_trend.py` runs a configurable
+  number of back-to-back rounds against one long-lived server and fits a
+  least-squares slope per round; [performance-trends.md](performance-trends.md)
+  publishes a 450 s run (10 rounds × 45 s, 8 clients, pipeline 1, 512-key working
+  set, one `SET` per five operations): throughput **flat** at −1.08 ops/s per round
+  against a 3 600–4 400 ops/s spread, p99 oscillating 12.3–22.2 ms with a +0.32 ms
+  slope, zero protocol errors, and RSS rising 6 275 072 → 6 328 320 KiB (~53 MiB)
+  with a +4 468 KiB/round slope. Retained limits, stated on the page: the RSS rise
+  is **not** attributed to a leak (bounded keyspace, connection churn per round, no
+  allocation tracing) and stays open for the soak work in `O9`; one development
+  host, Python generator, one worker, no TLS/persistence/controlled hardware
+  (`P2`, `P5`); minutes, not hours; and **no regression budget is accepted** —
+  that needs an owner-accepted SLO on controlled hardware, and
+  `docs/gate-scope.md` still records that no required context runs this harness.
+  Not claimed: multi-hour stability, leak freedom, or a CI performance budget.
 
 - [x] **P7. The competitor/version/client matrix is narrow.** [P1]
   **Complete (2026-11-27): the exercised version matrix and the client load model
@@ -1480,15 +1634,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
-  The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` plus `unit/type/set`, `unit/bitfield`,
-  `unit/scan`, `unit/quit` and `unit/geo` embedded in each required keyspace
-  context. Modules, cluster, integration,
-  scripting, most data types and many protocol surfaces are outside it, and
-  several tags/units are excluded.
-  **Closes when:** the supported profile is covered by the upstream suite (or an
-  equivalent differential corpus) with explicit, reviewed exclusions.
+- [x] **V1. Upstream Tcl coverage is narrow.** [P0]
+  **Complete (2026-11-28): the declared standalone profile is covered by the
+  mandatory pinned Tcl units plus the versioned differential corpus, with
+  reviewed exclusions.**
+  Every PR runs Redis 8.10.2 and Valkey 9.1.2 `unit/type/string`,
+  `unit/type/incr` and `unit/keyspace`, plus the embedded `unit/type/set`,
+  `unit/bitfield`, `unit/scan`, `unit/quit`, `unit/geo` and `unit/type/hash`
+  files native-first in each required keyspace context. `unit/type/hash` is the
+  added family; its two unchanged `DUMP`/`RESTORE` cases are declared in
+  `ci/upstream/scope.json` as named exclusions passed identically to the native
+  control and candidate, so no assertion was modified and an exclusion cannot
+  hide a candidate-only divergence.
+  `scripts/upstream/profile_matrix.py` executes the versioned
+  `ci/upstream/profile-v1.json` rows for the supported families, including
+  lists, sorted sets, streams, HyperLogLog and transactions, and compares the
+  complete `COMMAND LIST` presence/arity surface on both pins. Its reviewed
+  exclusions (scripting, modules, multiple databases, RDB, serialization,
+  replication, client tracking, idle/frequency stats, latency graph and config
+  rewrite) are each tied to a canonical gap. The family-to-Tcl/differential map
+  is published in [upstream CI](upstream-ci.md#supported-family-coverage-map);
+  retained red Tcl diagnostics are never counted as passes.
+  This closes profile coverage, not every per-command/per-edge case (**V2**
+  stays open) and not production readiness. The exact candidate head, per-row
+  and Tcl results, and retained failures are in the protected PR's
+  `Upstream Tcl compatibility` workflow artifacts.
 
 - [ ] **V2. The differential corpus is incomplete.** [P0]
   `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now
@@ -1506,25 +1676,46 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   wrong types and preserved absolute deadlines. Broader Pub/Sub behavior,
   ACL, TLS, persistence, exhaustive transaction/error cases
   and full command coverage remain open.
+  **Partial (2026-11-28): machine-checked coverage accounting.** The corpus in
+  `tests/reference_baseline.rs` now has a committed coverage record,
+  `ci/differential/coverage.json`, generated and validated by
+  `scripts/check_corpus_coverage.py` against the advertised surface in
+  `docs/production-readiness/command-matrix.md`: 54 of 247 advertised names carry
+  at least one corpus assertion and the 193 uncovered names are listed explicitly.
+  The check fails on drift, a missing file, a wrong schema or a corpus command the
+  matrix does not advertise, its negative controls run in
+  `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`, and
+  `docs/reference-conformance.md` documents the accounting. This makes the
+  remaining corpus work measurable; it does not close the criterion.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
 
 - [ ] **V3. Independent human validation is missing.** [P0]
-  **Partial, awaiting third-party signatures:** `docs/release-acceptance.md`
-  publishes the sign-off scopes and rules, `docs/acceptance/signoffs.tsv` is the
-  machine-checked registry for the exact candidate, and
-  `scripts/check_acceptance.py` (with negative controls in
-  `scripts/test_check_acceptance.py` and `make acceptance-check`) refuses
-  malformed rows, abbreviated candidates, missing evidence and a
-  maintainer-signed security scope. Signed today: `profile` and `release`, both by
-  the maintainer on candidate `d19c37cc`. Still not accepted: `security`
-  (`unassigned` - it requires an independent reviewer, which no in-repo artifact
-  can honestly produce), `performance` and `recovery` (`withheld` because the
-  P/R-series measurement criteria are still open).
+  **Partial, awaiting third-party signatures; the in-repo artifact set is complete.**
+  `docs/release-acceptance.md` publishes the sign-off scopes, the review protocol
+  and the review-scope/findings requirements; `docs/acceptance/signoffs.tsv` is the
+  machine-checked registry for the exact candidate with columns for the reviewer,
+  reviewer kind, evidence, the reviewer's own `review_scope` statement and the
+  referenced findings; `docs/acceptance/findings.tsv` is the findings log with
+  severity, disposition, retest evidence and status.
+  `scripts/check_acceptance.py` refuses malformed rows, abbreviated candidates,
+  missing evidence, a maintainer-signed `security` scope, a signed row without a
+  review-scope statement, and a signed row that references a missing or still-open
+  finding; a closed finding must carry a disposition and resolvable retest
+  evidence. `--require-all` is the release gate, and `--outstanding` prints the
+  exact missing signatures. Negative controls live in
+  `scripts/test_check_acceptance.py`, and `make acceptance-check` runs both.
+  Signed: `profile` and `release`, both by the maintainer on candidate `b27da344`.
+  Outstanding signatures recorded by `--outstanding`:
+  `security` — `unassigned`, needs an independent reviewer (no in-repo artifact can
+  substitute); `performance` — `withheld`, needs a maintainer or independent
+  reviewer once the P-series measurement criteria close; `recovery` — `withheld`,
+  needs a maintainer or independent reviewer once the O-series soak/recovery
+  evidence closes. Findings F-001, F-002 and F-003 record those open items.
   **Closes when:** the independent security reviewer, the performance owner and
-  the recovery-drill reviewer each add a signed row for the release candidate.
-
+  the recovery-drill reviewer each add a signed row, with findings closed and
+  retest evidence, for the release candidate.
 - [x] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
@@ -1582,7 +1773,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   security section, and this PR restores that heading without changing any gap
   content. Scope: this closes the documentation/link/claim-check criterion only;
   claim-by-claim behavioural verification and the remaining verification gaps
-  (V1, V2, V3, V4, V6, V7) are not claimed.
+  (V2, V3, V4, V6, V7) are not claimed.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
   The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
@@ -1629,7 +1820,7 @@ declared deployment. The sequence should be:
 4. Close the security review and hardening path (S1-S5, S9).
 5. Add memory/observability/configuration operations (O1-O9, R1-R6).
 6. Produce realistic controlled-hardware performance and acceptance evidence
-   (P1-P7, V1-V7).
+   (P1-P7, V2-V7).
 7. Re-run this entire list against the release candidate; do not reuse a prior
    pass for a changed head.
 

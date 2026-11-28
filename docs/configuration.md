@@ -87,6 +87,9 @@ is in `rillcache --help`.
 | `max-frame-bytes` | `2097152` (2 MiB) | startup-only |
 | `idle-timeout-ms` | `30000` | startup-only |
 | `frame-assembly-timeout-ms` | `60000` | startup-only |
+| `write-stall-timeout-ms` | `30000` | startup-only |
+| `global-command-budget` | `0` (off) | startup-only |
+| `user-command-budget` | `0` (off) | startup-only |
 | `shutdown-deadline-ms` | `25000` | startup-only |
 | `auth-failure-limit` | `10` | startup-only |
 | `auth-source-limit` | `0` (off) | startup-only |
@@ -107,7 +110,11 @@ command validates every pair before publishing and the documented mutable subset
 is listed in [the profile](production-profile.md#runtime-configuration-changes);
 all other directives are startup-only and rejected at runtime. The schema is
 versioned by `config-version 1`, validated before the listener binds, and
-precedence is last-wins in argument order (see below).
+precedence is last-wins in argument order (see below). The overload and
+slow-client thresholds (`max-frame-bytes`, `idle-timeout-ms`,
+`frame-assembly-timeout-ms`, `write-stall-timeout-ms`, the command budgets and
+the auth-failure limits) and their shedding behavior are documented in the
+[overload policy](overload-policy.md).
 
 ## Order and precedence
 
