@@ -655,7 +655,7 @@ impl ShardExecutor {
             match parse_count(args[2]) {
                 Some(n) if n >= 0 => Some(n as usize),
                 Some(_) => {
-                    out.extend_from_slice(b"-ERR count should be greater than or equal to 0\r\n");
+                    out.extend_from_slice(b"-ERR count is out of range\r\n");
                     return;
                 }
                 None => {

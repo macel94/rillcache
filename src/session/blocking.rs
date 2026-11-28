@@ -95,13 +95,25 @@ impl Session {
             return;
         }
         let (timeout, keys) = arguments.split_last().expect("nonempty");
-        let Some(timeout) = std::str::from_utf8(timeout)
+        // Upstream splits the two rejection classes: a value that is not a float
+        // at all, and a numeric value outside the representable timeout range.
+        let timeout = match std::str::from_utf8(timeout)
             .ok()
             .and_then(|text| text.parse::<f64>().ok())
-            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        else {
-            output.extend_from_slice(b"-ERR timeout is not a float or out of range\r\n");
-            return;
+        {
+            None => {
+                output.extend_from_slice(b"-ERR timeout is not a float or out of range\r\n");
+                return;
+            }
+            Some(value) if value < 0.0 => {
+                output.extend_from_slice(b"-ERR timeout is negative\r\n");
+                return;
+            }
+            Some(value) if !value.is_finite() => {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            }
+            Some(value) => value,
         };
         let keys: Vec<Vec<u8>> = keys.iter().map(|key| key.to_vec()).collect();
         match store.blocking_pop(&keys.iter().map(Vec::as_slice).collect::<Vec<_>>(), left) {
