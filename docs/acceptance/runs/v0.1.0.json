@@ -1,0 +1,70 @@
+{
+  "schema": 2,
+  "results": {
+    "merge": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "pass",
+      "method": "Tag v0.1.0 created by the release owner from a protected merged release PR after the required hosted checks.",
+      "environment": "GitHub Actions, protected merge path",
+      "observed": "v0.1.0 -> 87752f3424730c7794191b964191f65c4c3a1198; PR #667 merged; source tree clean at the tag.",
+      "evidence_url": "https://github.com/macel94/rillcache/pull/667"
+    },
+    "scope": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "not-run",
+      "observed": "The supported standalone profile and exclusions were read, but no candidate-specific profile acceptance decision exists at v0.1.0; the recorded profile sign-off is for b27da344."
+    },
+    "compatibility": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "not-run",
+      "observed": "The full pinned Redis 8.10.2 / Valkey 9.1.2 and language-client matrix was not re-executed against v0.1.0 in this run; only the candidate's documented profile was inspected."
+    },
+    "security": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "not-run",
+      "observed": "Only the automated review in docs/security-review-v0.1.0.md exists; the independent security scope remains unassigned and no named reviewer decision was made for v0.1.0."
+    },
+    "load-soak": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "not-run",
+      "observed": "No controlled-hardware load/soak record exists for v0.1.0; running it on this shared host would not be matched-baseline evidence."
+    },
+    "recovery": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "pass",
+      "method": "python3 scripts/restore_drill.py --output <dir>, 2000 keys (seed 459), quiescent archive, isolated restore and per-key/TTL/accounting comparison.",
+      "environment": "Linux 6.12.113+deb13-cloud-amd64 x86_64, AMD EPYC 6 vCPU, ext4; rustc 1.100.0; Python 3.13.5",
+      "observed": "0 acknowledged writes lost; create 56.648 ms, verify 62.658 ms, restore-to-serving 78.927 ms; retained archives snapshot-2.rcb (2001 keys, 49.782 ms) and snapshot-3.rcb (2002 keys, 95.012 ms); snapshot-1.rcb pruned; 0 failures.",
+      "evidence_url": "https://github.com/macel94/rillcache/blob/main/docs/acceptance/runs/v0.1.0.md#recovery"
+    },
+    "rollout-rollback": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "pass",
+      "method": "python3 scripts/upgrade_drill.py --old <baseline a98e295 binaries> --new <v0.1.0 binaries>, pinned upgrade pair rillcache-0.1-baseline-a4.",
+      "environment": "Linux 6.12.113+deb13-cloud-amd64 x86_64, AMD EPYC 6 vCPU, ext4; rustc 1.100.0; Python 3.13.5",
+      "observed": "Baseline journal 196229 bytes; upgrade startup 11.354 ms; downgrade served; preserved journal intact after failed upgrade; rollback restore 38.069 ms; 0 failures.",
+      "evidence_url": "https://github.com/macel94/rillcache/blob/main/docs/acceptance/runs/v0.1.0.md#rollout-and-rollback"
+    },
+    "distribution-signoff": {
+      "candidate": "87752f3424730c7794191b964191f65c4c3a1198",
+      "artifact": "sha256:86dc77c508f2550b4eac40b3228c143b4793bf1a720e73077612aca245fa84d8",
+      "profile": "87752f3424730c7794191b964191f65c4c3a1198",
+      "result": "not-run",
+      "observed": "v0.1.0 has no published container digest/attestation evidence: the exact-candidate publication failed on the OCI annotation error (SR-09, #673/#511). The local binary digest is not a registry artifact."
+    }
+  }
+}
