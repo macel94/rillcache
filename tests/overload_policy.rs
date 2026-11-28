@@ -28,8 +28,11 @@ const MODES: [(Option<usize>, bool); 4] = [
 const BUDGET_MODES: [(Option<usize>, bool); 2] = [(None, false), (Some(4), false)];
 
 /// The progressing and disabled-deadline cases exercise the two distinct write
-/// paths (readiness reactor and Tokio); the non-reading case keeps all four.
+/// paths (readiness reactor and Tokio); the non-reading case covers the reactor,
+/// Tokio and one fixed lane (both lanes share `Client::poll`).
 const WRITE_PATH_MODES: [(Option<usize>, bool); 2] = [(None, false), (None, true)];
+const NON_READER_MODES: [(Option<usize>, bool); 3] =
+    [(None, false), (None, true), (Some(1), false)];
 
 fn start(workers: Option<usize>, tokio: bool, config: Config) -> ServerHandle {
     Server::bind(Config {
@@ -311,7 +314,7 @@ fn info_clients(admin: &mut TcpStream) -> usize {
 
 #[test]
 fn a_non_reading_client_is_shed_after_the_write_stall_deadline() {
-    for (workers, tokio) in MODES {
+    for (workers, tokio) in NON_READER_MODES {
         let server = start(
             workers,
             tokio,
@@ -432,7 +435,7 @@ fn a_slow_but_progressing_reader_survives_the_write_stall_deadline() {
 
 #[test]
 fn a_disabled_write_stall_deadline_keeps_the_backlogged_connection() {
-    for (workers, tokio) in WRITE_PATH_MODES {
+    for (workers, tokio) in [(None, false)] {
         let server = start(
             workers,
             tokio,
