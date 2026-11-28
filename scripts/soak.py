@@ -217,6 +217,9 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
             memory = info(addr, "memory")
             clients = info(addr, "clients")
             rss, cpu = proc_stats(process.pid)
+            journal_bytes = sum(
+                path.stat().st_size for path in directory.iterdir() if path.is_file()
+            )
             samples.append({
                 "at_seconds": round(options.duration - (deadline - time.monotonic()), 1),
                 "rss_kib": rss,
@@ -224,6 +227,7 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
                 "used_memory": memory.get("used_memory"),
                 "connected_clients": clients.get("connected_clients"),
                 "blocked_clients": clients.get("blocked_clients"),
+                "journal_bytes": journal_bytes,
             })
             if options.rewrite_every and len(samples) % options.rewrite_every == 0:
                 client = Client(addr)
@@ -277,6 +281,9 @@ def summarize(report: dict) -> str:
     first = samples[0]["rss_kib"] if samples else 0
     last = samples[-1]["rss_kib"] if samples else 0
     peak = max((s["rss_kib"] for s in samples), default=0)
+    journal_first = samples[0].get("journal_bytes", 0) if samples else 0
+    journal_peak = max((s.get("journal_bytes", 0) for s in samples), default=0)
+    journal_last = samples[-1].get("journal_bytes", 0) if samples else 0
     lines = [
         "| Metric | Value |",
         "| --- | ---: |",
@@ -284,6 +291,7 @@ def summarize(report: dict) -> str:
         f"| Clients | {report['clients']} |",
         f"| Samples | {len(samples)} |",
         f"| RSS first/peak/last (KiB) | {first} / {peak} / {last} |",
+        f"| Journal first/peak/last (bytes) | {journal_first} / {journal_peak} / {journal_last} |",
         f"| Rewrites triggered | {report['rewrites']} |",
         f"| Recovered keys | {report['recovered_keys']} |",
         f"| Graceful stop | {report['graceful_stop']} |",
