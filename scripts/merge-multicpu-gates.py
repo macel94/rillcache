@@ -12,7 +12,7 @@ Failure is closed on purpose:
 * every workload must appear exactly once across the partials;
 * sources, reference version, repetitions, pipelines, duration and binary hashes
   must agree across partials;
-* any losing row, missing partial, duplicate row or hash/summary mismatch fails.
+* any resolved-loss row, missing partial, duplicate row or hash/summary mismatch fails.
 """
 import argparse
 import importlib.util
@@ -73,7 +73,7 @@ def gather(harness, partials):
             "reference_version": manifest.get("valkey_version") or manifest.get("dragonfly_version"),
             "binary_sha256": manifest["binary_sha256"],
             "evidence_sha256": manifest.get("evidence_sha256", {}),
-            "gate_passed": all(r["passed"] for r in partial_rows),
+            "gate_passed": harness.gate_passed(partial_rows),
         })
         rows.extend(partial_rows)
 
@@ -101,7 +101,7 @@ def gather(harness, partials):
     record = {
         "schema_version": 1,
         "complete": True,
-        "gate_passed": all(row["passed"] for row in merged),
+        "gate_passed": harness.gate_passed(merged),
         "base_source": first["base_source"],
         "head_source": first["head_source"],
         "candidate_source": first["candidate_source"],
@@ -124,8 +124,8 @@ def report(harness, rows):
             "Each workload row above was measured by its own partial job on its own\n"
             "allocated four-CPU runner (same machine type, not one host), with both\n"
             "servers alternating inside that job. Per-row host fingerprints are in the\n"
-            "merged manifest; the paired comparison and the strict median rule are\n"
-            "unchanged, and a missing or inconsistent partial fails the gate.\n"
+            "merged manifest; the paired uncertainty rule and the resolved-loss test are\n"
+            "applied unchanged, and a missing or inconsistent partial fails the gate.\n"
         )
     return text
 
