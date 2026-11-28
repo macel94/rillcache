@@ -653,6 +653,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Persistence serializes commands through the exclusive gate; there is no
   throughput/latency evidence for `always`/`everysec`/`no`, rewrite pauses or
   large journals.
+  **Partial (2026-11-28): measurement harness and proposed budgets.** `scripts/durability_measure.py`
+  starts a fresh disposable server per supported policy (`no`, `everysec`,
+  `always`) with `--appendonly yes`, measures a matched `set` workload (throughput
+  median, batch p99), samples `PING` before and during a `BGREWRITEAOF`, and writes
+  `target/benchmarks/durability.json` plus a summary table. The scheduled
+  `Comparative benchmarks` workflow runs it after building the release binary and
+  keeps both files in the benchmark artifact, so each run retains its own numbers
+  and failures. `docs/durability-benchmarks.md` states the four proposed budgets
+  (always p99 within 3x `no`, everysec throughput within 10% of `no`, rewrite
+  `PING` p99 under 250 ms, no policy failing the workload or PING afterwards) and
+  records that accepting, amending or rejecting them is the owner decision that
+  remains. `scripts/test_durability_measure.py` covers the dry-run plan, the
+  missing-binary failure mode, summary stability and percentile monotonicity.
   **Closes when:** matched benchmarks report throughput, tails, fsync cost and
   rewrite pause for each supported policy and workload, with an accepted SLO.
 
