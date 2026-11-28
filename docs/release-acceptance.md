@@ -29,7 +29,7 @@ that one signature is still `unassigned`.
 `docs/acceptance/signoffs.tsv` is tab-separated with a header row:
 
 ```
-candidate	scope	reviewer	reviewer_kind	evidence	signed_at	state
+candidate	scope	reviewer	reviewer_kind	evidence	review_scope	findings	signed_at	state
 ```
 
 - `candidate` — full 40-character commit SHA the acceptance applies to.
@@ -38,7 +38,25 @@ candidate	scope	reviewer	reviewer_kind	evidence	signed_at	state
 - `reviewer_kind` — `maintainer` or `independent`.
 - `evidence` — repository path or URL that contains the evidence accepted.
 - `signed_at` — ISO-8601 date (`YYYY-MM-DD`).
+- `review_scope` — the reviewer's own statement of what was reviewed at this
+  candidate (required for a `signed` row; `-` is not accepted).
+- `findings` — comma-separated finding ids from the findings log, or `-`. A
+  signed row may not reference a still-open finding.
 - `state` — `signed`, `unassigned` or `withheld`.
+
+## Findings log
+
+`docs/acceptance/findings.tsv` records each review finding with the scope, a
+summary, severity (`low`/`medium`/`high`/`critical`), disposition, retest
+evidence and status (`open`/`closed`). A `closed` finding must name both a
+disposition and retest evidence that resolves in the repository. Signed rows
+reference closed findings by id, so a scope cannot be accepted while a finding
+for it is still open.
+
+The findings log is the place where an independent reviewer records what the
+review found and how each item was retested; it is the machine-checked link
+between "the review happened" and "the accepted evidence is the retested
+evidence".
 
 An `unassigned` or `withheld` row is a legitimate registry entry: it records that
 the scope is not accepted yet and keeps the gap visible. It never counts as
@@ -54,7 +72,17 @@ acceptance.
 4. a `security` row is `signed` by a `maintainer` (self-signing a security review);
 5. a `signed` row's evidence path does not exist in the repository;
 6. a scope required by the release is `unassigned`/`withheld` and
-   `--require-all` is passed (this is what a release gate uses).
+   `--require-all` is passed (this is what a release gate uses);
+7. a `signed` row has no `review_scope` statement;
+8. a `signed` row references a finding that is not in the findings log or is
+   still `open`;
+9. the findings log is malformed, has a duplicate id, or closes a finding
+   without a disposition and resolvable retest evidence.
+
+`scripts/check_acceptance.py --outstanding` prints one line per scope whose
+acceptance is still missing - the scope, its state and the exact reviewer kind
+that must sign it - and exits 0. That report is the record of the residual
+external dependency; it does not claim acceptance.
 
 Run it directly, or through `make acceptance-check` when a release is prepared.
 
@@ -73,3 +101,19 @@ either signed with evidence or explicitly withheld with a reason.
   and its negative controls.
 - `tests/documentation.rs` — asserts the registry parses and the checker rejects a
   self-signed security row.
+
+## Current outstanding signatures
+
+At candidate `b27da344`, the artifact set above is complete and the registry
+records the honest state:
+
+```
+security	unassigned	needs independent reviewer only signature
+performance	withheld	needs maintainer or independent reviewer signature
+recovery	withheld	needs maintainer or independent reviewer signature
+```
+
+The security signature is the only one no in-repo artifact can produce: it is an
+independent human review recorded through the findings log. The performance and
+recovery signatures stay withheld until the P-series measurement and the
+O-series soak/recovery evidence close.
