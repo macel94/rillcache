@@ -744,6 +744,584 @@ fn run_collection_surface_corpus(client: &mut Client, suffix: &[u8]) {
         array(vec![bulk(b"0"), array(vec![bulk(b"f"), bulk(b"v")])]),
     );
 }
+/// Advanced surface cases (V2): geospatial, hash field expiry, immediately
+/// satisfied blocking list/zset commands, and the deterministic administrative
+/// and extension replies. Nondeterministic or state-order-sensitive commands are
+/// still excluded.
+fn run_advanced_surface_corpus(client: &mut Client, suffix: &[u8]) {
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let array = |items: Vec<Resp>| Resp::Array(Some(items));
+
+    let geo = key(b"rillcache:baseline:adv-geo:", suffix);
+    let geo_dst = key(b"rillcache:baseline:adv-geo-dst:", suffix);
+    assert_command(
+        client,
+        &[
+            b"GEOADD",
+            &geo,
+            b"13.361389",
+            b"38.115556",
+            b"Palermo",
+            b"15.087269",
+            b"37.502669",
+            b"Catania",
+        ],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"GEOHASH", &geo, b"Palermo", b"Catania"],
+        array(vec![bulk(b"sqc8b49rny0"), bulk(b"sqdtr74hyu0")]),
+    );
+    assert_command(
+        client,
+        &[
+            b"GEOSEARCH",
+            &geo,
+            b"FROMMEMBER",
+            b"Palermo",
+            b"BYRADIUS",
+            b"200",
+            b"km",
+            b"ASC",
+        ],
+        array(vec![bulk(b"Palermo"), bulk(b"Catania")]),
+    );
+    assert_command(
+        client,
+        &[
+            b"GEOSEARCHSTORE",
+            &geo_dst,
+            &geo,
+            b"FROMMEMBER",
+            b"Palermo",
+            b"BYRADIUS",
+            b"200",
+            b"km",
+            b"ASC",
+        ],
+        Resp::Integer(2),
+    );
+    assert_command(client, &[b"ZCARD", &geo_dst], Resp::Integer(2));
+
+    let hash = key(b"rillcache:baseline:adv-hash:", suffix);
+    assert_command(
+        client,
+        &[b"HSET", &hash, b"f", b"v", b"n", b"1"],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"HEXPIRE", &hash, b"100", b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[b"HTTL", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(100)]),
+    );
+    assert_command(
+        client,
+        &[b"HPERSIST", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[b"HPTTL", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(-1)]),
+    );
+    assert_command(
+        client,
+        &[b"HINCRBYFLOAT", &hash, b"n", b"1.5"],
+        bulk(b"2.5"),
+    );
+
+    let psetex = key(b"rillcache:baseline:adv-psetex:", suffix);
+    assert_command(
+        client,
+        &[b"PSETEX", &psetex, b"100000", b"v"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"GET", &psetex], bulk(b"v"));
+    let float = key(b"rillcache:baseline:adv-float:", suffix);
+    assert_command(
+        client,
+        &[b"SET", &float, b"1"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"INCRBYFLOAT", &float, b"1.5"], bulk(b"2.5"));
+
+    let list = key(b"rillcache:baseline:adv-list:", suffix);
+    let list2 = key(b"rillcache:baseline:adv-list2:", suffix);
+    assert_command(client, &[b"RPUSH", &list, b"b", b"a"], Resp::Integer(2));
+    assert_command(client, &[b"LPUSH", &list, b"c"], Resp::Integer(3));
+    assert_command(client, &[b"RPOPLPUSH", &list, &list2], bulk(b"a"));
+    assert_command(
+        client,
+        &[b"LRANGE", &list, b"0", b"-1"],
+        array(vec![bulk(b"c"), bulk(b"b")]),
+    );
+    assert_command(
+        client,
+        &[b"LRANGE", &list2, b"0", b"-1"],
+        array(vec![bulk(b"a")]),
+    );
+
+    // Immediately satisfiable blocking forms return the ordinary pop replies.
+    let pop1 = key(b"rillcache:baseline:adv-pop1:", suffix);
+    let pop2 = key(b"rillcache:baseline:adv-pop2:", suffix);
+    let move_src = key(b"rillcache:baseline:adv-move-src:", suffix);
+    let move_dst = key(b"rillcache:baseline:adv-move-dst:", suffix);
+    let mpop = key(b"rillcache:baseline:adv-mpop:", suffix);
+    let brpoplpush_src = key(b"rillcache:baseline:adv-brpl-src:", suffix);
+    let brpoplpush_dst = key(b"rillcache:baseline:adv-brpl-dst:", suffix);
+    assert_command(client, &[b"RPUSH", &pop1, b"x"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BLPOP", &pop1, b"0"],
+        array(vec![bulk(&pop1), bulk(b"x")]),
+    );
+    assert_command(client, &[b"RPUSH", &pop2, b"y"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BRPOP", &pop2, b"0"],
+        array(vec![bulk(&pop2), bulk(b"y")]),
+    );
+    assert_command(client, &[b"RPUSH", &move_src, b"m"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BLMOVE", &move_src, &move_dst, b"LEFT", b"RIGHT", b"0"],
+        bulk(b"m"),
+    );
+    assert_command(client, &[b"RPUSH", &mpop, b"p", b"q"], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"BLMPOP", b"0", b"1", &mpop, b"LEFT"],
+        array(vec![bulk(&mpop), array(vec![bulk(b"p")])]),
+    );
+    assert_command(client, &[b"RPUSH", &brpoplpush_src, b"z"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BRPOPLPUSH", &brpoplpush_src, &brpoplpush_dst, b"0"],
+        bulk(b"z"),
+    );
+
+    let zset = key(b"rillcache:baseline:adv-zset:", suffix);
+    let zset_dst = key(b"rillcache:baseline:adv-zset-dst:", suffix);
+    assert_command(
+        client,
+        &[b"ZADD", &zset, b"1", b"a", b"2", b"b"],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"ZPOPMAX", &zset],
+        array(vec![bulk(b"b"), bulk(b"2")]),
+    );
+    assert_command(
+        client,
+        &[b"ZREVRANGE", &zset, b"0", b"-1"],
+        array(vec![bulk(b"a")]),
+    );
+    assert_command(client, &[b"ZADD", &zset, b"3", b"c"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"ZRANGESTORE", &zset_dst, &zset, b"0", b"-1"],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"ZRANGE", &zset_dst, b"0", b"-1"],
+        array(vec![bulk(b"a"), bulk(b"c")]),
+    );
+    let bz1 = key(b"rillcache:baseline:adv-bz1:", suffix);
+    let bz2 = key(b"rillcache:baseline:adv-bz2:", suffix);
+    assert_command(client, &[b"ZADD", &bz1, b"1", b"a"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BZPOPMIN", &bz1, b"0"],
+        array(vec![bulk(&bz1), bulk(b"a"), bulk(b"1")]),
+    );
+    assert_command(client, &[b"ZADD", &bz2, b"2", b"b"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BZPOPMAX", &bz2, b"0"],
+        array(vec![bulk(&bz2), bulk(b"b"), bulk(b"2")]),
+    );
+
+    assert_command(
+        client,
+        &[b"ROLE"],
+        array(vec![bulk(b"master"), Resp::Integer(0), array(vec![])]),
+    );
+    assert_command(client, &[b"MODULE", b"LIST"], array(vec![]));
+    assert_command(client, &[b"ACL", b"WHOAMI"], bulk(b"default"));
+    assert_command(
+        client,
+        &[b"CONFIG", b"GET", b"maxmemory"],
+        array(vec![bulk(b"maxmemory"), bulk(b"67108864")]),
+    );
+    assert_command(
+        client,
+        &[b"CLUSTER", b"INFO"],
+        Resp::Error(b"ERR This instance has cluster support disabled".to_vec()),
+    );
+    assert_command(client, &[b"WAIT", b"0", b"0"], Resp::Integer(0));
+    assert_command(client, &[b"UNWATCH"], Resp::Simple(b"OK".to_vec()));
+    assert_command(client, &[b"RESET"], Resp::Simple(b"RESET".to_vec()));
+
+    // DELEX/DELIFEQ/DIGEST are published extensions absent from both pinned
+    // references, so they are covered by the Rust tests rather than this corpus,
+    // which is replayed against the references by `make compare`.
+
+    assert_command(client, &[b"FLUSHDB"], Resp::Simple(b"OK".to_vec()));
+    assert_command(client, &[b"FLUSHALL"], Resp::Simple(b"OK".to_vec()));
+}
+/// Extended surface cases (V2): deterministic replies for the bit, field-expiry,
+/// sorting, geo-radius-read and simple administrative commands that remained
+/// pending after the first three surface blocks.
+fn run_extended_surface_corpus(client: &mut Client, suffix: &[u8]) {
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let array = |items: Vec<Resp>| Resp::Array(Some(items));
+
+    // The preceding block flushes the keyspace, so the count is deterministic.
+    assert_command(client, &[b"DBSIZE"], Resp::Integer(0));
+
+    let bits = key(b"rillcache:baseline:ext-bits:", suffix);
+    assert_command(
+        client,
+        &[b"BITFIELD", &bits, b"SET", b"u8", b"0", b"255"],
+        array(vec![Resp::Integer(0)]),
+    );
+    assert_command(
+        client,
+        &[b"BITFIELD_RO", &bits, b"GET", b"u8", b"0"],
+        array(vec![Resp::Integer(255)]),
+    );
+    let bits2 = key(b"rillcache:baseline:ext-bits2:", suffix);
+    assert_command(
+        client,
+        &[b"BITFIELD", &bits2, b"SET", b"u8", b"0", b"15"],
+        array(vec![Resp::Integer(0)]),
+    );
+    let bits3 = key(b"rillcache:baseline:ext-bits3:", suffix);
+    assert_command(
+        client,
+        &[b"BITOP", b"AND", &bits3, &bits, &bits2],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"GET", &bits3], bulk(&[15]));
+
+    let hash = key(b"rillcache:baseline:ext-hash:", suffix);
+    assert_command(
+        client,
+        &[b"HSETEX", &hash, b"EX", b"100", b"FIELDS", b"1", b"f", b"v"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"HGETEX", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![bulk(b"v")]),
+    );
+    assert_command(
+        client,
+        &[b"HGETDEL", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![bulk(b"v")]),
+    );
+    assert_command(
+        client,
+        &[b"HSETEX", &hash, b"FIELDS", b"1", b"f", b"v"],
+        Resp::Integer(1),
+    );
+    let deadline = b"4102444800";
+    assert_command(
+        client,
+        &[b"HEXPIREAT", &hash, deadline, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[b"HEXPIRETIME", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(4_102_444_800)]),
+    );
+    assert_command(
+        client,
+        &[b"HPEXPIRE", &hash, b"100000", b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[
+            b"HPEXPIREAT",
+            &hash,
+            b"4102444800000",
+            b"FIELDS",
+            b"1",
+            b"f",
+        ],
+        array(vec![Resp::Integer(1)]),
+    );
+    assert_command(
+        client,
+        &[b"HPEXPIRETIME", &hash, b"FIELDS", b"1", b"f"],
+        array(vec![Resp::Integer(4_102_444_800_000)]),
+    );
+
+    let list = key(b"rillcache:baseline:ext-sort:", suffix);
+    assert_command(
+        client,
+        &[b"RPUSH", &list, b"c", b"a", b"b"],
+        Resp::Integer(3),
+    );
+    assert_command(
+        client,
+        &[b"SORT", &list, b"ALPHA"],
+        array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c")]),
+    );
+    assert_command(
+        client,
+        &[b"SORT_RO", &list, b"ALPHA"],
+        array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c")]),
+    );
+
+    assert_command(
+        client,
+        &[b"PUBLISH", b"rillcache:baseline:ext-ch", b"m"],
+        Resp::Integer(0),
+    );
+    assert_command(
+        client,
+        &[b"SPUBLISH", b"rillcache:baseline:ext-ch", b"m"],
+        Resp::Integer(0),
+    );
+
+    let zset = key(b"rillcache:baseline:ext-zset:", suffix);
+    assert_command(client, &[b"ZADD", &zset, b"1", b"a"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"BZMPOP", b"0", b"1", &zset, b"MIN"],
+        array(vec![
+            bulk(&zset),
+            array(vec![array(vec![bulk(b"a"), bulk(b"1")])]),
+        ]),
+    );
+
+    let stream = key(b"rillcache:baseline:ext-stream:", suffix);
+    assert_command(
+        client,
+        &[b"XADD", &stream, b"1-1", b"f", b"v"],
+        Resp::Bulk(Some(b"1-1".to_vec())),
+    );
+    assert_command(
+        client,
+        &[b"XSETID", &stream, b"9-9"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"DEL", &stream], Resp::Integer(1));
+
+    let geo = key(b"rillcache:baseline:ext-geo:", suffix);
+    assert_command(
+        client,
+        &[
+            b"GEOADD",
+            &geo,
+            b"13.361389",
+            b"38.115556",
+            b"Palermo",
+            b"15.087269",
+            b"37.502669",
+            b"Catania",
+        ],
+        Resp::Integer(2),
+    );
+    assert_command(
+        client,
+        &[b"GEORADIUS_RO", &geo, b"15", b"37", b"200", b"km", b"ASC"],
+        array(vec![bulk(b"Catania"), bulk(b"Palermo")]),
+    );
+    assert_command(
+        client,
+        &[
+            b"GEORADIUSBYMEMBER_RO",
+            &geo,
+            b"Palermo",
+            b"200",
+            b"km",
+            b"ASC",
+        ],
+        array(vec![bulk(b"Palermo"), bulk(b"Catania")]),
+    );
+    assert_command(
+        client,
+        &[b"GEORADIUS", &geo, b"15", b"37", b"200", b"km", b"ASC"],
+        array(vec![bulk(b"Catania"), bulk(b"Palermo")]),
+    );
+    assert_command(
+        client,
+        &[
+            b"GEORADIUSBYMEMBER",
+            &geo,
+            b"Palermo",
+            b"200",
+            b"km",
+            b"ASC",
+        ],
+        array(vec![bulk(b"Palermo"), bulk(b"Catania")]),
+    );
+
+    let msetex_a = key(b"rillcache:baseline:ext-msetex-a:", suffix);
+    let msetex_b = key(b"rillcache:baseline:ext-msetex-b:", suffix);
+    assert_command(
+        client,
+        &[
+            b"MSETEX", b"2", &msetex_a, b"1", &msetex_b, b"2", b"EX", b"100",
+        ],
+        Resp::Integer(1),
+    );
+    assert_command(client, &[b"GET", &msetex_a], bulk(b"1"));
+
+    assert_command(
+        client,
+        &[b"WAITAOF", b"0", b"1", b"10"],
+        array(vec![Resp::Integer(0), Resp::Integer(0)]),
+    );
+    assert_command(
+        client,
+        &[b"BGREWRITEAOF"],
+        Resp::Error(b"ERR append-only journal is not enabled or cannot be rewritten".to_vec()),
+    );
+
+    let group_stream = key(b"rillcache:baseline:ext-group:", suffix);
+    assert_command(
+        client,
+        &[b"XADD", &group_stream, b"1-1", b"f", b"v"],
+        Resp::Bulk(Some(b"1-1".to_vec())),
+    );
+    assert_command(
+        client,
+        &[b"XGROUP", b"CREATE", &group_stream, b"g1", b"0"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"c1",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            &group_stream,
+            b">",
+        ],
+        array(vec![array(vec![
+            bulk(&group_stream),
+            array(vec![array(vec![
+                bulk(b"1-1"),
+                array(vec![bulk(b"f"), bulk(b"v")]),
+            ])]),
+        ])]),
+    );
+    assert_command(
+        client,
+        &[b"XCLAIM", &group_stream, b"g1", b"c2", b"0", b"1-1"],
+        array(vec![array(vec![
+            bulk(b"1-1"),
+            array(vec![bulk(b"f"), bulk(b"v")]),
+        ])]),
+    );
+    assert_command(
+        client,
+        &[b"XAUTOCLAIM", &group_stream, b"g1", b"c3", b"0", b"0-0"],
+        array(vec![
+            bulk(b"0-0"),
+            array(vec![array(vec![
+                bulk(b"1-1"),
+                array(vec![bulk(b"f"), bulk(b"v")]),
+            ])]),
+            array(vec![]),
+        ]),
+    );
+
+    // Wrong-type edges: the exact vendor-shared error for a list, string and
+    // sorted-set mismatch, and that the healthy key is unchanged afterwards.
+    let wrong_string = key(b"rillcache:baseline:ext-wrong-string:", suffix);
+    let wrong_list = key(b"rillcache:baseline:ext-wrong-list:", suffix);
+    let wrong_zset = key(b"rillcache:baseline:ext-wrong-zset:", suffix);
+    assert_command(
+        client,
+        &[b"SET", &wrong_string, b"v"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(
+        client,
+        &[b"LPUSH", &wrong_string, b"x"],
+        Resp::Error(b"WRONGTYPE Operation against a key holding the wrong kind of value".to_vec()),
+    );
+    assert_command(client, &[b"RPUSH", &wrong_list, b"x"], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"GET", &wrong_list],
+        Resp::Error(b"WRONGTYPE Operation against a key holding the wrong kind of value".to_vec()),
+    );
+    assert_command(
+        client,
+        &[b"ZADD", &wrong_zset, b"1", b"a"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"LPOP", &wrong_zset],
+        Resp::Error(b"WRONGTYPE Operation against a key holding the wrong kind of value".to_vec()),
+    );
+    assert_command(client, &[b"GET", &wrong_string], bulk(b"v"));
+}
+/// Pub/Sub surface cases on a dedicated connection: subscribing changes the
+/// connection mode, so the shared corpus client cannot be reused. The frames are
+/// deterministic counts and are asserted before the connection is dropped.
+fn run_pubsub_surface_corpus(address: SocketAddr) {
+    let mut client = Client::connect(address).unwrap();
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let array = |items: Vec<Resp>| Resp::Array(Some(items));
+    assert_command(
+        &mut client,
+        &[b"SUBSCRIBE", b"rillcache:baseline:ps-channel"],
+        array(vec![
+            bulk(b"subscribe"),
+            bulk(b"rillcache:baseline:ps-channel"),
+            Resp::Integer(1),
+        ]),
+    );
+    assert_command(
+        &mut client,
+        &[b"UNSUBSCRIBE", b"rillcache:baseline:ps-channel"],
+        array(vec![
+            bulk(b"unsubscribe"),
+            bulk(b"rillcache:baseline:ps-channel"),
+            Resp::Integer(0),
+        ]),
+    );
+    assert_command(
+        &mut client,
+        &[b"SSUBSCRIBE", b"rillcache:baseline:ps-shard"],
+        array(vec![
+            bulk(b"ssubscribe"),
+            bulk(b"rillcache:baseline:ps-shard"),
+            Resp::Integer(1),
+        ]),
+    );
+    assert_command(
+        &mut client,
+        &[b"SUNSUBSCRIBE", b"rillcache:baseline:ps-shard"],
+        array(vec![
+            bulk(b"sunsubscribe"),
+            bulk(b"rillcache:baseline:ps-shard"),
+            Resp::Integer(0),
+        ]),
+    );
+}
+
 fn assert_deadline(client: &mut Client, key: &[u8], deadline: i64) {
     assert_command(client, &[b"PEXPIRETIME", key], Resp::Integer(deadline));
     assert_command(
@@ -1187,6 +1765,9 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_stream_trim_read_corpus(&mut client, suffix);
     run_command_surface_corpus(&mut client, suffix);
     run_collection_surface_corpus(&mut client, suffix);
+    run_advanced_surface_corpus(&mut client, suffix);
+    run_extended_surface_corpus(&mut client, suffix);
+    run_pubsub_surface_corpus(address);
 
     assert_command(
         &mut client,

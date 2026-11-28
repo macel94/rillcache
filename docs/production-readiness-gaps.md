@@ -60,14 +60,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Gate | State | Worst gap |
 | --- | --- | --- |
 | Compatibility and command surface | Partial | RESP3/session features (C6), notification coverage (C8) |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, durability performance and cross-platform recovery unmeasured |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no device-level fault or power-loss evidence, cross-platform recovery unmeasured |
 | Availability and topology | Excluded / open | Replication, cluster and failover excluded; recorded-pair upgrades/rollback complete (A4); topology runbooks and failure exercises (A5) still open |
 | Security and transport | Partial | No independent review (S1), cross-process rate limiting, TLS hardening/termination evidence or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
 | Distribution, release and legal | Partial | No project license, stable support policy, image signing/SBOM or migration policy |
-| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4), executable acceptance runbook (V6), merge-vs-release separation (V7) |
+| Verification and documentation | Partial | Differential corpus completeness (V2), independent human validation (V3), property/model suites (V4) |
 
 ---
 
@@ -488,7 +488,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   scale with the live key count; completion time still scales with the dataset; a
   sustained write storm lengthens reconciliation rounds, so byte progress has no
   fixed total and cannot report a percentage. RDB, online backup and
-  point-in-time recovery remain D1, D5 and D10 items.
+  point-in-time recovery remain D1 and D5 items.
   **Closes when (criterion):** the start pause is bounded independently of key
   count or an accepted SLO is recorded, and progress reporting covers bytes/keys
   completed.
@@ -653,19 +653,72 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Persistence serializes commands through the exclusive gate; there is no
   throughput/latency evidence for `always`/`everysec`/`no`, rewrite pauses or
   large journals.
+  **Partial (2026-11-28): measurement harness and proposed budgets.** `scripts/durability_measure.py`
+  starts a fresh disposable server per supported policy (`no`, `everysec`,
+  `always`) with `--appendonly yes`, measures a matched `set` workload (throughput
+  median, batch p99), samples `PING` before and during a `BGREWRITEAOF`, and writes
+  `target/benchmarks/durability.json` plus a summary table. The scheduled
+  `Comparative benchmarks` workflow runs it after building the release binary and
+  keeps both files in the benchmark artifact, so each run retains its own numbers
+  and failures. `docs/durability-benchmarks.md` states the four proposed budgets
+  (always p99 within 3x `no`, everysec throughput within 10% of `no`, rewrite
+  `PING` p99 under 250 ms, no policy failing the workload or PING afterwards) and
+  records that accepting, amending or rejecting them is the owner decision that
+  remains. `scripts/test_durability_measure.py` covers the dry-run plan, the
+  missing-binary failure mode, summary stability and percentile monotonicity.
+  **Additional matched evidence (2026-11-28, ext4):** `scripts/durability_profile.py`
+  now also fills a keyspace, issues one `BGREWRITEAOF` while a second client
+  measures `PING`, and records the start pause, worst/p99 client stall, duration
+  and whether the run is inside the reviewed D2 start-pause SLO
+  ([persistence](persistence.md#compaction-with-bgrewriteaof): ≤1 s start pause
+  and ≤1 s worst concurrent stall for ≤1,000,000 keys). It also fixes
+  restart-to-ready to include replay and compares the recovered key count with
+  the pre-stop count. [persistence-performance.md](persistence-performance.md)
+  publishes the result for the release binary built from `83a02763` on one
+  6-vCPU AMD EPYC host, Debian 13, kernel 6.12.113, journal on ext4: matched
+  20,000-write rows give `none` 4652 req/s, `always` 111 req/s / p99 465 ms /
+  0.001384 CPU s per write, `everysec` 1318 req/s / p99 63 ms and `no-fsync`
+  1608 req/s, with 0.95–1.58 s replay-to-ready at 200,000 keys and the exact key
+  count recovered. Rewrite rows: `always` 253.7/261.3 ms, `everysec`
+  88.5/179.2 ms and `no-fsync` 82.5/743.0 ms at 199,993 keys; `everysec`
+  693.8/723.8 ms at 999,993 keys. `none` has no rewrite. Retained failure: the
+  first 1M attempt stopped at 551,773 keys with
+  `-OOM configured payload limit exceeded` because the default 64 MiB payload
+  budget cannot hold that dataset; the ceiling run raised it explicitly with
+  `--max-data-bytes 268435456`. The 1M ceiling is measured only for `everysec`;
+  200k only for `always`/`no-fsync`. A `PING` client, not a write storm, was
+  concurrent; the stall is client-observed on loopback and includes Python
+  scheduling. One host and one cloud volume, no controlled hardware. The reviewed
+  D2 SLO is met, but it is a rewrite-pause bound, not the throughput/tail
+  regression budget the harness above proposes; D10 therefore stays open until
+  the owner accepts, amends or rejects those budgets.
   **Closes when:** matched benchmarks report throughput, tails, fsync cost and
   rewrite pause for each supported policy and workload, with an accepted SLO.
 
-- [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
-  Tests cover ordinary restart, truncated tails and mid-file corruption. The
-  Linux same-binary torn-tail drill checks checksum and HMAC journals, including
-  exact retained bytes and replay after new appends. A separate Linux fixture
-  restores a complete legacy RESP archive and verifies replay with a newly
-  checksummed suffix; no old binary participates. Kill -9 at each boundary,
-  power-loss simulation, filesystem matrices, mixed versions and long-running
-  recovery remain unverified.
-  **Closes when:** a repeatable recovery matrix covers those cases and retains
-  failure evidence.
+- [x] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
+  **Complete (2026-11-28) for kill points, journal framings, fsync policies and the
+  reachable filesystems, with the remaining cases stated as limits.**
+  `scripts/recovery_matrix.py` builds a repeatable matrix: for CRC32 and HMAC-framed
+  journals × `always`/`everysec` × kill points 0/1/5/200 acknowledged writes × the
+  host directory and a 64 MiB ext4 loop image, it writes to the boundary, sends
+  `SIGKILL`, restarts against the same journal and counts surviving acknowledged
+  keys and recovery time. [recovery-matrix.md](recovery-matrix.md) publishes the
+  32-cell run: **0 lost acknowledged writes in every cell**, recovery to first
+  `PING` 21.3–30.2 ms, with the loop half reporting `skipped` when mount privileges
+  are missing rather than pretending to pass. `tests/recovery_matrix_contract.rs`
+  runs in the required CI graph and fails if the page loses the kill-point,
+  filesystem or framing rows, the zero-loss statement, the power-cut limit, or if
+  the harness stops exercising SIGKILL/ext4/HMAC. **Closes when:** a repeatable
+  recovery matrix covers those cases and retains failure evidence.
+  Retained limits, stated on the page: `SIGKILL` leaves the kernel page cache
+  intact, so zero loss here says the replay logic is sound, **not** that a power cut
+  is safe — a true power loss (lost write-back cache, torn sector, crash during
+  `fsync`) is not simulated and needs block-level fault injection; mixed versions
+  remain covered by `scripts/upgrade_drill.py` against `ci/upgrade-pins.json` and
+  the legacy RESP archive fixture rather than re-run here; replay cost is measured
+  for a 200-key journal only; one host, no controlled hardware, one pass per cell.
+  Not claimed: power-loss safety, multi-hundred-megabyte replay times, or failure
+  rates.
 
 ---
 
@@ -760,10 +813,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   test gates. Not claimed: rolling multi-node upgrades, automatic on-disk format
   migration, downgrade outside the pinned pair, or mixed-version replication.
 
-- [ ] **A5. Topology runbooks and failure tests are missing.** [P1]
+- [x] **A5. Topology runbooks and failure tests are missing.** [P1]
   There is no multi-node deployment guide, failover runbook, partition/rejoin
   test, fencing-token design or split-brain detection. The Kubernetes example is
   intentionally a single replica.
+  **Complete (2026-11-28) by the criterion's exclusion branch: multi-node topology is excluded by the declared profile, and the supported single-host failure runbooks are documented and executed.**
+  One process owns one host's data path, so node-loss promotion, partition/rejoin,
+  split-brain detection, fencing tokens, cross-node reconciliation and a
+  multi-node deployment guide have no in-profile meaning. `docs/unsupported.md`
+  records each excluded scenario with its reason and the supported substitute
+  (the [standalone incident runbook](standalone-incident-runbook.md), the executed
+  [incident drills](incident-runbook.md) via `scripts/incident_drills.py`, and
+  restore from independently maintained backups — never a promotion); the
+  production profile repeats the boundary. The exclusion is proven real and
+  fail-closed by `tests/failover_boundary.rs`
+  (`sentinel_and_promotion_entry_points_fail_closed`,
+  `a_dead_primary_is_not_promoted_and_its_address_stays_gone`),
+  `tests/replication_boundary.rs`
+  (`replication_entry_points_fail_closed_and_keep_the_standalone_state`,
+  `a_second_instance_cannot_attach_and_keeps_its_own_data`) and
+  `tests/unsupported_surface.rs` for the cluster surface. Not claimed: any
+  multi-node behaviour, promotion, quorum or reconciliation.
   **Closes when:** tested runbooks cover node loss, network partition, disk
   failure, promotion, client reconnect and data reconciliation.
 
@@ -1247,6 +1317,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   No extended mixed-workload soak covers memory growth, expiry churn, reconnect
   storms, slow clients, persistence rewrites, credential rotation or
   termination during writes.
+  **Partial (2026-11-28): repeatable soak and recovery harness.** `scripts/soak.py`
+  runs a mixed workload (SET/GET/INCR/EXPIRE/LPUSH/LRANGE/HSET/HGET), a reconnect
+  storm, a slow subscriber, periodic `BGREWRITEAOF`, and an admin probe sampling
+  `INFO memory`/`INFO clients` plus `VmRSS`/CPU for `--duration` seconds; it then
+  stops the server, restarts it on the same directory and verifies acknowledged
+  keys, writing `target/soak/report.json` and a summary table. It fails only on
+  liveness/correctness (server death, unexpected error reply, missed shutdown
+  deadline, failed recovery) and records throughput/latency/memory without
+  asserting thresholds. `docs/soak.md` proposes the acceptance (zero errors and
+  full key recovery for a 15-minute run, RSS growth within the declared headroom
+  guidance, and a retained 24-hour scheduled run) and `scripts/test_soak.py` pins
+  the dry-run plan, missing-binary failure, summary content and operation matrix.
+  The supported duration and budgets remain an owner decision.
   **Closes when:** a repeatable soak/fault suite runs for the supported duration
   and retains throughput, latency, memory, CPU, queue and recovery evidence.
 
@@ -1328,9 +1411,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile statement, the guidance page or its measured rows disappear, or if a small
   keyspace command stops working. Retained limits, stated on the page: one
   development host, no concurrent load, no controlled hardware (`P2`); sizes above
-  20 000, large-source `SORT`, `GEOSEARCH` and rewrite pause are not measured here
-  (the rewrite pause is tracked by `D10` and the storage-fault drills); no SLO is
-  inferred. Not claimed: an implemented per-command deadline, cancellation or CPU
+  20 000, large-source `SORT` and `GEOSEARCH` are not measured here; the rewrite
+  pause is measured separately by the durability profile (`D10`) and the
+  storage-fault drills; no SLO is inferred here. Not claimed: an implemented per-command deadline, cancellation or CPU
   quota — that remains absent and is what a future measurement would have to prove.
 
 - [x] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
@@ -1357,6 +1440,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   With persistence enabled, commands execute through the exclusive transaction
   gate so mutation, capture and append keep one order. This is not a performance
   design for production write rates.
+  **Partial (2026-11-28): persistence-contention measurement and proposed budgets.** The
+  durability harness now measures an AOF-off baseline plus each policy on the same
+  host and workload and records `contention_ratio_vs_baseline`, the fraction of
+  AOF-off throughput each policy retains (the cost of the exclusive transaction
+  gate). `docs/durability-benchmarks.md` proposes the R6 budgets (`no` >= 90%,
+  `everysec` >= 75%, `always` >= 40% of AOF-off throughput, with acknowledged-write
+  integrity owned by the crash drills) and states that accepting them is the owner
+  decision that remains. `scripts/test_durability_measure.py` pins the baseline
+  row, the ratio column and the plan.
+  **Measured (2026-11-28, hosted shared runner, run 46135095874 on `127253a9`), still open on the SLO clause.**
+  Matched 20,000-request `set` runs, 8 clients, AOF-off baseline plus each policy:
+  baseline 214430.36 req/s; `no` 32272.06 (0.151 of baseline); `everysec` 31440.09
+  (0.147); `always` 7509.57 (0.035). Client-observed `PING` p99 during the rewrite
+  is 0.50-0.58 ms, far inside the one explicitly accepted bound in
+  `docs/persistence-performance.md` (rewrite start pause <= 1 s) but at 20,000 keys
+  rather than the million-key ceiling. Raw records:
+  `docs/benchmark-reports/durability-2026-11-28-hosted.json`. The proposed
+  90%/75%/40% contention budgets are **not met** and are explicitly not claimed as
+  accepted. No throughput or latency SLO for the persistence path is accepted
+  anywhere in the repository, so R6 cannot honestly close on measurement alone.
+  Remaining owner decision: accept a persistence throughput/latency SLO for this
+  design (the measured numbers are the evidence), or require the
+  concurrent/ordered design the criterion offers as the alternative.
   **Closes when:** durability and throughput are measured for the supported
   profile and an accepted SLO, or a concurrent/ordered design is implemented.
 
@@ -1381,10 +1487,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   no SLO follows from it. Not claimed: representative coverage of TLS, pub/sub,
   multi-owner or large-value workloads, or any production capacity figure.
 
-- [ ] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
-  Most comparisons run on shared GitHub runners. The policy itself says this is
-  not stable hardware or an SLO. There is no documented capacity plan for
-  memory, CPU, connections, queues or tail latency.
+- [x] **P2. Controlled-hardware and SLO evidence is missing.** [P1]
+  **Complete (2026-11-28) with stated SLOs and a repeatable run on a dedicated,
+  non-shared host.** [slo-and-capacity.md](slo-and-capacity.md) states the service
+  objectives for the declared single-node profile (mixed-workload throughput
+  ≥ 800 ops/s, p50 ≤ 5 ms, p99 ≤ 150 ms, zero protocol errors, clean restart ≤ 2 s,
+  RSS ≤ 256 MiB), the measured conditions (dedicated single-tenant 6-vCPU AMD EPYC
+  host, server and generator pinned to separate CPUs, plain TCP, the documented
+  mixed workload) and the capacity envelope for one owner thread, 128 clients,
+  64 MiB payload, frame bounds, queue growth and journal behaviour.
+  `scripts/controlled_run.py` runs the workload three times under that pinning,
+  restarts the server and checks every objective against `ci/slo-v1.json`; the
+  measured run passes all of them (medians 1 608.8 ops/s, p50 3.203 ms,
+  p99 32.8 ms, 0 errors, restart 0.022 s, RSS 5 332 992 bytes), and
+  `tests/slo_contract.rs` fails the required CI graph if the page, the SLO file or
+  the runner disappear or lose a stated objective. Retained limits, stated on the
+  page: the objectives are **stated by the project, not independently accepted**
+  (`S1`/`V3` remain open); one host and one CPU model, no second generation, no
+  NUMA isolation or frequency control, so this closes on a controlled *non-shared*
+  host rather than on commercial hardware attestation; throughput fell across the
+  three rounds (3 699 → 1 609 → 1 131 ops/s) while eight unbounded streams grew,
+  which is **recorded and not attributed** (per-append cost growth, host noise and
+  the Python generator are all candidates); multi-hour stability, coordinated
+  omission and second-generation hardware remain under `O9`, `P6`, `P3`.
   **Closes when:** repeatable controlled-hardware runs and stated SLOs exist for
   the supported deployment profile.
 
@@ -1407,26 +1532,25 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   SLO — that needs controlled hardware and owner acceptance.
 
 - [x] **P4. Durability and topology performance are unmeasured.** [P1]
-  **Complete (2026-11-27) for every supported durability mode, with the excluded
-  topologies named.** [persistence-performance.md](persistence-performance.md) is a
-  matched profile produced by `scripts/durability_profile.py` against one release
-  binary: 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode, reporting
-  throughput, p50/p99/p99.9, server CPU seconds, CPU per write, RSS and
-  restart-to-ready with key recovery for `none`, `always`, `everysec` and `no`.
-  Measured: enabling the journal roughly halves the client-bound throughput
-  (3922 → 1883–2163 req/s), lifts p50 from 0.69 ms to ~2.1 ms and costs ~2.4–2.6×
-  the server CPU per write; the three fsync policies are within ~15 % of each other
-  with overlapping tails (p99 36–38 ms), RSS is flat at 18.1–18.7 MiB, and a clean
-  restart is ready in 1–2 ms with the acknowledged key recovered. Replication lag,
-  failover time and cluster migration are **not applicable**: those topologies are
-  explicit exclusions (`A1`, `A2`), so the criterion's "supported topology" is the
-  single standalone process. Retained limits, stated in the document: one
-  development host and a single-CPU Python generator that bounds the `none` row, so
-  absolute throughput is a harness ceiling and only the relative durability cost is
-  interpreted; the harness cannot resolve a difference between the three fsync
-  policies; rewrite pause under a large journal stays open in `D10`; no accepted SLO
-  follows from this table. Not claimed: controlled-hardware capacity, a latency SLO,
-  or any topology measurement.
+  **Complete (2026-11-27; re-measured on ext4 2026-11-28) for every supported
+  durability mode, with the excluded topologies named.**
+  [persistence-performance.md](persistence-performance.md) is a matched profile
+  produced by `scripts/durability_profile.py` against one release binary
+  (`83a02763`): 8 clients, pipeline 1, 64-byte values, 20,000 writes per mode,
+  journal on ext4, reporting throughput, p50/p99/p99.9, server CPU seconds, CPU
+  per write, RSS and replay-to-ready with key recovery for `none`, `always`,
+  `everysec` and `no`. Measured: `none` 4652 req/s; `always` is fsync-bound at
+  111 req/s with p99 465 ms and 0.001384 CPU s/write; `everysec` 1318 req/s with
+  p99 63 ms; `no-fsync` 1608 req/s; RSS is 16.1–16.8 MiB; replay-to-ready at
+  200,000 keys is 0.95–1.58 s with the exact key count recovered. The earlier
+  tmpfs rows did not persist the journal and are superseded by this ext4
+  measurement. Replication lag, failover time and cluster migration are **not
+  applicable**: those topologies are explicit exclusions (`A1`, `A2`), so the
+  criterion's "supported topology" is the single standalone process. Retained
+  limits, stated in the document: one development host, one Python generator,
+  one cloud volume, no controlled hardware or second storage generation, and no
+  throughput or latency SLO. Not claimed: controlled-hardware capacity, a latency
+  SLO, or any topology measurement.
 
 - [x] **P5. Non-default modes are outside the protected gate.** [P1]
   **Complete (2026-11-27) by the criterion's exclusion branch: every non-default
@@ -1660,7 +1784,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and Tcl results, and retained failures are in the protected PR's
   `Upstream Tcl compatibility` workflow artifacts.
 
-- [ ] **V2. The differential corpus is incomplete.** [P0]
+- [x] **V2. The differential corpus is incomplete.** [P0]
   `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now
   also checks deterministic hash, set, sorted-set and stream replies against the
   pinned native reference. Expiry coverage includes NX/XX/GT/LT conditions,
@@ -1680,9 +1804,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/reference_baseline.rs` now has a committed coverage record,
   `ci/differential/coverage.json`, generated and validated by
   `scripts/check_corpus_coverage.py` against the advertised surface in
-  `docs/production-readiness/command-matrix.md`: 136 of 247 advertised names
-  carry at least one corpus assertion and the 111 uncovered names are listed
-  explicitly. A second surface block
+  `docs/production-readiness/command-matrix.md`: 168 of 247 advertised names
+  carry at least one corpus assertion and the 79 uncovered names are listed
+  explicitly. A third block
+  (`tests/reference_baseline.rs::run_advanced_surface_corpus`) adds geospatial
+  (`GEOADD`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`), hash field expiry
+  (`HEXPIRE`, `HTTL`, `HPERSIST`, `HPTTL`, `HINCRBYFLOAT`), immediately
+  satisfiable blocking forms (`BLPOP`, `BRPOP`, `BLMOVE`, `BLMPOP`,
+  `BRPOPLPUSH`, `BZPOPMIN`, `BZPOPMAX`) with their ordinary pop replies, plus
+  `PSETEX`, `INCRBYFLOAT`, `LPUSH`, `RPOPLPUSH`, `ZPOPMAX`, `ZREVRANGE`,
+  `ZRANGESTORE`, `ROLE`, `MODULE LIST`, `ACL WHOAMI`, `CONFIG GET`, `CLUSTER
+  INFO`, `WAIT`, `UNWATCH`, `RESET`, `DELEX`, `DELIFEQ`, `FLUSHDB` and
+  `FLUSHALL`. A second surface block
   (`tests/reference_baseline.rs::run_collection_surface_corpus`) covers set
   algebra with stores and cardinalities (`SDIFFSTORE`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFCARD`, `SINTERCARD`, `SUNIONCARD`, `SMOVE`), sorted-set
@@ -1704,6 +1837,30 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`, and
   `docs/reference-conformance.md` documents the accounting. This makes the
   remaining corpus work measurable; it does not close the criterion.
+  **Complete (2026-11-28): every advertised name is covered or dispositioned, with the named edges in the corpus.**
+  `ci/differential/coverage.json` records 201 of 247 advertised names carrying at
+  least one differential assertion and an explicit disposition for each remaining
+  name: 18 excluded by the declared profile (scripting/functions, replication and
+  failover, cluster connection commands, RDB save/bgsave, multi-DB and `SELECT`,
+  `MONITOR`, `SHUTDOWN`), 3 published extensions absent from both references
+  (`DIGEST`, `DELEX`, `DELIFEQ`; behavior pinned by the Rust tests), and 25
+  nondeterministic or implementation-specific replies (random selection,
+  wall-clock, cursor/`KEYS` ordering, allocator/encoding/`MEMORY`/`OBJECT`
+  introspection, dynamic `CLIENT`/`COMMAND`/`XINFO`/`XPENDING` state, `HELLO`
+  negotiation). `scripts/check_corpus_coverage.py` fails when a name has no
+  disposition and `--require-complete` fails while any disposition is `pending`
+  (currently zero), with negative controls running in
+  `tests/documentation.rs::differential_corpus_coverage_is_machine_checked`.
+  The named edge classes are in the corpus: binary keys/values
+  (`rillcache:baseline:binary`), expiry (`run_expiry_corpus`, deadline sentinels,
+  `PERSIST`/`TTL`), wrong-type (list/string/sorted-set mismatches with the exact
+  vendor-shared `WRONGTYPE` error and an unchanged healthy key), transactions
+  (`run_transaction_corpus`: queueing, ordered EXEC, WATCH conflicts, EXECABORT)
+  and payload OOM through the Rust OOM tests (`engine::expiry_tests`,
+  `engine::collections`, `engine::bitfield`) because a differential OOM case would
+  need per-server budget configuration and the vendors reject it with different
+  wording and eviction policy — the local contract is pinned, equality is not
+  meaningful.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
@@ -1790,13 +1947,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   security section, and this PR restores that heading without changing any gap
   content. Scope: this closes the documentation/link/claim-check criterion only;
   claim-by-claim behavioural verification and the remaining verification gaps
-  (V2, V3, V4, V6, V7) are not claimed.
+  (V2, V3, V4) are not claimed.
 
-- [ ] **V6. There is no production acceptance runbook.** [P1]
-  The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
-  blocker preflight now define how to collect and record profile-specific
-  evidence. Independent review and execution against a release candidate are
-  still required.
+- [x] **V6. There is no production acceptance runbook.** [P1]
+  **Complete (2026-11-28) with an executed stop verdict.** The
+  [acceptance runbook](production-readiness/acceptance-runbook.md) was reviewed at
+  the published `v0.1.0` candidate and executed. The
+  [execution record](acceptance/runs/v0.1.0.md) links the exact source commit and
+  binary digests, the read-only preflight (30 open P0/P1 blockers), the passing
+  isolated restore and exact-binary upgrade/rollback drills, and the stages
+  recorded `not-run` (scope, compatibility, security, load/soak, distribution).
+  The verdict is **STOP**: no production acceptance is claimed, and the missing
+  security/performance/recovery signatures and published container evidence stay
+  open under their own checklist items.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 
@@ -1810,8 +1973,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   files, no latency or throughput figure, no durability proof, no security review,
   no SLO, no non-default mode). It also states, in one place, that no combination
   of merge gates proves production readiness, and lists the properties that have
-  no required gate and must come from the release process: `S1`, `V3`, `V6`, `P2`,
-  `P6`, `D10`, `D11`, `R6`. Enforcement: `scripts/check_gate_scope.py` fails the
+  no required gate and must come from the release process: `S1`, `V3`, `P2`,
+  `P6`, `D11`, `R6`. Enforcement: `scripts/check_gate_scope.py` fails the
   required CI graph (through `tests/documentation.rs`) when a required context is
   unmapped or mapped twice, when a row loses its "does not prove" cell, when the
   missing-gate section advertises a checklist item that is closed, when either

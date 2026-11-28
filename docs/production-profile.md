@@ -374,6 +374,18 @@ review before it becomes reachable. `tests/security_gate.rs` fails if any of the
 current entry points starts succeeding, so the gate cannot be bypassed silently.
 See [the security gate](security.md#security-acceptance-gate-for-new-features).
 
+## Multi-node topology is excluded
+
+The profile declares exactly one process on one host with one data owner. Replica
+promotion, node-loss failover, network partition/rejoin, split-brain detection,
+fencing tokens, cross-node reconciliation and a multi-node deployment guide are
+**excluded**, not merely unimplemented: the corresponding entry points fail closed
+(`REPLICAOF`/`SLAVEOF`, Sentinel, `CLUSTER`) and a second instance never attaches
+to the first. Host loss is recovered by restoring an independently maintained
+backup with the [standalone incident runbook](standalone-incident-runbook.md) and
+the executed [incident drills](incident-runbook.md) — never by a promotion. See
+[the unsupported surfaces](unsupported.md#multi-node-topology-and-its-failure-modes).
+
 ## Tenant isolation boundary
 
 Multi-tenant deployment is **explicitly excluded**. One process is one trust

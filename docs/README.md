@@ -19,9 +19,11 @@ project's front page.
 | Verify container package visibility before publishing | [Package visibility record](acceptance/package-visibility.md) |
 | Handle a disk, memory, credential or journal incident | [Incident runbook](incident-runbook.md) |
 | Compare durability modes under one matched workload | [Durability performance profile](persistence-performance.md) |
+| Check crash recovery across kill points, framings and filesystems | [Recovery matrix](recovery-matrix.md) |
 | See a representative mixed workload, separate from the merge gate | [Mixed workload report](mixed-workload.md) |
 | Check a repeated-round performance trend | [Performance trend](performance-trends.md) |
 | See how long O(N) commands hold the owner | [Owner work guidance](owner-work-guidance.md) |
+| Check the stated SLOs and the capacity envelope | [SLOs and capacity plan](slo-and-capacity.md) |
 | See which upstream versions and clients are actually exercised | [Tested version matrix](compatibility-matrix.md) |
 | Reuse, redistribute or package Rillcache | [Release licensing](release-licensing.md) |
 | Cut, support or upgrade a release | [Release and support lifecycle](release-lifecycle.md) |
