@@ -1544,15 +1544,31 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 ## 9. Verification and documentation integrity
 
-- [ ] **V1. Only a narrow set of upstream Tcl files is exercised.** [P0]
-  The compatibility workflow runs Redis/Valkey `unit/type/string`,
-  `unit/type/incr` and `unit/keyspace` plus `unit/type/set`, `unit/bitfield`,
-  `unit/scan`, `unit/quit` and `unit/geo` embedded in each required keyspace
-  context. Modules, cluster, integration,
-  scripting, most data types and many protocol surfaces are outside it, and
-  several tags/units are excluded.
-  **Closes when:** the supported profile is covered by the upstream suite (or an
-  equivalent differential corpus) with explicit, reviewed exclusions.
+- [x] **V1. Upstream Tcl coverage is narrow.** [P0]
+  **Complete (2026-11-28): the declared standalone profile is covered by the
+  mandatory pinned Tcl units plus the versioned differential corpus, with
+  reviewed exclusions.**
+  Every PR runs Redis 8.10.2 and Valkey 9.1.2 `unit/type/string`,
+  `unit/type/incr` and `unit/keyspace`, plus the embedded `unit/type/set`,
+  `unit/bitfield`, `unit/scan`, `unit/quit`, `unit/geo` and `unit/type/hash`
+  files native-first in each required keyspace context. `unit/type/hash` is the
+  added family; its two unchanged `DUMP`/`RESTORE` cases are declared in
+  `ci/upstream/scope.json` as named exclusions passed identically to the native
+  control and candidate, so no assertion was modified and an exclusion cannot
+  hide a candidate-only divergence.
+  `scripts/upstream/profile_matrix.py` executes the versioned
+  `ci/upstream/profile-v1.json` rows for the supported families, including
+  lists, sorted sets, streams, HyperLogLog and transactions, and compares the
+  complete `COMMAND LIST` presence/arity surface on both pins. Its reviewed
+  exclusions (scripting, modules, multiple databases, RDB, serialization,
+  replication, client tracking, idle/frequency stats, latency graph and config
+  rewrite) are each tied to a canonical gap. The family-to-Tcl/differential map
+  is published in [upstream CI](upstream-ci.md#supported-family-coverage-map);
+  retained red Tcl diagnostics are never counted as passes.
+  This closes profile coverage, not every per-command/per-edge case (**V2**
+  stays open) and not production readiness. The exact candidate head, per-row
+  and Tcl results, and retained failures are in the protected PR's
+  `Upstream Tcl compatibility` workflow artifacts.
 
 - [ ] **V2. The differential corpus is incomplete.** [P0]
   `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now

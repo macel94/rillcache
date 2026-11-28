@@ -53,20 +53,28 @@ class ScopeTests(unittest.TestCase):
             "unit/scan": "unit/keyspace",
             "unit/quit": "unit/keyspace",
             "unit/geo": "unit/keyspace",
+            "unit/type/hash": "unit/keyspace",
         })
         self.assertEqual(
-            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"],
+            ["unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/type/hash"],
             compat.embedded_suites("unit/keyspace"),
         )
         self.assertEqual([], compat.embedded_suites("unit/type/string"))
         self.assertGreaterEqual(perf.CONFIG["repetitions"], 5)
-        self.assertEqual(common.SCOPE["compatibility"]["diagnostic_suites"], ["unit/type/hash"])
-        hash_reason = common.SCOPE["compatibility"]["diagnostic_suite_reasons"]["unit/type/hash"]
-        self.assertIn("DUMP/RESTORE", hash_reason)
-        self.assertIn("Hash ziplist of various encodings", hash_reason)
+        self.assertEqual(common.SCOPE["compatibility"]["diagnostic_suites"], [])
+        self.assertIn("unit/type/hash", common.SCOPE["compatibility"]["suites"])
+        exclusions = common.SCOPE["compatibility"]["named_test_exclusions"]
+        self.assertEqual(
+            [item["name"] for item in exclusions],
+            ["Hash ziplist of various encodings", "Hash ziplist of various encodings - sanitize dump"],
+        )
+        for exclusion in exclusions:
+            self.assertIn("DUMP/RESTORE", exclusion["reason"])
+            self.assertIn("RDB", exclusion["reason"])
+        self.assertIn("--skiptest", (common.ROOT / "scripts/upstream/compatibility.py").read_text())
         self.assertNotIn("path: unit/type/hash}", text)
-        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hash_diagnostic", text)
-        self.assertIn("--suite unit/type/hash --diagnostic", text)
+        self.assertNotIn("hash_diagnostic", text)
+        self.assertNotIn("hash-diagnostic", text)
         request_limits = common.SCOPE["compatibility"]["request_limits"]
         self.assertEqual(8 * 1024 * 1024, request_limits["candidate_max_bulk_bytes"])
         self.assertEqual(16 * 1024 * 1024, request_limits["candidate_max_frame_bytes"])
@@ -85,13 +93,13 @@ class ScopeTests(unittest.TestCase):
 
 class ProcessTests(unittest.TestCase):
     def test_embedded_suites_run_as_children_and_propagate_failures(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (0, 1, 0, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children) as run:
             self.assertEqual(1, compat.run_embedded_suites("unit/keyspace", "redis"))
-        self.assertEqual(5, run.call_count)
+        self.assertEqual(6, run.call_count)
         for call, suite in zip(
             run.call_args_list,
-            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo"),
+            ("unit/type/set", "unit/bitfield", "unit/scan", "unit/quit", "unit/geo", "unit/type/hash"),
         ):
             argv = call.args[0]
             self.assertEqual("--reference", argv[2])
@@ -101,7 +109,7 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual({"check": False}, call.kwargs)
 
     def test_embedded_suite_signal_exit_is_not_a_pass(self):
-        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0)]
+        children = [type("Completed", (), {"returncode": code})() for code in (-9, 0, 0, 0, 0, 0)]
         with patch.object(compat.subprocess, "run", side_effect=children):
             self.assertEqual(2, compat.run_embedded_suites("unit/keyspace", "redis"))
 
@@ -185,6 +193,8 @@ class ErrorDialectTests(unittest.TestCase):
                 self.assertEqual("unit/type/string", argv[argv.index("--single") + 1])
                 self.assertEqual(" ".join("-" + tag for tag in common.SCOPE["compatibility"]["denied_tags"]),
                                  argv[argv.index("--tags") + 1])
+                skips = [argv[index + 1] for index, part in enumerate(argv) if part == "--skiptest"]
+                self.assertEqual([item["name"] for item in common.SCOPE["compatibility"]["named_test_exclusions"]], skips)
 
 
 class RespTests(unittest.TestCase):
@@ -301,8 +311,8 @@ class CompatibilityTests(unittest.TestCase):
             self.assertTrue(by_unit["unit/scan"]["selected_in_matrix"])
             self.assertEqual("mandatory", by_unit["unit/quit"]["classification"])
             self.assertTrue(by_unit["unit/quit"]["selected_in_matrix"])
-            self.assertEqual("diagnostic", by_unit["unit/type/hash"]["classification"])
-            self.assertIn("DUMP/RESTORE", by_unit["unit/type/hash"]["reason"])
+            self.assertEqual("mandatory", by_unit["unit/type/hash"]["classification"])
+            self.assertTrue(by_unit["unit/type/hash"]["selected_in_matrix"])
             self.assertEqual("excluded", by_unit["unit/protocol"]["classification"])
             protocol_reason = by_unit["unit/protocol"]["reason"]
             self.assertIn("not a zero-test unit", protocol_reason)
