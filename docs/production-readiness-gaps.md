@@ -1527,20 +1527,30 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   transaction cases.
 
 - [ ] **V3. Independent human validation is missing.** [P0]
-  **Partial, awaiting third-party signatures:** `docs/release-acceptance.md`
-  publishes the sign-off scopes and rules, `docs/acceptance/signoffs.tsv` is the
-  machine-checked registry for the exact candidate, and
-  `scripts/check_acceptance.py` (with negative controls in
-  `scripts/test_check_acceptance.py` and `make acceptance-check`) refuses
-  malformed rows, abbreviated candidates, missing evidence and a
-  maintainer-signed security scope. Signed today: `profile` and `release`, both by
-  the maintainer on candidate `d19c37cc`. Still not accepted: `security`
-  (`unassigned` - it requires an independent reviewer, which no in-repo artifact
-  can honestly produce), `performance` and `recovery` (`withheld` because the
-  P/R-series measurement criteria are still open).
+  **Partial, awaiting third-party signatures; the in-repo artifact set is complete.**
+  `docs/release-acceptance.md` publishes the sign-off scopes, the review protocol
+  and the review-scope/findings requirements; `docs/acceptance/signoffs.tsv` is the
+  machine-checked registry for the exact candidate with columns for the reviewer,
+  reviewer kind, evidence, the reviewer's own `review_scope` statement and the
+  referenced findings; `docs/acceptance/findings.tsv` is the findings log with
+  severity, disposition, retest evidence and status.
+  `scripts/check_acceptance.py` refuses malformed rows, abbreviated candidates,
+  missing evidence, a maintainer-signed `security` scope, a signed row without a
+  review-scope statement, and a signed row that references a missing or still-open
+  finding; a closed finding must carry a disposition and resolvable retest
+  evidence. `--require-all` is the release gate, and `--outstanding` prints the
+  exact missing signatures. Negative controls live in
+  `scripts/test_check_acceptance.py`, and `make acceptance-check` runs both.
+  Signed: `profile` and `release`, both by the maintainer on candidate `b27da344`.
+  Outstanding signatures recorded by `--outstanding`:
+  `security` — `unassigned`, needs an independent reviewer (no in-repo artifact can
+  substitute); `performance` — `withheld`, needs a maintainer or independent
+  reviewer once the P-series measurement criteria close; `recovery` — `withheld`,
+  needs a maintainer or independent reviewer once the O-series soak/recovery
+  evidence closes. Findings F-001, F-002 and F-003 record those open items.
   **Closes when:** the independent security reviewer, the performance owner and
-  the recovery-drill reviewer each add a signed row for the release candidate.
-
+  the recovery-drill reviewer each add a signed row, with findings closed and
+  retest evidence, for the release candidate.
 - [x] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
