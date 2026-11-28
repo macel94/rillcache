@@ -760,6 +760,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** a written threat model and an independent review/penetration
   test are completed, findings are tracked to closure, and the review scope and
   date are published.
+  **Partial (2026-11-27): the scoped review package and its machine-checked
+  registry are published.** `docs/security/threat-model.md` covers ten threat
+  surfaces (T1-T10) with assets, trust boundaries, controls, evidence paths and
+  residual risk; `docs/security/independent-review.md` publishes the scope, the
+  definition date (2026-11-27), the candidate-record policy and a fourteen-case
+  penetration-test catalogue (P-01 to P-14) with expected observables. Findings
+  F-01 to F-08 are tracked in `docs/security/review-registry.json`: closed
+  findings require both closure and retest evidence paths that must exist, open
+  findings must name their tracking checklist item, and an independent sign-off
+  can only be `signed` with a reviewer, a date and a signature reference.
+  `scripts/security_review.py --check` and its twenty-six regression tests run in
+  the required CI graph through `tests/documentation.rs`, so a claim cannot
+  silently degrade into an attestation. The remaining item is external: an
+  appointed independent reviewer must execute the published scope against a
+  recorded candidate and replace sign-off record `SO-2` (status `outstanding`).
+  Project-authored tests are control evidence, never independent sign-off, so this
+  does not close S1.
 
 - [x] **S2. ACL support is not full Redis ACL.** [P0]
   **Complete (2026-11-27) for an explicitly versioned, differentially tested
