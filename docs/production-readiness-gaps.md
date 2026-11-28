@@ -1665,9 +1665,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `tests/reference_baseline.rs` now has a committed coverage record,
   `ci/differential/coverage.json`, generated and validated by
   `scripts/check_corpus_coverage.py` against the advertised surface in
-  `docs/production-readiness/command-matrix.md`: 136 of 247 advertised names
-  carry at least one corpus assertion and the 111 uncovered names are listed
-  explicitly. A second surface block
+  `docs/production-readiness/command-matrix.md`: 168 of 247 advertised names
+  carry at least one corpus assertion and the 79 uncovered names are listed
+  explicitly. A third block
+  (`tests/reference_baseline.rs::run_advanced_surface_corpus`) adds geospatial
+  (`GEOADD`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`), hash field expiry
+  (`HEXPIRE`, `HTTL`, `HPERSIST`, `HPTTL`, `HINCRBYFLOAT`), immediately
+  satisfiable blocking forms (`BLPOP`, `BRPOP`, `BLMOVE`, `BLMPOP`,
+  `BRPOPLPUSH`, `BZPOPMIN`, `BZPOPMAX`) with their ordinary pop replies, plus
+  `PSETEX`, `INCRBYFLOAT`, `LPUSH`, `RPOPLPUSH`, `ZPOPMAX`, `ZREVRANGE`,
+  `ZRANGESTORE`, `ROLE`, `MODULE LIST`, `ACL WHOAMI`, `CONFIG GET`, `CLUSTER
+  INFO`, `WAIT`, `UNWATCH`, `RESET`, `DELEX`, `DELIFEQ`, `FLUSHDB` and
+  `FLUSHALL`. A second surface block
   (`tests/reference_baseline.rs::run_collection_surface_corpus`) covers set
   algebra with stores and cardinalities (`SDIFFSTORE`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFCARD`, `SINTERCARD`, `SUNIONCARD`, `SMOVE`), sorted-set
