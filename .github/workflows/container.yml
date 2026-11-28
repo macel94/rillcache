@@ -238,8 +238,12 @@ jobs:
             echo '::error::GHCR defaults new packages to PRIVATE. Open the repository Packages > rillcache > Package settings > Change visibility > Public, then rerun this job. No personal token is required.'
             exit 1
           fi
-      - name: Verify signed provenance and both SPDX attestations without registry credentials
+      - name: Verify signed provenance and both SPDX attestations with anonymous registry access
         env:
+          # `gh` needs a GitHub token to load the trusted root and repository
+          # metadata; it is not a registry credential. The empty DOCKER_CONFIG
+          # below keeps the OCI bundle fetch anonymous, like the pull above.
+          GH_TOKEN: ${{ github.token }}
           IMAGE_NAME: ${{ needs.publish.outputs.image_name }}
           INDEX_DIGEST: ${{ needs.publish.outputs.index_digest }}
           AMD64_DIGEST: ${{ needs.publish.outputs.amd64_digest }}

@@ -45,6 +45,7 @@ class ContainerAttestationPolicyTests(unittest.TestCase):
         self.assertNotIn("id-token: write", consumer)
         self.assertIn("DOCKER_CONFIG=\"$config\" docker image pull", consumer)
         self.assertIn("export DOCKER_CONFIG=\"$config\"", consumer)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", consumer)
         self.assertIn("gh attestation verify", consumer)
         self.assertIn("--bundle-from-oci", consumer)
         self.assertIn("--signer-workflow \"$signer\"", consumer)
