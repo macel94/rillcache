@@ -27,6 +27,7 @@ import json
 import os
 import signal
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -134,13 +135,24 @@ def proc_stats(pid: int) -> tuple[int, int]:
     return rss, int(cpu_seconds)
 
 
-def worker(addr: str, deadline: float, errors: list[str], counter: int, pause: float) -> None:
+def worker(
+    addr: str,
+    deadline: float,
+    errors: list[str],
+    counter: int,
+    pause: float,
+    collection_every: int,
+) -> None:
     try:
         client = Client(addr)
         index = 0
         while time.monotonic() < deadline:
             key = f"soak:w:{counter}:{index % 256}".encode()
             choice = OPERATIONS[index % len(OPERATIONS)]
+            # Keep collection churn bounded while #740 (journal amplification)
+            # is open; string/counter/expiry operations carry the steady load.
+            if choice in ("lpush", "lrange", "hset", "hget") and index % collection_every:
+                choice = ("set", "get", "incr", "expire")[index % 4]
             index += 1
             if choice == "set":
                 client.call(b"SET", key, b"v" * 32)
@@ -197,7 +209,14 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
         threads = [
             threading.Thread(
                 target=worker,
-                args=(addr, deadline, errors, index, options.sleep_ms / 1000.0),
+                args=(
+                    addr,
+                    deadline,
+                    errors,
+                    index,
+                    options.sleep_ms / 1000.0,
+                    max(1, options.collection_every),
+                ),
                 daemon=True,
             )
             for index in range(options.clients)
@@ -217,6 +236,9 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
             memory = info(addr, "memory")
             clients = info(addr, "clients")
             rss, cpu = proc_stats(process.pid)
+            journal_files = [path for path in directory.iterdir() if path.is_file()]
+            journal_bytes = sum(path.stat().st_size for path in journal_files)
+            free_disk = shutil.disk_usage(directory).free
             samples.append({
                 "at_seconds": round(options.duration - (deadline - time.monotonic()), 1),
                 "rss_kib": rss,
@@ -224,6 +246,9 @@ def measure(binary: Path, options: argparse.Namespace) -> dict:
                 "used_memory": memory.get("used_memory"),
                 "connected_clients": clients.get("connected_clients"),
                 "blocked_clients": clients.get("blocked_clients"),
+                "journal_bytes": journal_bytes,
+                "journal_files": sorted(path.name for path in journal_files),
+                "free_disk_bytes": free_disk,
             })
             if options.rewrite_every and len(samples) % options.rewrite_every == 0:
                 client = Client(addr)
@@ -277,6 +302,12 @@ def summarize(report: dict) -> str:
     first = samples[0]["rss_kib"] if samples else 0
     last = samples[-1]["rss_kib"] if samples else 0
     peak = max((s["rss_kib"] for s in samples), default=0)
+    journal_first = samples[0].get("journal_bytes", 0) if samples else 0
+    journal_peak = max((s.get("journal_bytes", 0) for s in samples), default=0)
+    journal_last = samples[-1].get("journal_bytes", 0) if samples else 0
+    free_first = samples[0].get("free_disk_bytes", 0) if samples else 0
+    free_last = samples[-1].get("free_disk_bytes", 0) if samples else 0
+    last_files = samples[-1].get("journal_files", []) if samples else []
     lines = [
         "| Metric | Value |",
         "| --- | ---: |",
@@ -284,6 +315,9 @@ def summarize(report: dict) -> str:
         f"| Clients | {report['clients']} |",
         f"| Samples | {len(samples)} |",
         f"| RSS first/peak/last (KiB) | {first} / {peak} / {last} |",
+        f"| Journal first/peak/last (bytes) | {journal_first} / {journal_peak} / {journal_last} |",
+        f"| Free disk first/last (bytes) | {free_first} / {free_last} |",
+        f"| Journal files at end | {', '.join(last_files) if last_files else '-'} |",
         f"| Rewrites triggered | {report['rewrites']} |",
         f"| Recovered keys | {report['recovered_keys']} |",
         f"| Graceful stop | {report['graceful_stop']} |",
@@ -302,6 +336,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--rewrite-every", type=int, default=12)
     parser.add_argument(
+        "--collection-every",
+        type=int,
+        default=8,
+        help="Issue a list/hash operation only every N steps per worker; the "
+        "journal amplification for small collections is tracked in #740, so the "
+        "default keeps collection churn low while still exercising it",
+    )
+    parser.add_argument(
         "--sleep-ms",
         type=float,
         default=2.0,
@@ -314,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"soak plan: duration={args.duration}s clients={args.clients} "
               f"interval={args.interval}s rewrite_every={args.rewrite_every} "
-              f"sleep_ms={args.sleep_ms}")
+              f"sleep_ms={args.sleep_ms} collection_every={args.collection_every}")
         print(f"binary: {args.binary}")
         return 0
     binary = Path(args.binary)

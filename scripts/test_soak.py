@@ -34,9 +34,12 @@ class SoakTests(unittest.TestCase):
             "duration_seconds": 60,
             "clients": 4,
             "samples": [
-                {"rss_kib": 1000},
-                {"rss_kib": 4000},
-                {"rss_kib": 2000},
+                {"rss_kib": 1000, "journal_bytes": 100, "free_disk_bytes": 5000,
+                 "journal_files": ["appendonly.aof"]},
+                {"rss_kib": 4000, "journal_bytes": 900, "free_disk_bytes": 3000,
+                 "journal_files": ["appendonly.aof", "appendonly.aof.1"]},
+                {"rss_kib": 2000, "journal_bytes": 400, "free_disk_bytes": 1000,
+                 "journal_files": ["appendonly.aof", "appendonly.aof.1"]},
             ],
             "rewrites": 3,
             "recovered_keys": 12,
@@ -46,6 +49,9 @@ class SoakTests(unittest.TestCase):
         table = soak.summarize(report)
         self.assertIn("| RSS first/peak/last (KiB) | 1000 / 4000 / 2000 |", table)
         self.assertIn("| Recovered keys | 12 |", table)
+        self.assertIn("| Journal first/peak/last (bytes) | 100 / 900 / 400 |", table)
+        self.assertIn("| Free disk first/last (bytes) | 5000 / 1000 |", table)
+        self.assertIn("appendonly.aof.1", table)
         self.assertIn("| error | worker 1: boom |", table)
 
     def test_operation_matrix_is_covered(self):
