@@ -193,30 +193,57 @@ the same connection without changing the original Tcl/support sources.
 A failed native control invalidates attribution, but candidate diagnostics still
 run; it is not silently retried or treated as candidate conformance evidence.
 
-For additional hash coverage, manually dispatch the existing `Upstream Tcl
-compatibility` workflow with `hash_diagnostic=true` on the revision under study.
-Two separate diagnostic jobs run the original `unit/type/hash` suite, one for
-each pinned reference, using the same native-first runner and exclusions. Retain
-the `upstream-tcl-hash-diagnostic-*` archives even when a control or candidate
-fails. These jobs do not run on PRs or replace any of the six required Tcl rows.
-A passing diagnostic applies only to its tested revision and selection; it does
-not approve a release profile or establish full hash compatibility. The hash
-family remains diagnostic because its unchanged original suite exercises
-`DUMP`/`RESTORE` in `Hash ziplist of various encodings` and
-`Hash ziplist of various encodings - sanitize dump`, while those commands are
-explicitly excluded from the standalone profile. The tests are not filtered or
-rewritten, so this known unsupported surface remains a visible failure rather
-than a passing hash claim. This constraint is recorded in
-`ci/upstream/scope.json` under `diagnostic_suite_reasons`.
-
-The preserved diagnostic on head `a354626` (run
+The original `unit/type/hash` file is mandatory too. It runs as a native-first
+child of each keyspace context, so the six required Tcl rows are unchanged. Two
+unchanged upstream cases, `Hash ziplist of various encodings` and `Hash ziplist
+of various encodings - sanitize dump`, require `DUMP`/`RESTORE`, which the
+standalone profile excludes under [D1](production-readiness-gaps.md#2-durability-and-recovery).
+They are declared with their reasons in `ci/upstream/scope.json` under
+`named_test_exclusions` and passed as `--skiptest` to **both** the native control
+and the candidate. An exclusion therefore cannot hide a candidate-only
+divergence, and no upstream assertion is rewritten. The earlier manual hash
+diagnostic (run
 [45153905180](https://github.com/macel94/rillcache/actions/runs/45153905180))
-confirms that both pinned native controls completed: Redis passed 87 tests and
-Valkey passed 84 tests, with no named test failures. Rillcache failed the same
-two named tests against each reference because `DUMP` is unsupported and the
-second test then lacks its dump input. This red result is diagnostic evidence,
-not an exclusion-adjusted pass or a basis to promote hash to the mandatory PR
-matrix. The original run artifacts retain both endpoint logs and counts.
+retained the red two-case result; this is the reviewed, symmetric exclusion for
+that known out-of-profile dependency, not a retry-until-green or a passing hash
+claim over `DUMP`/`RESTORE`.
+
+### Supported family coverage map
+
+The supported surface is the `COMMAND LIST` set described in
+[the production profile](production-profile.md). Every supported family has
+required evidence on every PR: the original pinned Tcl file where a complete
+standalone subset exists, and the versioned differential rows in
+`ci/upstream/profile-v1.json` for every family. A dash in the Tcl column means
+the unchanged file is not selected in the mandatory matrix; the declared profile
+rows are that family's required evidence. Retained red Tcl diagnostics are never
+counted as passes, and exhaustive per-command/per-edge corpus work remains
+[V2](production-readiness-gaps.md#9-verification-and-documentation-integrity).
+
+| Supported family | Mandatory original Tcl evidence | Declared differential rows |
+| --- | --- | --- |
+| Strings and counters | `unit/type/string`, `unit/type/incr` | strings, errors, connection |
+| Keyspace and expiry | `unit/keyspace`, `unit/scan`, `unit/quit` | keyspace |
+| Bitmaps | `unit/bitfield` | bitmaps |
+| Sets | `unit/type/set` | sets |
+| Hashes | `unit/type/hash` (two reviewed `DUMP`/`RESTORE` exclusions) | hashes |
+| Geospatial | `unit/geo` | geospatial |
+| Lists | — | lists |
+| Sorted sets | — | sorted-sets |
+| Streams | — | streams |
+| HyperLogLog | — | hyperloglog |
+| Transactions | — | transactions |
+| `SORT` | — | sort |
+| Pub/Sub, notifications, ACL, TLS, persistence, configuration | dedicated client/ACL/security and persistence evidence; not an upstream Tcl unit in this matrix | declared profile exclusions and their required gaps |
+
+The profile matrix also compares the complete `COMMAND LIST` surface by presence
+and arity on both pinned references, so a supported command cannot be silently
+absent from the corpus. Its declared exclusions are the reviewed out-of-profile
+surfaces (scripting, modules, multiple databases, RDB, serialization,
+replication, client tracking, idle/frequency stats, latency graph and config
+rewrite). Together the mandatory Tcl files, those rows and those exclusions are
+the coverage evidence for V1; they are not a claim that every upstream assertion
+or every command edge passes.
 
 The candidate is started with the public `--error-dialect redis` or
 `--error-dialect valkey` setting matching the reference for the entire suite.
@@ -234,12 +261,12 @@ Performance runs retain the unchanged default configuration.
 
 `ci/upstream/scope.json` is the capability/exclusion manifest. Each generated
 `unit-inventory.json` labels source units `mandatory`, `diagnostic` or `excluded`
-and carries the manifest's reason (including the hash-suite blocker above).
-The set, bitfield and scan files are additional mandatory original units embedded
-in each keyspace matrix context; their native and candidate artifacts are retained
-alongside that context's keyspace evidence. The scan selection preserves the
-complete pinned files, including Redis/Valkey-specific scan options; the cursor
-implementation is not claimed to be an internal hash-table or cluster equivalent.
+and carries the manifest's reason. The set, bitfield, scan, quit, geo and hash
+files are additional mandatory original units embedded in each keyspace matrix
+context; their native and candidate artifacts are retained alongside that
+context's keyspace evidence. The scan selection preserves the complete pinned
+files, including Redis/Valkey-specific scan options; the cursor implementation is
+not claimed to be an internal hash-table or cluster equivalent.
 There are no hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
 All original Tcl/runtest hashes are recorded before build and checked before and

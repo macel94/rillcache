@@ -20,10 +20,10 @@ column, or if this document claims a production pass.
 | `Build pinned TCP compatibility tools` | The candidate and both pinned reference servers build from the pinned sources and the Tcl harness prerequisites resolve. | That any upstream Tcl test executed or passed; it is the harness build stage only. |
 | `Tcl redis / string` | The selected Redis 8.10.2 `unit/type/string` file is executed against the candidate and Redis with the pinned options and recorded exclusions. | Hash, list, set, sorted-set, stream, scripting, module, cluster, persistence or replication behaviour. |
 | `Tcl redis / incr` | The selected Redis 8.10.2 `unit/type/incr` file is executed against the candidate and Redis. | Integer semantics outside that file, overflow/edge coverage in other families, or any performance property. |
-| `Tcl redis / keyspace` | The selected Redis 8.10.2 `unit/keyspace` file is executed against the candidate and Redis, plus the embedded set/bitfield/scan/quit/geo blocks in that context. | Expiry, eviction, keyspace notifications, stream metadata or anything outside those files. |
+| `Tcl redis / keyspace` | The selected Redis 8.10.2 `unit/keyspace` file is executed against the candidate and Redis, plus the embedded set/bitfield/scan/quit/geo/hash blocks in that context. | Expiry, eviction, keyspace notifications, stream metadata or anything outside those files, and the two reviewed out-of-profile `DUMP`/`RESTORE` hash cases. |
 | `Tcl valkey / string` | The same `unit/type/string` file is executed against Valkey 9.1.2 and the candidate. | That Valkey and Redis agree everywhere, or that unselected files are covered. |
 | `Tcl valkey / incr` | The same `unit/type/incr` file is executed against Valkey 9.1.2 and the candidate. | Any family outside that file. |
-| `Tcl valkey / keyspace` | The same `unit/keyspace` context is executed against Valkey 9.1.2 and the candidate. | Coverage of the supported profile's other families. |
+| `Tcl valkey / keyspace` | The same `unit/keyspace` context and embedded set/bitfield/scan/quit/geo/hash blocks are executed against Valkey 9.1.2 and the candidate. | Coverage of the supported profile's other families, and the two reviewed out-of-profile `DUMP`/`RESTORE` hash cases. |
 | `read-only-self-tests` | The gate-inventory self-tests prove the required-check policy file and the workflow wiring still agree, including that this mapping is enforced. | Runtime behaviour of the product, or that any runtime gate passed. |
 
 ## What no merge gate proves
@@ -37,7 +37,7 @@ column, or if this document claims a production pass.
   from shared GitHub runners (`P2`, `P5`, `P6`).
 - It does not cover compatibility beyond the selected Tcl files, the differential
   corpus, the language-client matrix and the declared profile exclusions
-  (`V1`, `V2`, `C7`).
+  (`V2`, `C7`).
 - It does not prove durability: fsync policy behaviour, fault injection and recovery
   bounds are covered by `D10`, `D11` and the drill jobs, not by the merge gate.
 - It does not exercise the non-default modes (TLS, persistence, Tokio, multi-owner)
