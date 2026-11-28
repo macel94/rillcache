@@ -65,14 +65,24 @@ class GateTests(unittest.TestCase):
         rows = gate.evaluate(self.samples())
         self.assertEqual(10, len(rows))
         self.assertTrue(all(r["passed"] for r in rows))
+        self.assertTrue(all(r["gate"] == "PASS" for r in rows))
+        self.assertTrue(gate.gate_passed(rows))
         self.assertIn("PASS: 10/10", gate.summary(rows).replace("**", ""))
-        for rate in (100, 99):
+        for rate, gate_state, resolved_loss, best_sample in (
+            (100, "INCONCLUSIVE", False, True),
+            (99, "INCONCLUSIVE", False, True),
+            (99, "FAIL", True, False),
+        ):
             samples = self.samples()
             for s in samples:
                 if (s["workload"], s["pipeline"], s["variant"]) == ("ping", 1, "rillcache"):
-                    s["rps"] = 100000 if s["run"] == 1 else rate
+                    s["rps"] = (100000 if s["run"] == 1 else rate) if best_sample else rate
             rows = gate.evaluate(samples)
             self.assertEqual(9, sum(r["passed"] for r in rows))
+            ping = next(r for r in rows if (r["workload"], r["pipeline"]) == ("ping", 1))
+            self.assertEqual(gate_state, ping["gate"])
+            self.assertEqual(resolved_loss, ping["failed"])
+            self.assertEqual(not resolved_loss, gate.gate_passed(rows))
 
     def test_incomplete_duplicate_nonfinite_and_boolean_samples_fail(self):
         for mutate in (lambda s: s.pop(), lambda s: s.__setitem__(-1, s[0]),
@@ -226,7 +236,7 @@ class GateTests(unittest.TestCase):
                                         gate.RUNS // 2)
 
     @unittest.skipUnless(PAIRED, "protected base harness has no paired diagnostic yet")
-    def test_paired_interval_is_deterministic_reported_and_never_acceptance(self):
+    def test_paired_interval_is_deterministic_and_inconclusive_does_not_fail(self):
         samples = self.samples()
         rows = gate.evaluate(samples)
         self.assertEqual(rows, gate.evaluate(copy.deepcopy(samples)))
@@ -236,8 +246,12 @@ class GateTests(unittest.TestCase):
             self.assertEqual(gate.RUNS, paired["wins"])
             self.assertLessEqual(paired["ci_low"], paired["median_ratio"])
             self.assertLessEqual(paired["median_ratio"], paired["ci_high"])
+            self.assertFalse(row["inconclusive"])
+            self.assertFalse(row["failed"])
+            self.assertEqual("PASS", row["gate"])
         # A row can win three of five paired runs yet tie on whole-cohort
-        # medians: the diagnostic must never turn that into a pass.
+        # medians. Its interval contains 1.0, so it is inconclusive: it is not
+        # counted as a win and it must not fail the cohort.
         tied = self.samples()
         for item in tied:
             if (item["workload"], item["pipeline"]) != ("ping", 1):
@@ -249,8 +263,13 @@ class GateTests(unittest.TestCase):
         self.assertEqual(3, ping["paired"]["wins"])
         self.assertGreater(ping["paired"]["median_ratio"], 1.0)
         self.assertFalse(ping["passed"])
+        self.assertTrue(ping["inconclusive"])
+        self.assertFalse(ping["failed"])
+        self.assertEqual("INCONCLUSIVE", ping["gate"])
+        self.assertTrue(gate.gate_passed(tied_rows))
         # Conversely a row can pass the strict median rule while losing two of
-        # the five paired runs; those losses stay visible in the diagnostic.
+        # the five paired runs; the interval still contains 1.0, so it does not
+        # count as a resolved win.
         mixed = self.samples()
         for item in mixed:
             if item["variant"] == "rillcache" and (item["workload"], item["pipeline"]) == ("ping", 1):
@@ -258,7 +277,34 @@ class GateTests(unittest.TestCase):
         mixed_rows = gate.evaluate(mixed)
         ping = next(r for r in mixed_rows if (r["workload"], r["pipeline"]) == ("ping", 1))
         self.assertTrue(ping["passed"])
+        self.assertTrue(ping["inconclusive"])
+        self.assertFalse(ping["failed"])
+        self.assertEqual("INCONCLUSIVE", ping["gate"])
         self.assertEqual(3, ping["paired"]["wins"])
+
+    @unittest.skipUnless(PAIRED, "protected base harness has no paired diagnostic yet")
+    def test_resolved_loss_fails_while_an_inconclusive_cohort_passes(self):
+        loss = self.samples()
+        for item in loss:
+            if item["variant"] == "rillcache" and (item["workload"], item["pipeline"]) == ("ping", 1):
+                item["rps"] = 99
+        rows = gate.evaluate(loss)
+        ping = next(r for r in rows if (r["workload"], r["pipeline"]) == ("ping", 1))
+        self.assertFalse(ping["inconclusive"])
+        self.assertTrue(ping["failed"])
+        self.assertEqual("FAIL", ping["gate"])
+        self.assertFalse(gate.gate_passed(rows))
+        self.assertIn("1 resolved loss", gate.summary(rows))
+
+        tied = self.samples()
+        for item in tied:
+            if (item["workload"], item["pipeline"]) != ("ping", 1):
+                continue
+            item["rps"] = {1: 100, 2: 120, 3: 120, 4: 100, 5: 100}[item["run"]] if item["variant"] == "rillcache" \
+                else {1: 50, 2: 100, 3: 100, 4: 200, 5: 200}[item["run"]]
+        rows = gate.evaluate(tied)
+        self.assertTrue(gate.gate_passed(rows))
+        self.assertIn("1 inconclusive interval", gate.summary(rows))
 
     @unittest.skipUnless(PAIRED, "protected base harness has no paired diagnostic yet")
     def test_paired_statistics_reject_incomplete_or_invalid_ratios(self):
